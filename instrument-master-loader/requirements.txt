@@ -1,0 +1,12 @@
+# Runtime dependencies for the instrument-master-loader Lambda function.
+#
+# pg8000 is NOT bundled into the function package - it is supplied by the
+# layers/pg8000-driver Lambda layer. It is listed here so the module can be
+# imported and tested locally, and so the version stays in step with the
+# layer. Keep this constraint identical to layers/pg8000-driver/requirements.txt.
+#
+# Everything else the handler needs (csv, io, json, logging, os, ssl, time,
+# urllib) is in the Python standard library, which is why this function fits
+# a plain zip deployment with no compiled wheels.
+
+pg8000~=1.31

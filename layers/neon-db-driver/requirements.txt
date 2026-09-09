@@ -1,0 +1,10 @@
+# Contents of the pg8000-driver Lambda layer.
+#
+# pg8000 is a pure-Python PostgreSQL driver: no libpq, no compiled extension,
+# so the layer is architecture-independent and needs no Docker build.
+# It pulls in scramp and asn1crypto (both pure Python) transitively.
+#
+# Pin this to the exact version once the first layer is published, and keep
+# it identical to instrument-master-loader/requirements.txt.
+
+pg8000~=1.31
