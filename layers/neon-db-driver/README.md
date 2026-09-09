@@ -1,4 +1,4 @@
-# pg8000-driver layer
+# neon-db-driver layer
 
 A Lambda layer carrying [pg8000](https://github.com/tlocke/pg8000), the
 PostgreSQL driver every function in this repo uses to reach Neon.
@@ -27,24 +27,24 @@ Lambda expects a Python layer's packages under `python/` at the root of the
 zip. From this directory:
 
 ```bash
-rm -rf build python-layer.zip && mkdir -p build/python
+rm -rf build neon-driver.zip && mkdir -p build/python
 pip install -r requirements.txt --target build/python
-cd build && zip -r ../python-layer.zip python && cd ..
+cd build && zip -r ../neon-driver.zip python && cd ..
 ```
 
 Publishing it:
 
 ```bash
 aws lambda publish-layer-version \
-  --layer-name pg8000-driver \
+  --layer-name neon-db-driver \
   --description "Pure-Python PostgreSQL driver for Neon" \
-  --zip-file fileb://python-layer.zip \
+  --zip-file fileb://neon-driver.zip \
   --compatible-runtimes python3.12 \
   --compatible-architectures x86_64 arm64
 ```
 
 Then attach the returned `LayerVersionArn` to each function that needs it.
-Build outputs (`build/`, `python-layer.zip`) are artifacts — do not commit them.
+Build outputs (`build/`, `neon-driver.zip`) are artifacts — do not commit them.
 
 ## Version pinning
 

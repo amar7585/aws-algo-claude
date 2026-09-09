@@ -56,7 +56,7 @@ No Dhan credentials are needed: the scrip master is a public file.
 ## Deployment shape
 
 - Runtime: Python 3.12, handler `handler.lambda_handler`.
-- Layer: `layers/pg8000-driver` — see [that README](../layers/pg8000-driver/README.md).
+- Layer: `layers/neon-db-driver` — see [that README](../layers/neon-db-driver/README.md).
 - The function package is `handler.py` alone. Nothing outside the standard
   library is bundled, so it deploys as a small zip with no Docker build.
 - Memory 512 MB and a timeout of several minutes are a sane starting point: the
