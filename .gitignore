@@ -1,0 +1,27 @@
+# Intermediate layer build directory only — the unzipped `pip install --target`
+# output, which is just the contents of the published .zip.
+#
+# The layer .zip itself IS tracked, deliberately: everything needed to recreate
+# the infrastructure lives in this repo.
+build/
+
+# Scrip master downloaded for local verification (~25 MB, refreshed daily by
+# Dhan). See CLAUDE.md — "Local verification".
+master.csv
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Secrets — NEON_CONNECTION_STRING and anything else injected at deploy time
+# belongs in Secrets Manager or encrypted SSM, never in the repo.
+.env
+.env.*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
