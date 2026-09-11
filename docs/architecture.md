@@ -16,12 +16,17 @@ flowchart LR
 
     subgraph AWS["AWS"]
         LOADER["instrument-master-loader<br/><i>Lambda, monthly</i>"]
+        AUTH["auth-dhan-broker<br/><i>Lambda, daily, weekdays</i>"]
+        SSM[/"SSM SecureString<br/>/algo/dhan/token"/]
         SM["Session state machine<br/><i>Step Functions, daily</i>"]
     end
 
     NEON[("Neon Postgres<br/><b>AI Trader APP</b> / Algo<br/>schema: algo")]
 
     DHAN --> LOADER --> NEON
+    AUTH --> SSM
+    SSM -.token.-> SM
+    BROKER -.auth.-> AUTH
     BROKER -.planned.-> SM -.planned.-> NEON
     NEON --> SM
 ```
@@ -31,7 +36,44 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Plane | Cadence | Trigger | Status |
 |---|---|---|---|
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
-| Session state machine | per trading day | EventBridge → Step Functions | planned |
+| Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
+| Daily candles + daily read | daily, weekdays 09:50 | EventBridge Scheduler cron | **built** |
+| Intraday candles | every 5 min, market hours | EventBridge Scheduler cron | planned |
+
+**No Step Functions state machine was built.** An earlier design had one
+sequencing History → Regime → Strategy; what exists instead is a set of
+independently scheduled Lambdas, each on its own clock. That keeps failure
+domains separate — a bad token refresh raises its own alarm rather than failing
+a session — and it removed the plane where secrets would have travelled as step
+output.
+
+## Why secrets live in SSM
+
+`auth-dhan-broker` writes the token to an SSM `SecureString` rather than
+handing it to consumers directly. The original reason was Step Functions: it
+records the input and output of every state in its execution history, readable
+through `GetExecutionHistory` and retained for around 90 days with no
+field-level redaction — a token passed that way would sit in plaintext where a
+token in SSM sits behind `ssm:GetParameter` plus `kms:Decrypt`.
+
+The state machine was never built, but the pattern earned its place anyway and
+now covers three parameters:
+
+| Parameter | Written by | Read by |
+|---|---|---|
+| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment` |
+| `/algo/telegram/brief` | by hand | `daily-market-sentiment` |
+| `/algo/neon/connection` | by hand | every function that touches Neon |
+
+The last one replaced a `NEON_CONNECTION_STRING` environment variable
+duplicated across functions. Environment variables are encrypted at rest but
+readable by anyone holding `lambda:GetFunctionConfiguration`, and rotating the
+database password meant editing every function that carried it. One parameter,
+one edit.
+
+Each function keeps an environment-variable override for local testing, and
+logs which source it used — so a stale variable cannot quietly shadow a rotated
+parameter.
 
 ## Why the loader sits outside the state machine
 
@@ -54,14 +96,22 @@ the cost of a wake-up on the first connection of each run.
 
 | Table | Shape | Rows | Written by |
 |---|---|---|---|
-| `instrument_master` | `security_id, trading_symbol, exchange_segment, instrument_type, lot_units, updated_at` | 15,338 | instrument-master-loader |
-| `candle_5min` | `security_id, instrument_type, candle_ts, open, high, low, close, volume` | 0 | history task *(planned)* |
-| `candle_15min` | same | 0 | history task *(planned)* |
-| `candle_1hr` | same | 0 | history task *(planned)* |
-| `candle_daily` | same | 0 | history task *(planned)* |
+| `instrument_master` | `security_id, trading_symbol, exchange_segment, instrument_type, lot_units, updated_at` | 15,463 | instrument-master-loader |
+| `candle_daily` | `security_id, instrument_type, candle_ts, open, high, low, close, volume` | 408 | daily-market-sentiment |
+| `daily_market_sentiment` | 26 columns — bias, regime, score, the SMA/RSI inputs, VIX-implied expected move | 1 | daily-market-sentiment |
+| `candle_5min` | same shape as `candle_daily` | 0 | intraday task *(planned)* |
+| `candle_15min` | same | 0 | intraday task *(planned)* |
+| `candle_1hr` | same | 0 | intraday task *(planned)* |
 
-Row counts as of 2026-09-09. The candle tables exist but nothing writes to them
-yet.
+Row counts as of 2026-09-11. `candle_daily` holds 204 NIFTY and 204 INDIA VIX
+candles from the cold start; the intraday tables exist but nothing writes to
+them yet.
+
+**`security_id` alone is not an identity.** 19 security_ids carry more than one
+`instrument_type` — `13` is both NIFTY (`IDX_I`/`INDEX`) and ABB
+(`NSE_EQ`/`EQUITY`). A lookup missing the `instrument_type` silently resolved to
+ABB on 2026-09-11 and wrote 204 ABB candles labelled NIFTY. Always query on the
+pair.
 
 ## Invariants
 
@@ -92,6 +142,7 @@ mandatory. The scrip master is a public CSV parseable with stdlib `csv`, and
 [pg8000](../layers/neon-db-driver/README.md) is a pure-Python Postgres driver.
 Dropping those three dependencies removed the reason to leave Lambda.
 
-The rule that keeps it that way: **no compiled dependencies**. Anything needing
-a C extension either gets replaced with a pure-Python equivalent or forces a
-rethink of that component.
+The rule that keeps it that way: **prefer pure Python**. A C extension is not
+forbidden, but it has to earn its place — what it buys, why no pure-Python
+equivalent does the job, and the packaged size measured against Lambda's limits
+before it goes in.
