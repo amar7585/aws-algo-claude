@@ -7,15 +7,23 @@
 | Component | Kind | Cadence | Status | Docs |
 |---|---|---|---|---|
 | `instrument-master-loader` | Lambda function | monthly | **built, running** | [README](../instrument-master-loader/README.md) |
+| `auth-dhan-broker` | Lambda function | daily, weekdays 08:00 | **built, running** | [README](../auth-dhan-broker/README.md) |
+| `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
-| History task | Lambda function | per session | planned | — |
-| Regime task | Lambda function | per session | planned | — |
+| `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
+| Intraday task | Lambda function | every 5 min, market hours | planned | — |
 | Strategy task | Lambda function | per session | planned | — |
-| Session state machine | Step Functions | per session | planned | — |
 
-Only the first two exist in this repo. The rest are recorded so the boundaries
-are explicit; see [architecture.md](architecture.md) for why the loader is
-deliberately outside the state machine.
+Everything above the divider exists and runs. See
+[architecture.md](architecture.md) for why none of these sit inside a state
+machine: each runs on its own clock, and a failure in one should raise its own
+alarm rather than fail a session.
+
+**There is no Step Functions state machine and no History/Regime split.** An
+earlier design recorded both; what got built instead is `daily-market-sentiment`
+doing the daily fetch and the daily read in one function, on one schedule. The
+intraday half — 5/15/60-minute candles into `candle_5min` and its aggregates —
+is the remaining planned piece.
 
 ## Built
 
@@ -50,24 +58,69 @@ recommended for production.
 
 Build and publish steps are in its [README](../layers/neon-db-driver/README.md).
 
+### auth-dhan-broker
+
+Keeps a live DhanHQ v2 access token in SSM Parameter Store, so no session
+function has to authenticate itself and no token is refreshed by hand.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.12, zip package |
+| Layer | none — `boto3` ships with the runtime, the rest is stdlib |
+| Package contents | `handler.py` alone |
+| Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Writes | `/algo/dhan/token` (SSM `SecureString`) |
+| Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
+
+Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
+failure raises; there is no fallback path.
+
+**There is deliberately no renew step.** `/v2/RenewToken` would have let one
+TOTP login carry a week, but it refuses TOTP-minted tokens outright —
+`"Renewal of token not allowed for this token type"`, measured 2026-09-10. The
+branch was built, tested live and removed. A token lives 24 hours, so one 08:00
+run covers the 09:15–15:30 session with hours to spare.
+
+Full configuration, IAM, the measured API findings and what remains unknown are
+in its [README](../auth-dhan-broker/README.md).
+
+### daily-market-sentiment
+
+Fetches daily candles for NIFTY and INDIA VIX into `algo.candle_daily`, computes
+the daily read into `algo.daily_market_sentiment`, and pushes it to Telegram.
+Three Dhan calls, ~12 s.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.12+, zip package, 8 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
+
+It reads the Dhan token from `/algo/dhan/token` rather than holding broker
+credentials of its own. It does **not** invoke `auth-dhan-broker` on demand —
+that path cannot fire in practice, since the 08:00 refresh precedes the 09:50
+run by nearly two hours and a token lives 24 hours.
+
+Its README carries the measured facts that make it work: `fromDate` is
+exclusive, the daily endpoint lags a session, `security_id` alone is not unique,
+and the sentiment score is **not** predictive of forward return.
+
 ## Planned
 
-Shapes are settled; none of the code is in this repo.
+### Intraday task
 
-### History task
+The remaining half: 5/15/60-minute candles into `candle_5min`, `candle_15min`
+and `candle_1hr`, every 5 minutes during market hours. Those three tables exist
+and are empty. Incremental from the last stored `candle_ts`, chunked forward in
+≤90-day windows because Dhan caps intraday fetches at 90 days per call.
 
-Fetches candles into `algo.candle_5min` and its aggregates. Gates on the NSE
-trading calendar, resolves the current-month index future at runtime from
-`instrument_master`, and fetches incrementally from the last stored
-`candle_ts` rather than refetching the session.
-
-Needs authenticated Dhan credentials, unlike the loader.
-
-### Regime task
-
-Classifies the session — trending, sideways, volatile expansion — from stored
-candles plus structural levels. Reads only; writes its classification back for
-the strategy step.
+The current-month index future belongs here rather than in the daily function:
+its daily series is a rolled continuous one that changes meaning at each expiry,
+while its intraday series is contract-specific and safe to store per
+`security_id`.
 
 ### Strategy task
 
@@ -83,7 +136,8 @@ in more depth in [architecture.md](architecture.md#invariants).
 - **Epoch seconds** for every stored time value.
 - **Raw Dhan segment codes** in `exchange_segment`.
 - **`(security_id, instrument_type)`** as the instrument identity.
-- **No compiled dependencies** — pure Python or rethink the component.
+- **Prefer pure Python** — a compiled dependency needs a stated reason and a
+  measured package size, not a default yes.
 - **Fail loudly.** Raise on error so Lambda records a failure; never return a
   500-shaped success. Never let a schema change degrade into a silent 0-row
   write.

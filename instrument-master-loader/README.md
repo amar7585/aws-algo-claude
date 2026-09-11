@@ -38,29 +38,57 @@ Two conventions the rest of the system depends on:
   `NSE_FNO`, `BSE_FNO`, …), never a human-readable string.
 - `updated_at` is **epoch seconds**. Every time value in this database is.
 
+## Layout
+
+```
+handler.py        entry point and orchestration
+config.py         this function's tunables
+rules.py          ExchangeSegment, the 9 instrument rules, row predicates
+scrip_master.py   download and parse the CSV
+db.py             the upsert
+```
+
+`rules.py` is kept apart from the other two because it is the piece with real
+behaviour to argue about — the download and the upsert are plumbing.
+
+`connect()` and the shared connection-string read come from the
+[`neon-access`](../layers/neon-access/README.md) layer; pg8000 comes from
+`neon-db-driver`. **Both layers are required.**
+
 ## Configuration
 
 | Environment variable | Required | Default |
 |---|---|---|
-| `NEON_CONNECTION_STRING` | yes | — |
+| `NEON_CONNECTION_STRING` | no | *unset* — read from `/algo/neon/connection` |
 | `DHAN_SCRIP_MASTER_URL` | no | `https://images.dhan.co/api-data/api-scrip-master.csv` |
 | `UPSERT_BATCH_SIZE` | no | `5500` |
 | `DOWNLOAD_TIMEOUT_SECONDS` | no | `120` |
 
-`NEON_CONNECTION_STRING` is a `postgres://` URL. It is a credential — put it in
-Secrets Manager or an encrypted SSM parameter and inject it at deploy time
-rather than committing it or typing it into the console in plaintext.
+The connection string lives in the `/algo/neon/connection` `SecureString`, so
+one parameter serves every function that talks to Neon and rotating the
+database password is a single edit. `NEON_CONNECTION_STRING` still wins when
+set — useful for local testing and as an escape hatch — and the log line says
+which source was used, so a stale environment variable cannot quietly shadow a
+rotated parameter.
+
+That means the role needs `ssm:GetParameter` on
+`arn:aws:ssm:<region>:<account>:parameter/algo/neon/connection` plus
+`kms:Decrypt` via `kms:ViaService`. Note the leading slash is **not** doubled in
+the ARN.
 
 No Dhan credentials are needed: the scrip master is a public file.
 
 ## Deployment shape
 
-- Runtime: Python 3.12, handler `handler.lambda_handler`.
-- Layer: `layers/neon-db-driver` — see [that README](../layers/neon-db-driver/README.md).
-- The function package is `handler.py` alone. Nothing outside the standard
-  library is bundled, so it deploys as a small zip with no Docker build.
-- Memory 512 MB and a timeout of several minutes are a sane starting point: the
-  filtered master is on the order of 10^5 rows, dominated by `OPTIDX`.
+- Runtime: Python 3.12+, handler `handler.lambda_handler`.
+- Layers: `neon-db-driver` (pg8000) **and** `neon-access` (shared helpers).
+  Attach both **before** uploading the code — `handler.py` imports
+  `neon_access` at module load, so the reverse order gives
+  `Unable to import module 'handler': No module named 'neon_access'`.
+- The function package is the five modules above and nothing else. No
+  third-party code is bundled, so it stays a small zip with no Docker build.
+- Memory 256 MB and a timeout of ~50 s are what it runs on today: a live run
+  downloads ~25 MB and completes in about 22 s.
 - Because the loader reaches the public internet, either run it outside a VPC
   or give it a NAT path.
 
@@ -95,8 +123,25 @@ in the legacy one alike. Its condition requires
 fixing how the segment is *resolved* does not make it fire.
 
 Measured on the master of 2026-09-09: 6 SENSEX/BANKEX/SENSEX50 futures
-contracts are present and all are dropped. Total output is 15,338 rows —
+contracts are present and all are dropped. Total output was 15,338 rows —
 120 `IDX_I`, 2,675 `NSE_EQ`, 12,543 `NSE_FNO`, and zero `BSE_FNO`.
+
+Re-measured on 2026-09-11, after the module split, as the regression test for
+that refactor — output is **row-for-row identical** to the pre-split version on
+the same CSV, in the same order:
+
+| | |
+|---|---|
+| `IDX_I` / `INDEX` | 120 |
+| `NSE_EQ` / `EQUITY` | 2,669 |
+| `NSE_FNO` / `FUTIDX` | 18 |
+| `NSE_FNO` / `FUTSTK` | 647 |
+| `NSE_FNO` / `OPTIDX` | 12,002 |
+| **`BSE_FNO`** | **0** |
+| **total** | **15,456** |
+
+The drift from 15,338 is the exchange listing and expiring contracts over two
+days, not a behaviour change. `BSE_FNO` stays zero.
 
 Relaxing the condition to `{"FUT", "FUTIDX"}` would pick them up, but that is
 a scope change from the agreed "replicate the 9 rules as they are", so it is
