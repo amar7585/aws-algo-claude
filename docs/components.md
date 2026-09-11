@@ -11,7 +11,7 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| Intraday task | Lambda function | every 5 min, market hours | planned | — |
+| `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **deployed**, schedules pending | [README](../intraday-data-loader/README.md) |
 | Strategy task | Lambda function | per session | planned | — |
 
 Everything above the divider exists and runs. See
@@ -21,9 +21,9 @@ alarm rather than fail a session.
 
 **There is no Step Functions state machine and no History/Regime split.** An
 earlier design recorded both; what got built instead is `daily-market-sentiment`
-doing the daily fetch and the daily read in one function, on one schedule. The
-intraday half — 5/15/60-minute candles into `candle_5min` and its aggregates —
-is the remaining planned piece.
+doing the daily fetch and the daily read in one function, on one schedule, and
+`intraday-data-loader` filling the three intraday candle tables on another. The
+remaining planned piece is the strategy task.
 
 ## Built
 
@@ -34,7 +34,7 @@ Refreshes `algo.instrument_master` from Dhan's public scrip master.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12, zip package |
+| Runtime | Python 3.14, zip package |
 | Layer | `neon-db-driver` |
 | Package contents | `handler.py` alone — everything else is stdlib |
 | Dependencies | pg8000 (from the layer). No pandas, no `dhanhq`, no compiled wheels |
@@ -66,7 +66,7 @@ function has to authenticate itself and no token is refreshed by hand.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12, zip package |
+| Runtime | Python 3.14, zip package |
 | Layer | none — `boto3` ships with the runtime, the rest is stdlib |
 | Package contents | `handler.py` alone |
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
@@ -94,7 +94,7 @@ Three Dhan calls, ~12 s.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12+, zip package, 8 modules |
+| Runtime | Python 3.14, zip package, 8 modules |
 | Layers | `neon-db-driver` + `neon-access` |
 | Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
@@ -108,19 +108,36 @@ Its README carries the measured facts that make it work: `fromDate` is
 exclusive, the daily endpoint lags a session, `security_id` alone is not unique,
 and the sentiment score is **not** predictive of forward return.
 
+### intraday-data-loader
+
+Fills `algo.candle_5min`, `algo.candle_15min` and `algo.candle_1hr` for NIFTY
+and the current-month NIFTY future, through the session. It computes nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 5 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Schedule | every 5 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 68 invocations a day |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables at all |
+
+Which intervals a run fetches follows one rule — **fetch interval *I* when
+`(run time − 09:15)` is a whole multiple of *I* minutes** — because Dhan's
+intraday buckets are session-aligned from 09:15, not clock-aligned. That was
+measured, not assumed, and is asserted at runtime.
+
+The current-month future is never hardcoded: the nearest option expiry's month
+names the contract, which rolls itself at each expiry. It belongs here rather
+than in the daily function because its daily series is a rolled continuous one
+that changes meaning at each expiry, while its intraday series is
+contract-specific and safe to store per `security_id`.
+
+**Partial candles are stored on purpose** — Dhan returns the in-progress bucket
+and the primary-key upsert corrects it on a later pass. A consumer tells the two
+apart with `candle_ts + interval_seconds <= now`; only the newest bar per table
+is ever partial. Its README carries the reasoning and the measured facts.
+
 ## Planned
-
-### Intraday task
-
-The remaining half: 5/15/60-minute candles into `candle_5min`, `candle_15min`
-and `candle_1hr`, every 5 minutes during market hours. Those three tables exist
-and are empty. Incremental from the last stored `candle_ts`, chunked forward in
-≤90-day windows because Dhan caps intraday fetches at 90 days per call.
-
-The current-month index future belongs here rather than in the daily function:
-its daily series is a rolled continuous one that changes meaning at each expiry,
-while its intraday series is contract-specific and safe to store per
-`security_id`.
 
 ### Strategy task
 

@@ -155,6 +155,61 @@ There is no holiday gate. On a holiday the fetch returns nothing new and the
 sentiment row is simply not written — a calendar would be a second source of
 truth to keep correct.
 
+## Intraday candles — every 5 minutes, 10:00–15:35
+
+```mermaid
+flowchart TD
+    START(["EventBridge Scheduler<br/>every 5 min 10:00–15:30<br/>+ 15:35 sweep, IST"]) --> WKND{"Saturday<br/>or Sunday?"}
+    WKND -->|yes| SKIP(["skip"])
+    WKND -->|no| DUE["intervals due =<br/><b>(now − 09:15) mod I == 0</b><br/>15:35 ⇒ all three"]
+
+    DUE --> TOK["read /algo/dhan/token<br/>raise if expired"]
+    TOK --> NIFTY["resolve NIFTY<br/><b>on (security_id, instrument_type)</b>"]
+
+    NIFTY --> WIN["window = MAX(candle_ts) − one interval<br/><b>re-fetches the partial bar</b><br/>else 90-day cold start"]
+    WIN --> FETCH["fetch interval candles"]
+    FETCH --> FILTER["drop out-of-session bars<br/>09:15 ≤ t &lt; 15:30"]
+    FILTER --> ALIGN{"every bar on a<br/>bucket boundary<br/>from 09:15?"}
+    ALIGN -->|no| RAISE(["raise"])
+    ALIGN -->|yes| UPSERT[("candle_5min<br/>candle_15min<br/>candle_1hr")]
+
+    UPSERT --> EXP["expiry list → nearest expiry's month<br/><b>NIFTY-&lt;MON&gt;&lt;YYYY&gt;-FUT</b>"]
+    EXP --> FUT{"contract in<br/>instrument_master?"}
+    FUT -->|no| RAISE
+    FUT -->|yes| WIN
+
+    IM[("instrument_master<br/><i>monthly, separate</i>")] -.read.-> NIFTY
+    IM -.read.-> FUT
+
+    style SKIP fill:#78350f,color:#fff
+    style RAISE fill:#7f1d1d,color:#fff
+    style UPSERT fill:#14532d,color:#fff
+```
+
+Four things in that diagram are load-bearing:
+
+**One rule picks the intervals.** Dhan's intraday buckets are session-aligned
+from 09:15, not clock-aligned — measured, by shortening `toDate` until the
+candle count changed. So a run fetches interval *I* exactly when `(now − 09:15)`
+is a whole multiple of *I* minutes, and the hourly trigger times fall out of
+that rather than being written down separately. `assert_alignment()` raises if
+the data ever stops matching.
+
+**The window steps back one interval.** `fromDate` is exclusive, so resuming
+from the newest stored `candle_ts` would never re-fetch that bar — and that bar
+may be partial. Stepping back one whole interval re-fetches exactly it.
+
+**The 15:35 sweep is not optional.** At 15:30 the 15:25 five-minute, 15:15
+fifteen-minute and 15:15 hourly bars have only just closed. Without a later run
+they would stay partial in the database permanently.
+
+**The index is stored before the future is resolved.** Resolving the future
+costs an extra API call. If it fails, the exception still propagates — but the
+index candles are already committed rather than lost alongside it.
+
+There is no holiday gate, for the same reason as the daily read: on a holiday
+the fetch returns nothing new and nothing is written.
+
 ## Failure handling
 
 | Failure | Detected by | Result |
@@ -174,3 +229,10 @@ truth to keep correct.
 | Chart arrays disagree in length | per-field length check in `to_candles` | raise |
 | Dhan rate limit `DH-904` | retry with exponential backoff, then raise | — |
 | Stray post-close candles | 09:15–15:30 session filter | dropped |
+| Dhan changes interval alignment | every bar checked against the 09:15 origin | raise — the schedule no longer matches the data |
+| Expiry list empty, or every date past | check before deriving the month | raise — cannot resolve the future |
+| Futures contract absent from the master | exactly-one check in `resolve_by_symbol` | raise, naming the stale instrument master |
+| No Dhan client id available | checked before the expiry call | raise |
+| Candle table name not one of the three | whitelist check before any query | raise |
+| Newest bar left partial at the close | the 15:35 closing sweep | prevented |
+| Resume window exceeds Dhan's 90-day cap | clamped before the call | prevented |

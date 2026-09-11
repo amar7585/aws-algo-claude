@@ -16,7 +16,7 @@ deterministic to read.
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
-| Intraday task | planned — see [components](docs/components.md#planned) |
+| [intraday-data-loader](intraday-data-loader/README.md) | **deployed** — 12,519 intraday candles; schedules pending |
 
 ## Documentation
 
@@ -33,6 +33,7 @@ deterministic to read.
 | [instrument-master-loader](instrument-master-loader/README.md) | Configuration, deployment, porting notes, the known `FUTIDXBSE` rule gap |
 | [auth-dhan-broker](auth-dhan-broker/README.md) | Token refresh flow, why there is no renew path, IAM, measured API findings |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | The measured Dhan API facts, why `expected_move` comes from VIX, why the score is not a forecast |
+| [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 
@@ -62,6 +63,12 @@ aws-algo-claude/
 │   ├── notify.py                 Telegram
 │   ├── schema.sql                algo.daily_market_sentiment
 │   └── README.md
+├── intraday-data-loader/         Lambda: 5/15/60-min candles through the session
+│   ├── handler.py                entry point, schedule rule, resume, alignment guard
+│   ├── config.py params.py       tunables; the Dhan token and client id
+│   ├── dhan.py db.py             charts + expiry client; the candle upsert
+│   ├── requirements.txt
+│   └── README.md
 └── layers/
     ├── neon-db-driver/           Lambda layer: pure-Python Postgres driver
     │   ├── requirements.txt
@@ -84,8 +91,9 @@ Two planes on different clocks, deliberately uncoupled:
 - **Each weekday at 09:50** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
   Telegram.
-- **Every 5 minutes during market hours** *(planned)* — the intraday task fills
-  `candle_5min` and its aggregates.
+- **Every 5 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —
+  `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
+  for NIFTY and the current-month future. 68 invocations a trading day.
 
 **Nothing sequences these.** An earlier design had a Step Functions state
 machine running History → Regime → Strategy; it was never built. Each component
