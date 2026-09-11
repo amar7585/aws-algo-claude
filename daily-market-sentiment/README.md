@@ -248,7 +248,7 @@ The parameter names carry a leading slash but the ARN does **not** double it —
 
 ## Deployment
 
-Zip upload, handler `handler.lambda_handler`, Python 3.12+, memory 512 MB.
+Zip upload, handler `handler.lambda_handler`, Python 3.14, memory 256 MB.
 Layers, both required:
 
 ```

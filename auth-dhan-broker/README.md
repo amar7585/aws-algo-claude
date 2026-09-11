@@ -179,7 +179,7 @@ that costs nothing.
 
 ## Deployment shape
 
-- Runtime: Python 3.12 or later, handler `handler.lambda_handler`.
+- Runtime: Python 3.14, handler `handler.lambda_handler`.
 - **No layer.** `boto3` is pre-installed in the Lambda Python runtime, and
   everything else is stdlib.
 - The function package is one file.
@@ -258,7 +258,7 @@ key by alias ARN.
 | Field | Value |
 |---|---|
 | Function name | `auth-dhan-broker` |
-| Runtime | Python 3.12 or later |
+| Runtime | Python 3.14 |
 | Architecture | either — `arm64` is cheaper and works, the package is pure Python |
 | Execution role | *Change default execution role* → **Use an existing role** → `auth-dhan-broker-role` |
 
