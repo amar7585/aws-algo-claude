@@ -293,7 +293,20 @@ cron(0,5,10,15,20,25,30,35 15 ? * MON-FRI *)      15:00–15:35    8 runs
 68 between them, the last being the closing sweep. The obvious single
 `cron(0/5 10-15 ? * MON-FRI *)` is **wrong**: it keeps firing to 15:55, well
 past the close, and collides with a separate 15:35 sweep rule. Splitting at the
-hour boundary is what makes the last run land exactly on 15:35.
+hour boundary is what makes the last run land exactly on 15:35. Hours 10–14 are
+complete, so a `0/5` step works; hour 15 stops early, so its minutes are spelled
+out.
+
+Deployed as `intraday-data-loader-session` and `intraday-data-loader-close`,
+each with **its own execution role**. Reusing another schedule's role does not
+work — the console scopes those to the function they were created for, and the
+mismatch surfaces only as a schedule that silently never fires.
+
+Retries are the console default (2 attempts, 1-hour maximum event age). Nothing
+depends on them: the upserts are idempotent and batched in timestamp order, so a
+retry re-writes identical rows, and a run that fails outright is picked up by the
+next one five minutes later — the resume window comes from `MAX(candle_ts)`, not
+from the schedule.
 
 Test events: `{"intervals": [5]}` forces a single interval,
 `{"now": "2026-09-11T10:15:00"}` overrides the clock the schedule rule reads.

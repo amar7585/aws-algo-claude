@@ -38,7 +38,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
 | Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
 | Daily candles + daily read | daily, weekdays 09:50 | EventBridge Scheduler cron | **built** |
-| Intraday candles | every 5 min, 10:00–15:35 | EventBridge Scheduler cron | **built**, schedules pending |
+| Intraday candles | every 5 min, 10:00–15:35 | EventBridge Scheduler cron | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of

@@ -16,7 +16,7 @@ deterministic to read.
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
-| [intraday-data-loader](intraday-data-loader/README.md) | **deployed** — 12,519 intraday candles; schedules pending |
+| [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 5 min 10:00–15:35 |
 
 ## Documentation
 

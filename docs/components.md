@@ -11,7 +11,7 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **deployed**, schedules pending | [README](../intraday-data-loader/README.md) |
+| `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
 | Strategy task | Lambda function | per session | planned | — |
 
 Everything above the divider exists and runs. See
