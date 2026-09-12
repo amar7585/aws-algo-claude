@@ -17,6 +17,7 @@ deterministic to read.
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 5 min 10:00–15:35 |
+| [error-notifier](error-notifier/README.md) | **built, not deployed** — failures from every function to Telegram |
 
 ## Documentation
 
@@ -34,6 +35,7 @@ deterministic to read.
 | [auth-dhan-broker](auth-dhan-broker/README.md) | Token refresh flow, why there is no renew path, IAM, measured API findings |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | The measured Dhan API facts, why `expected_move` comes from VIX, why the score is not a forecast |
 | [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
+| [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 
@@ -62,6 +64,10 @@ aws-algo-claude/
 │   ├── indicators.py sentiment.py  SMA/RSI/ATR; regime, score, the read
 │   ├── notify.py                 Telegram
 │   ├── schema.sql                algo.daily_market_sentiment
+│   └── README.md
+├── error-notifier/               Lambda: failures from every function to Telegram
+│   ├── handler.py                decode, loop guard, suppression, formatting
+│   ├── config.py notify.py       tunables; Telegram
 │   └── README.md
 ├── intraday-data-loader/         Lambda: 5/15/60-min candles through the session
 │   ├── handler.py                entry point, schedule rule, resume, alignment guard
@@ -94,6 +100,10 @@ Two planes on different clocks, deliberately uncoupled:
 - **Every 5 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
   for NIFTY and the current-month future. 68 invocations a trading day.
+- **On failure, and only on failure** — `error-notifier` picks errors out of
+  every function's CloudWatch log group and pushes them to Telegram. It catches
+  timeouts and import errors too, which no `try/except` inside a function can
+  see.
 
 **Nothing sequences these.** An earlier design had a Step Functions state
 machine running History → Regime → Strategy; it was never built. Each component

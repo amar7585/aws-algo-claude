@@ -62,7 +62,7 @@ now covers three parameters:
 | Parameter | Written by | Read by |
 |---|---|---|
 | `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader` |
-| `/algo/telegram/brief` | by hand | `daily-market-sentiment` |
+| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier` |
 | `/algo/neon/connection` | by hand | every function that touches Neon |
 
 The last one replaced a `NEON_CONNECTION_STRING` environment variable

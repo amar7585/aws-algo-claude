@@ -12,6 +12,7 @@
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
 | `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
+| `error-notifier` | Lambda function | on failure only | **built, not deployed** | [README](../error-notifier/README.md) |
 | Strategy task | Lambda function | per session | planned | — |
 
 Everything above the divider exists and runs. See
@@ -136,6 +137,35 @@ contract-specific and safe to store per `security_id`.
 and the primary-key upsert corrects it on a later pass. A consumer tells the two
 apart with `candle_ts + interval_seconds <= now`; only the newest bar per table
 is ever partial. Its README carries the reasoning and the measured facts.
+
+### error-notifier
+
+Pushes failures from every other function to Telegram. It computes nothing and
+stores nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 3 modules |
+| Layers | **none** — stdlib plus the runtime's boto3 |
+| Trigger | CloudWatch Logs subscription filters on the four other log groups |
+| Secrets | `/algo/telegram/brief` |
+
+**Why a log subscription rather than a `try/except` in each function.** A
+timeout kills the process before any `except` runs, and an import error fires
+before the handler module loads — the two failures most likely to go unnoticed.
+Both still reach the log. It also touches none of the existing functions.
+
+**Why not a CloudWatch alarm.** An alarm can only say `Errors >= 1`; the log
+event carries the exception, so the message names the instrument, the interval
+and the HTTP status.
+
+Its own log group must never be subscribed to it — that is a billing loop. The
+handler refuses payloads from its own log group so the mistake is inert rather
+than expensive.
+
+Deliberately no `neon-access` layer: that package imports pg8000, and this
+function never touches the database.
 
 ## Planned
 

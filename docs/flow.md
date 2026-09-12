@@ -210,6 +210,40 @@ index candles are already committed rather than lost alongside it.
 There is no holiday gate, for the same reason as the daily read: on a holiday
 the fetch returns nothing new and nothing is written.
 
+## How a failure reaches you
+
+Every row in the table below ends in a raised exception, which is the point:
+raising is what makes Lambda record an error and write a traceback to the log.
+A function returning a `{"statusCode": 500}` shape would count as a **success**
+— no error metric, no log line worth matching, nothing to alert on. The "fail
+loudly" rule is what makes the alerting below possible at all.
+
+```mermaid
+flowchart LR
+    F1["auth-dhan-broker"] --> LG1[/"log group"/]
+    F2["daily-market-sentiment"] --> LG2[/"log group"/]
+    F3["instrument-master-loader"] --> LG3[/"log group"/]
+    F4["intraday-data-loader"] --> LG4[/"log group"/]
+
+    LG1 & LG2 & LG3 & LG4 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    EN --> TG(["Telegram"])
+    EN -.->|"never subscribe<br/>its own log group"| EN
+
+    style TG fill:#14532d,color:#fff
+```
+
+A log subscription rather than a `try/except` inside each function, because a
+**timeout** kills the process before any `except` runs and an **import error**
+fires before the handler module loads — the two failures least likely to be
+noticed, and the two a catch block can never see. Both still reach the log.
+
+`error-notifier`'s own log group is deliberately not subscribed: it would log,
+trigger itself, and loop. The handler refuses payloads from its own log group so
+the mistake is inert rather than expensive.
+
+**Two gaps remain.** Nothing watches the notifier itself, and nothing detects
+*silence* — a schedule that stops firing raises no error because nothing runs.
+
 ## Failure handling
 
 | Failure | Detected by | Result |
