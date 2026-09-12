@@ -33,6 +33,7 @@ Modules:
     chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
     sentiment.py  session stats and the buildup label
     db.py         Neon access, the baseline read, the two-table write
+    dispatch.py   handing the finished snapshot to strategy-orchestrator
 
 Epoch/IST handling, the Neon connection and the shared connection-string read
 come from the neon-access layer.
@@ -77,6 +78,7 @@ from db import (
     write_snapshot,
 )
 from dhan import DhanClient, require_oi, session_candles, to_candles
+from dispatch import dispatch_snapshot
 from params import read_client_id, read_token_record
 from sentiment import buildup, last_closed, pct_change, session_stats
 
@@ -340,6 +342,13 @@ def lambda_handler(event, context):
         ]
 
         legs_written = write_snapshot(conn, row, legs)
+
+        # The row exists now, so the strategies can be handed it. Written
+        # first and dispatched second on purpose: a failed invoke raises with
+        # the row already committed, and the upsert makes a retry rewrite the
+        # identical row rather than duplicate it.
+        dispatched = dispatch_snapshot(row, index)
+
         elapsed = time.monotonic() - started
         logger.info(
             "done in %.1fs: snapshot %s, %d legs, buildup %s",
@@ -359,6 +368,7 @@ def lambda_handler(event, context):
             "near_straddle": near["straddle"],
             "near_pcr_oi": near["pcr_oi"],
             "legs_written": legs_written,
+            "dispatched_to": dispatched,
             "elapsed_seconds": round(elapsed, 2),
         }
     finally:

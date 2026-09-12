@@ -103,6 +103,24 @@ AGGREGATE_STRIKES_PER_SIDE = int(os.environ.get("AGGREGATE_STRIKES_PER_SIDE", "2
 RAW_STRIKES_PER_SIDE = int(os.environ.get("RAW_STRIKES_PER_SIDE", "2"))
 
 # --------------------------------------------------------------------------
+# The strategy chain
+#
+# Once the row is written this function invokes strategy-orchestrator with it,
+# because the orchestrator's input IS this snapshot and the completion of the
+# write is the only honest trigger for it - see dispatch.py.
+#
+# UNSET MEANS OFF, and that is the point. With no name configured nothing is
+# dispatched and a log line says so, which lets this ship with no behavioural
+# change: the chain is switched on by setting this one variable after the
+# orchestrator exists and this function has proved itself on a live session.
+#
+# Setting it also needs one IAM change - this function's execution role must
+# allow lambda:InvokeFunction on the orchestrator's ARN, and NOT on a wildcard.
+# --------------------------------------------------------------------------
+ORCHESTRATOR_FUNCTION_NAME = os.environ.get("ORCHESTRATOR_FUNCTION_NAME", "")
+ORCHESTRATOR_INVOCATION_TYPE = os.environ.get("ORCHESTRATOR_INVOCATION_TYPE", "Event")
+
+# --------------------------------------------------------------------------
 # Tunables
 # --------------------------------------------------------------------------
 # The move below which the buildup label treats a change as no change, in

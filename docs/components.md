@@ -14,7 +14,8 @@
 | `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
 | `intraday-market-sentiment` | Lambda function | every 15 min, 09:35–15:35 | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
-| Strategy task | Lambda function | per session | planned | — |
+| `strategy-orchestrator` | Lambda function | on each snapshot, 25×/day | **built** | [README](../strategy-orchestrator/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | when the regime is RANGE | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -25,8 +26,17 @@ alarm rather than fail a session.
 earlier design recorded both; what got built instead is `daily-market-sentiment`
 doing the daily fetch and the daily read in one function, on one schedule, and
 `intraday-data-loader` filling the three intraday candle tables on another, and
-`intraday-market-sentiment` writing the 15-minute read on a third. The
-remaining planned piece is the strategy task.
+`intraday-market-sentiment` writing the 15-minute read on a third.
+
+**The strategy plane is the one exception to "everything on its own cron", and
+deliberately so.** `strategy-orchestrator` has no schedule: its input *is*
+`intraday-market-sentiment`'s snapshot, so that function invokes it
+asynchronously once the row is written, and it in turn invokes the strategies
+valid for the regime it classifies. A schedule there would have to guess how
+long the snapshot takes, read the row back, and decide what to do when it is
+not there yet. Failure domains still stay apart — every invoke is `Event`, so
+no function can be failed by something downstream of it, and each has its own
+log group with `error-notifier` watching.
 
 ## Built
 
@@ -209,13 +219,85 @@ Its README carries the measured facts: the chain is at the flat
 as `open_interest` rather than `oi`, and IV and the greeks arrive as `0` when
 Dhan did not compute them — stored as `NULL`, because `0` poisons any skew.
 
+### strategy-orchestrator
+
+Decides which playbooks are valid for the market as it stands, and invokes
+them. It evaluates no playbook, emits no signal and writes nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 7 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Trigger | **asynchronous invoke from `intraday-market-sentiment`** - no schedule |
+| Writes | **nothing** |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` |
+
+**It reads the loader's candle tables, which is a departure.**
+`intraday-market-sentiment` shares no tables with `intraday-data-loader` so a
+stall cannot feed it stale inputs; that reason does not transfer here, because a
+snapshot row is never revisited while this function persists nothing - a stale
+SMA costs one routing decision that the next run corrects. A genuinely stalled
+loader raises, with one bar of tolerance for the race between the loader's write
+and this function's read, which land in the same minute.
+
+It still calls Dhan once, for the live price: `snapshot_ts` is the last *closed*
+5-minute bar and so is up to five minutes old by construction, and the routing
+question is what price is doing now.
+
+The classification is a port of `build_intraday_sentiment`, **not** of
+`detect_market_regime()` - that is the daily path and returns a third value,
+`TRANSITION`, which the intraday path never produces. Its one departure from
+legacy is to **raise** on a history too short for `sma200` rather than default
+the missing SMA to `0.0`, which silently caps the score at ±2.
+
+Full reasoning, the measured payload size, the registry and the IAM shape are in
+its [README](../strategy-orchestrator/README.md).
+
+### strategy-range-liquidity-sweep
+
+The 15-minute opening-range liquidity sweep: price runs a pool of resting stops,
+fails to hold, closes back inside, and rotates back across the range.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 7 modules |
+| Layers | **none** - stdlib only |
+| Trigger | asynchronous invoke from `strategy-orchestrator` |
+| Reads / writes | **nothing** - its log is its only output |
+| Secrets | **none** |
+
+The whole context arrives in the payload, so it opens no connection and makes no
+API call - hence no layers, and IST defined locally rather than imported from
+`neon-access`, which would pull in `pg8000` for a function that never connects.
+`error-notifier` makes the same trade for the same reason.
+
+**It has no memory and needs none.** The playbook caps attempts at one re-entry
+per side per session, which looks like cross-invocation state; a candidate is a
+deterministic function of the bars, so re-deriving the day's whole sweep sequence
+each run reproduces the attempt count exactly and a re-run cannot double-count.
+
+Its README records three places where the playbook's explicit rules and its
+worked examples disagree - the sweep-band floor, the stop buffer, and the
+bias-adjusted target. The third was a real bug: targeting the *nearest* cluster
+member instead of the cluster's far edge would have rejected one of the
+playbook's own illustrated setups on risk-reward.
+
+Verified against the real 2026-09-11 session, which it correctly stands down:
+the day spent 1.27× its true ATR14 against a 0.78× limit.
+
 ## Planned
 
-### Strategy task
+Nothing is currently planned. The obvious next pieces, neither agreed nor
+designed:
 
-Evaluates the playbooks valid for the classified regime and emits signals. It
-never runs unconditionally: a playbook fired in the wrong regime is the main
-way this loses money, so the regime gate comes first.
+- **Backtesting** the playbooks under this architecture. `trading-algo/backtest/`
+  is its own runner, position tracker and report builder, and folding it in
+  would have tripled the scope of the round that built the two functions above.
+- **More playbooks.** The registry maps `TREND` to an empty list today, so a
+  trending day routes to nothing - correctly, since every playbook built so far
+  is a range playbook.
 
 ## Shared conventions
 
