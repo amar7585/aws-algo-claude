@@ -13,6 +13,7 @@
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
 | `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
+| `intraday-market-sentiment` | Lambda function | every 15 min, 09:35–15:35 | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
 | Strategy task | Lambda function | per session | planned | — |
 
 Everything above the divider exists and runs. See
@@ -23,7 +24,8 @@ alarm rather than fail a session.
 **There is no Step Functions state machine and no History/Regime split.** An
 earlier design recorded both; what got built instead is `daily-market-sentiment`
 doing the daily fetch and the daily read in one function, on one schedule, and
-`intraday-data-loader` filling the three intraday candle tables on another. The
+`intraday-data-loader` filling the three intraday candle tables on another, and
+`intraday-market-sentiment` writing the 15-minute read on a third. The
 remaining planned piece is the strategy task.
 
 ## Built
@@ -148,7 +150,7 @@ stores nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | **none** — stdlib plus the runtime's boto3 |
-| Trigger | CloudWatch Logs subscription filters on the four other log groups |
+| Trigger | CloudWatch Logs subscription filters on every other log group |
 | Secrets | `/algo/telegram/brief` |
 
 **Why a log subscription rather than a `try/except` in each function.** A
@@ -166,6 +168,46 @@ than expensive.
 
 Deliberately no `neon-access` layer: that package imports pg8000, and this
 function never touches the database.
+
+### intraday-market-sentiment
+
+Writes one row describing the market every fifteen minutes — futures basis and
+open-interest buildup, INDIA VIX, and the option-chain read (straddle, PCR, OI
+walls, max pain, IV skew) for the nearest **and** monthly expiries at once —
+plus the ten raw option legs behind it.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 8 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Schedule | 09:35–15:35 every 15 min, `Asia/Kolkata` — three rules, 25 invocations a day |
+| Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
+
+**It shares no tables with `intraday-data-loader`.** Everything comes from the
+Dhan API — its own candles, its own chains — so a stalled loader cannot feed it
+stale inputs. The single exception is **its own previous row**, read back to
+provide the baseline for every `*_change_pct`: Dhan serves only a live option
+chain and has no historical-chain endpoint, so an intraday OI delta cannot be
+had any other way.
+
+**Runs fire five minutes past each 15-minute boundary** — 09:35, 09:50, 10:05 —
+so a 5-minute bucket has just closed and the bar the snapshot describes is
+final. Nothing it writes is ever partial, which is the opposite of the loader's
+deliberate choice: a snapshot row is never revisited, so a partial bar here
+would be wrong forever. `snapshot_ts` is that closed bar, not the run clock,
+which also makes a re-run idempotent.
+
+Two strike widths, not interchangeable: aggregates over ATM ±20, raw legs
+stored for ATM ±2 (10 rows a snapshot). Both expiries sit on one row as
+`near_*` / `mth_*` column pairs, and the monthly is the first monthly
+*strictly after* the nearest so the two can never name the same contract.
+
+Its README carries the measured facts: the chain is at the flat
+`/v2/optionchain` while `expirylist` is nested, futures open interest returns
+as `open_interest` rather than `oi`, and IV and the greeks arrive as `0` when
+Dhan did not compute them — stored as `NULL`, because `0` poisons any skew.
 
 ## Planned
 

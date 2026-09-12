@@ -5,7 +5,7 @@ system to Telegram.
 
 | | |
 |---|---|
-| Trigger | CloudWatch Logs subscription filters on the four other log groups |
+| Trigger | CloudWatch Logs subscription filters on every other log group |
 | Invocations | **only on failure** — zero on a healthy day |
 | Reads | `/algo/telegram/brief` |
 | Writes | nothing |

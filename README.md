@@ -18,6 +18,7 @@ deterministic to read.
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 5 min 10:00–15:35 |
 | [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
+| [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — basis/OI buildup, VIX, two option chains, every 15 min. First live session 2026-09-14 |
 
 ## Documentation
 
@@ -36,6 +37,7 @@ deterministic to read.
 | [daily-market-sentiment](daily-market-sentiment/README.md) | The measured Dhan API facts, why `expected_move` comes from VIX, why the score is not a forecast |
 | [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
 | [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
+| [intraday-market-sentiment](intraday-market-sentiment/README.md) | Why the five-minute offset, the one thing it reads back from Postgres, the two strike widths, the `open_interest` naming trap |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 
@@ -75,6 +77,15 @@ aws-algo-claude/
 │   ├── dhan.py db.py             charts + expiry client; the candle upsert
 │   ├── requirements.txt
 │   └── README.md
+├── intraday-market-sentiment/    Lambda: the 15-minute market read
+│   ├── handler.py                entry point, alignment, the one baseline read
+│   ├── config.py params.py       tunables; the Dhan token and client id
+│   ├── dhan.py                   charts + expiry list + option chain
+│   ├── expiry.py chain.py        nearest/monthly selection; ATM, PCR, max pain
+│   ├── sentiment.py              session stats, the buildup label
+│   ├── db.py schema.sql          the two-table write; the schema
+│   ├── requirements.txt
+│   └── README.md
 └── layers/
     ├── neon-db-driver/           Lambda layer: pure-Python Postgres driver
     │   ├── requirements.txt
@@ -100,6 +111,11 @@ Two planes on different clocks, deliberately uncoupled:
 - **Every 5 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
   for NIFTY and the current-month future. 68 invocations a trading day.
+- **Every 15 minutes from 09:35 to 15:35** — `intraday-market-sentiment` writes
+  one row describing the market: futures basis and OI buildup, INDIA VIX, and
+  the option-chain read for the nearest and monthly expiries at once. It shares
+  no tables with the loader — it fetches its own candles and chains, so a
+  stalled loader cannot feed it stale inputs. 25 invocations a trading day.
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

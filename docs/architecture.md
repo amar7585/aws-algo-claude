@@ -39,6 +39,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
 | Daily candles + daily read | daily, weekdays 09:50 | EventBridge Scheduler cron | **built** |
 | Intraday candles | every 5 min, 10:00–15:35 | EventBridge Scheduler cron | **built** |
+| Intraday market read | every 15 min, 09:35–15:35 | EventBridge Scheduler cron | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -61,7 +62,7 @@ now covers three parameters:
 
 | Parameter | Written by | Read by |
 |---|---|---|
-| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader` |
+| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader`, `intraday-market-sentiment` |
 | `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier` |
 | `/algo/neon/connection` | by hand | every function that touches Neon |
 
@@ -102,17 +103,26 @@ the cost of a wake-up on the first connection of each run.
 | `candle_5min` | same shape as `candle_daily` | 8,775 | intraday-data-loader |
 | `candle_15min` | same | 2,925 | intraday-data-loader |
 | `candle_1hr` | same | 819 | intraday-data-loader |
+| `intraday_market_sentiment` | 64 columns — basis, futures OI buildup, VIX, and straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs | 0 | intraday-market-sentiment |
+| `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 0 | intraday-market-sentiment |
 
-Row counts as of 2026-09-11. `candle_daily` holds 204 NIFTY and 204 INDIA VIX
-candles from the cold start. The intraday tables hold NIFTY and
-NIFTY-SEP2026-FUT over a 90-day window — exactly 75 five-minute, 25
+Row counts as of 2026-09-11; the two `intraday-market-sentiment` tables sit at
+0 because the function has not yet run a live session - its schema is applied
+and its schedules are live from 2026-09-14. `candle_daily` holds 204 NIFTY
+and 204 INDIA VIX candles from the cold start. The intraday candle tables hold
+NIFTY and NIFTY-SEP2026-FUT over a 90-day window — exactly 75 five-minute, 25
 fifteen-minute and 7 hourly bars per session, with no misaligned rows.
 
-The intraday tables hold **one partial bar each while the session is open** —
-Dhan returns the in-progress bucket and the loader stores it, correcting it by
-primary key on a later pass. A reader tells a closed bar from a forming one with
-`candle_ts + interval_seconds <= now`; everything older than the newest bar is
-final, so replay is unaffected.
+The intraday **candle** tables hold **one partial bar each while the session is
+open** — Dhan returns the in-progress bucket and the loader stores it,
+correcting it by primary key on a later pass. A reader tells a closed bar from a
+forming one with `candle_ts + interval_seconds <= now`; everything older than
+the newest bar is final, so replay is unaffected.
+
+The two **sentiment** tables are the deliberate opposite: a snapshot row is
+never revisited, so `intraday-market-sentiment` reads only closed bars and
+nothing it writes is ever partial. Its `snapshot_ts` is the closed bar itself
+rather than the run clock, which also makes a repeated invocation idempotent.
 
 **`security_id` alone is not an identity.** 19 security_ids carry more than one
 `instrument_type` — `13` is both NIFTY (`IDX_I`/`INDEX`) and ABB
