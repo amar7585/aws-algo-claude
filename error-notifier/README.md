@@ -152,6 +152,22 @@ as `context` to exercise the loop guard.
 
 IAM needs `ssm:GetParameter` + `kms:Decrypt` for `/algo/telegram/brief`.
 
+**Creating the function in the console does not upload your zip.** It creates a
+default `lambda_function.py` instead, and the upload is a separate step on the
+Code tab. The tell is `CodeSize: 299` — the starter's size — against 4,464 for
+this package, and the symptom is `Unable to import module 'handler': No module
+named 'handler'` even though the handler string is correct. Measured 2026-09-12.
+
+**Verified end to end** on 2026-09-12 by invoking `intraday-data-loader` with
+`{"now": "not-a-real-date"}` — that raises on the handler's first statement, so
+no Dhan call and no database write, but produces a genuine log error. The
+message reached Telegram in under 25 seconds:
+
+```
+[INFO] alert delivered to chat ...
+[INFO] alerted on 1 event(s) from /aws/lambda/intraday-data-loader, 0 suppressed
+```
+
 Then, **per log group** — `auth-dhan-broker`, `daily-market-sentiment`,
 `instrument-master-loader`, `intraday-data-loader`, and **never
 `error-notifier` itself**:

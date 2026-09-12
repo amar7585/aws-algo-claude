@@ -17,7 +17,7 @@ deterministic to read.
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 5 min 10:00–15:35 |
-| [error-notifier](error-notifier/README.md) | **built, not deployed** — failures from every function to Telegram |
+| [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
 
 ## Documentation
 

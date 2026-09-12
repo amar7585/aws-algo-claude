@@ -12,7 +12,7 @@
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
 | `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
-| `error-notifier` | Lambda function | on failure only | **built, not deployed** | [README](../error-notifier/README.md) |
+| `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
 | Strategy task | Lambda function | per session | planned | — |
 
 Everything above the divider exists and runs. See
