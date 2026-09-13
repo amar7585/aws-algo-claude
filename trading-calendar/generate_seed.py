@@ -30,13 +30,11 @@ WHAT THIS DOES NOT GIVE YOU, and must be hand-checked each year:
   * Holiday NAMES. XBOM carries its holidays as bare date lists, so every row
     is emitted with description NULL. Filling them in by guessing which
     festival fell on a movable date is how a seed file starts lying.
-  * MUHURAT. The package models no non-standard session at all: every session
-    2024-2026 is 09:15-15:30, and the Diwali muhurat evenings (2024-11-01,
-    2025-10-21) are marked as NOT sessions. A muhurat day is a trading day
-    with odd hours, which is not what this table describes - it does not
-    belong here.
   * SPECIAL WEEKEND SESSIONS. 2025-02-01 (a Budget Saturday) was a real
     session. Nothing in this system can honour it: every cron is MON-FRI.
+
+Muhurat trading is deliberately out of scope - this system does not trade the
+Diwali evening session - so nothing here needs to describe it.
   * ANYTHING PAST THE PACKAGE BOUND. See the check below.
 """
 

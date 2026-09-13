@@ -94,11 +94,11 @@ do this.
   named because they came from the circular instead. Never fill a name in by
   guessing which festival fell on a movable date — that is how a seed file
   starts lying.
-- **Muhurat trading.** The package models no non-standard session at all —
-  every session 2024-2026 is 09:15–15:30, and the Diwali muhurat evenings
-  (2024-11-01, 2025-10-21) are marked as *not sessions*. A muhurat day is a
-  trading day with unusual hours, which is not what a holiday table describes.
-  It needs its own mechanism and is not built.
+- **Muhurat trading — not supported, by decision.** This system does not trade
+  the Diwali evening session. No mechanism is needed to exclude it: a muhurat
+  evening falls either on a date stored here as a closure or at a weekend, so
+  the gate or the `MON-FRI` cron stops it either way. Nothing runs, and that is
+  the intent — it is not a gap to close.
 - **Special weekend sessions.** 2025-02-01, a Budget Saturday, was a real
   session. Nothing here can honour it: every cron is `MON-FRI`.
 
