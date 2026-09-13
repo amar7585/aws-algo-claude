@@ -53,6 +53,23 @@ Order matters: the token is stored *before* the schedules are enabled. The other
 way round arms a session against a token that was never refreshed, turning a
 recoverable auth failure into a whole day of failing invocations.
 
+### There is deliberately no calendar check inside the session functions
+
+Do not add one. It would be worse than nothing.
+
+The schedule gate is not the only thing stopping a holiday run — **the missing
+token is**. No token is minted on a holiday, and the previous trading day's
+token expires at 08:00 that same morning (lifetime is exactly 86,400 s from
+08:00, measured), so it is already dead by the time any session function would
+run. `read_token_record()` raises on an expired token, and `error-notifier`
+reports it, with repeats suppressed for 1800 s so a stuck schedule produces a
+handful of alerts rather than one per invocation.
+
+That makes a failed toggle **loud**. A calendar check inside the handlers would
+make it silent instead: the schedule would sit wrongly enabled, the handler
+would skip politely, and nothing would ever tell you the gate had stopped
+working. The second line of defence would hide the failure of the first.
+
 ### `UpdateSchedule` replaces, it does not patch
 
 EventBridge **Scheduler** has no `EnableSchedule`/`DisableSchedule` pair — that
