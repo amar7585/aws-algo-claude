@@ -117,7 +117,9 @@ def session_vwap(candles, precision=2):
     volume = sum(c["volume"] for c in candles)
     if not volume:
         return None
-    weighted = sum((c["high"] + c["low"] + c["close"]) / 3 * c["volume"] for c in candles)
+    weighted = sum(
+        (c["high"] + c["low"] + c["close"]) / 3 * c["volume"] for c in candles
+    )
     return round(weighted / volume, precision)
 
 

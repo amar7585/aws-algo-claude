@@ -8,7 +8,7 @@ column types, so never resolve the connection string from anywhere but
 /algo/neon/connection.
 
 THIS FUNCTION WRITES NOTHING. There is no INSERT, no UPDATE and no upsert
-here, and that is the design rather than an omission: the orchestrator's
+here, and that is the design rather than an omission: the manager's
 output is the invocation it makes, and the regime it decided on travels in
 that payload for the strategy to record. Nothing it computes is persisted by
 it, so nothing it computes can go stale in a table.

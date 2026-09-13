@@ -7,9 +7,9 @@ setup loses. So a failed check stops the scan. It does not become a
 lower-confidence candidate, it does not get averaged with the checks that
 passed, and nothing below reports a near miss as a pass.
 
-strategy-orchestrator has already applied the coarse gate - this function is
+strategy-manager has already applied the coarse gate - this function is
 only invoked when the 15-minute regime is RANGE. Everything here is the part
-the orchestrator cannot know: what THIS playbook needs of the VIX, of how
+the manager cannot know: what THIS playbook needs of the VIX, of how
 much range the day has already spent, of the opening range's width, and of the
 clock. Re-checking the regime as well is deliberate; a strategy that trusts an
 upstream gate it cannot see will fire on a bad day the moment that gate moves.

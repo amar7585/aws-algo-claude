@@ -7,7 +7,7 @@ than laws - so each one is an environment override, and the ones that are NOT
 from the playbook are marked as such.
 
 NO LAYERS AND NO DATABASE. This function reads nothing and writes nothing: the
-whole context arrives in the invocation payload from strategy-orchestrator,
+whole context arrives in the invocation payload from strategy-manager,
 and what it finds goes to its own log. That is why IST lives here rather than
 coming from the neon-access layer - importing that layer would pull in pg8000
 for a function that never opens a connection, the same reason error-notifier
@@ -20,7 +20,7 @@ import os
 # --------------------------------------------------------------------------
 # The payload contract
 #
-# The version of strategy-orchestrator's context this function is written
+# The version of strategy-manager's context this function is written
 # against. It ASSERTS this rather than coping with a mismatch: a context that
 # has moved on would have this function reading a key that is no longer there,
 # getting None, and gating on it. A gate that silently passes because its
@@ -55,9 +55,9 @@ FIRST_HOUR_END = datetime.time(10, 15)
 # --------------------------------------------------------------------------
 # The regime gate
 #
-# The coarse gate already happened: strategy-orchestrator only invokes this
+# The coarse gate already happened: strategy-manager only invokes this
 # function when the 15-minute regime is RANGE. This is the fine gate, and it
-# exists because the orchestrator's registry cannot know what this playbook
+# exists because the manager's registry cannot know what this playbook
 # needs - and because a strategy that trusts an upstream gate it cannot see
 # fires on a bad day the moment that gate changes.
 # --------------------------------------------------------------------------
@@ -81,7 +81,7 @@ MAX_VIX_CHANGE_PCT = float(os.environ.get("MAX_VIX_CHANGE_PCT", "5.0"))
 #
 # RE-SCALED, AND THE PLAYBOOK ASKS FOR THIS EXPLICITLY. 0.9 was calibrated
 # against a 10-day mean of high-low, which excludes overnight gaps. The
-# orchestrator computes Wilder TRUE ATR14, which includes them and is
+# manager computes Wilder TRUE ATR14, which includes them and is
 # therefore a LARGER number for the same market - so the same 0.9 would be a
 # looser gate than intended. The playbook states the equivalent as "roughly
 # 0.78" and instructs confirming which definition atr14 holds before trusting

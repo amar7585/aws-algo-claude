@@ -16,6 +16,19 @@ carried into log output.
 from config import MIN_RISK_REWARD
 
 
+# The playbook's own wording for each failure case, so the RE-ENTRY block
+# reads as it does there rather than printing a bare letter.
+_FAILURE_LABELS = {
+    "A": "acceptance beyond the level, the range broke",
+    "B": "extended sweep, no acceptance",
+    "C": "no follow-through, the idea expired",
+}
+
+
+def _failure_label(outcome):
+    return _FAILURE_LABELS.get(outcome, outcome)
+
+
 def _pool_label(event, stacked):
     names = [event["pool"]["name"]] + [pool["name"] for pool in stacked]
     if len(names) == 1:
@@ -84,7 +97,7 @@ def re_entry_block(event, candidate, stacked, first, outcome, cumulative_risk):
         f"First attempt   entry {first['entry']:.2f}, "
         f"stopped {first['stop']:.2f}  (-{first['risk']:.2f} pts)",
         f"Failure type    Case {outcome['outcome']} - "
-        f"{'extended sweep, no acceptance' if outcome['outcome'] == 'B' else outcome['outcome']}",
+        f"{_failure_label(outcome['outcome'])}",
         f"                (max closes beyond level: "
         f"{outcome.get('acceptance_closes', 0)}, penetration "
         f"{event['penetration_pct']:.3f}% - inside band)",

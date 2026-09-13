@@ -6,7 +6,7 @@ liquidity sweep - price runs a pool of resting stops, fails to hold beyond it,
 closes back inside, and rotates back across the range - and reports the
 candidates with entry, stop, targets and risk-reward.
 
-INVOKED BY strategy-orchestrator, NOT BY A SCHEDULE. The orchestrator classifies
+INVOKED BY strategy-manager, NOT BY A SCHEDULE. The manager classifies
 the 15-minute regime and only invokes this function when that regime is RANGE,
 handing over the whole context in the payload: the snapshot, the daily read,
 the classification, the candle history and a live price. This function opens no
@@ -15,7 +15,7 @@ no layers at all.
 
 WHAT IT PRODUCES. Log output, and nothing else. It writes no table, emits no
 signal, places no order and sizes nothing - the playbook rules the last two out
-explicitly, and the orchestrator's regime decision is recorded here, in the
+explicitly, and the manager's regime decision is recorded here, in the
 consumer, rather than by the producer. Reading this function's log is how a
 session's routing and its candidates are recovered.
 
@@ -53,7 +53,7 @@ logger.setLevel(logging.INFO)
 
 def read_context(event):
     """
-    Validate the orchestrator's payload and pull out what this playbook needs.
+    Validate the manager's payload and pull out what this playbook needs.
 
     THE VERSION IS ASSERTED, NOT COPED WITH. A context that has moved on would
     have this function reading a key that is no longer there, getting None, and
@@ -62,14 +62,14 @@ def read_context(event):
     """
     if not isinstance(event, dict):
         raise RuntimeError(
-            f"expected strategy-orchestrator's context object, got "
+            f"expected strategy-manager's context object, got "
             f"{type(event).__name__}"
         )
     version = event.get("context_version")
     if version != EXPECTED_CONTEXT_VERSION:
         raise RuntimeError(
             f"context_version {version!r} but this function is written against "
-            f"v{EXPECTED_CONTEXT_VERSION} - strategy-orchestrator's payload has "
+            f"v{EXPECTED_CONTEXT_VERSION} - strategy-manager's payload has "
             f"changed and the gate inputs cannot be trusted. Keys present: "
             f"{sorted(event)}"
         )
@@ -217,7 +217,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     if not bars:
         raise RuntimeError(
             f"none of the {len(ctx['candles']['bars'])} bars supplied fall in "
-            f"the {session_day} session - the orchestrator and this function "
+            f"the {session_day} session - the manager and this function "
             f"disagree about which day is being scanned"
         )
 

@@ -41,7 +41,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Intraday candles | every 5 min, 10:00–15:35 | EventBridge Scheduler cron | **built** |
 | Intraday market read | every 15 min, 09:35–15:35 | EventBridge Scheduler cron | **built** |
 | Strategy routing | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
-| Range sweep playbook | when the regime is RANGE | invoke from `strategy-orchestrator` | **built** |
+| Range sweep playbook | when the regime is RANGE | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -51,7 +51,7 @@ a session — and it removed the plane where secrets would have travelled as ste
 output.
 
 **The strategy plane is chained rather than scheduled, and it is the one
-exception.** `strategy-orchestrator`'s input *is* the intraday snapshot, so
+exception.** `strategy-manager`'s input *is* the intraday snapshot, so
 `intraday-market-sentiment` invokes it once the row is written, and it invokes
 the strategies valid for the regime it classifies. A cron there would have to
 guess how long the snapshot takes, read the row back out of Postgres, and decide
@@ -122,10 +122,10 @@ the cost of a wake-up on the first connection of each run.
 | `intraday_market_sentiment` | 64 columns — basis, futures OI buildup, VIX, and straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs | 0 | intraday-market-sentiment |
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 0 | intraday-market-sentiment |
 
-**The strategy plane added no tables.** `strategy-orchestrator` reads
+**The strategy plane added no tables.** `strategy-manager` reads
 `candle_15min`, `candle_5min`, `candle_daily` and `daily_market_sentiment` and
 writes nothing; `strategy-range-liquidity-sweep` reads nothing at all. The
-regime the orchestrator classifies travels in the invocation payload and each
+regime the manager classifies travels in the invocation payload and each
 strategy records it in its own log alongside what it found, so the decision is
 recoverable from the consumer rather than duplicated by the producer. Nothing
 either function computes can therefore go stale in a table.

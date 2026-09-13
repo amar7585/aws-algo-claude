@@ -1,4 +1,4 @@
-# strategy-orchestrator
+# strategy-manager
 
 ← [Back to root README](../README.md) · [Architecture](../docs/architecture.md) · [Components](../docs/components.md)
 
@@ -19,11 +19,11 @@ them. It evaluates no playbook itself, emits no signal, and writes nothing.
 ## The chain
 
 ```
-intraday-market-sentiment  --(Event: the snapshot it just wrote)-->  strategy-orchestrator
-strategy-orchestrator      --(Event: the context)-->                 strategy-range-liquidity-sweep, ...
+intraday-market-sentiment  --(Event: the snapshot it just wrote)-->  strategy-manager
+strategy-manager      --(Event: the context)-->                 strategy-range-liquidity-sweep, ...
 ```
 
-**There is no cron here, and that is the design.** The orchestrator's input
+**There is no cron here, and that is the design.** The manager's input
 *is* the snapshot, and the snapshot exists only once
 `intraday-market-sentiment` has written it. A schedule on this side would have
 to guess how long that takes, read the row back out of Postgres, and decide
@@ -203,13 +203,13 @@ Subscribe this function's log group to `error-notifier`, and never subscribe
 ## Switching the chain on
 
 `intraday-market-sentiment` gained `dispatch.py` and two settings, and **does
-nothing until `ORCHESTRATOR_FUNCTION_NAME` is set.** That is deliberate: the
+nothing until `STRATEGY_MANAGER_FUNCTION_NAME` is set.** That is deliberate: the
 code ships and deploys with no behavioural change, so the cutover is one
 environment variable rather than a code change at the moment it matters.
 
 The order is: deploy this function → confirm `intraday-market-sentiment` has
 run a clean live session → grant that function `lambda:InvokeFunction` on this
-function's ARN → set `ORCHESTRATOR_FUNCTION_NAME`.
+function's ARN → set `STRATEGY_MANAGER_FUNCTION_NAME`.
 
 ## Configuration
 

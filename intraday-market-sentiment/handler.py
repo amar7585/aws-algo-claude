@@ -33,7 +33,7 @@ Modules:
     chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
     sentiment.py  session stats and the buildup label
     db.py         Neon access, the baseline read, the two-table write
-    dispatch.py   handing the finished snapshot to strategy-orchestrator
+    dispatch.py   handing the finished snapshot to strategy-manager
 
 Epoch/IST handling, the Neon connection and the shared connection-string read
 come from the neon-access layer.

@@ -1,5 +1,5 @@
 """
-Strategy Orchestrator - AWS Lambda function
+Strategy Manager - AWS Lambda function
 
 Decides which playbooks are valid for the market as it stands, and invokes
 them. It evaluates no playbook itself and emits no signal.
@@ -106,7 +106,9 @@ def read_snapshot(event):
     first.
     """
     if not isinstance(event, dict):
-        raise RuntimeError(f"expected a JSON object payload, got {type(event).__name__}")
+        raise RuntimeError(
+            f"expected a JSON object payload, got {type(event).__name__}"
+        )
 
     snapshot = event.get("snapshot")
     if not isinstance(snapshot, dict):

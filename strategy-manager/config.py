@@ -1,5 +1,5 @@
 """
-Configuration for strategy-orchestrator.
+Configuration for strategy-manager.
 
 Only this function's own tunables. Epoch/IST helpers, the SSL context and the
 Neon connection live in the neon-access layer - see neon_access.

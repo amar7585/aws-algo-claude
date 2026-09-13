@@ -19,7 +19,7 @@ deterministic to read.
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 5 min 10:00–15:35 |
 | [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — basis/OI buildup, VIX, two option chains, every 15 min. First live session 2026-09-14 |
-| [strategy-orchestrator](strategy-orchestrator/README.md) | **built** — classifies the intraday regime and invokes the playbooks valid for it |
+| [strategy-manager](strategy-manager/README.md) | **built** — classifies the intraday regime and invokes the playbooks valid for it |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
 
 ## Documentation
@@ -40,7 +40,7 @@ deterministic to read.
 | [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
 | [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | Why the five-minute offset, the one thing it reads back from Postgres, the two strike widths, the `open_interest` naming trap |
-| [strategy-orchestrator](strategy-orchestrator/README.md) | Why it is invoked and not scheduled, why it reads the loader's tables when the sentiment function does not, the payload contract, the registry |
+| [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads the loader's tables when the sentiment function does not, the payload contract, the registry |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory and no layers |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
@@ -90,7 +90,7 @@ aws-algo-claude/
 │   ├── db.py schema.sql          the two-table write; the schema
 │   ├── requirements.txt
 │   └── README.md
-├── strategy-orchestrator/        Lambda: the regime gate and the dispatch
+├── strategy-manager/        Lambda: the regime gate and the dispatch
 │   ├── handler.py                entry point, the freshness assertion
 │   ├── config.py params.py       tunables and the registry; the Dhan token
 │   ├── dhan.py db.py             the live price; the Neon reads - no writes
@@ -137,8 +137,8 @@ Two planes on different clocks, deliberately uncoupled:
   no tables with the loader — it fetches its own candles and chains, so a
   stalled loader cannot feed it stale inputs. 25 invocations a trading day.
 - **On each snapshot** — `intraday-market-sentiment` invokes
-  `strategy-orchestrator` asynchronously with the row it just wrote. The
-  orchestrator classifies the 15-minute regime, shortlists the playbooks valid
+  `strategy-manager` asynchronously with the row it just wrote. The
+  manager classifies the 15-minute regime, shortlists the playbooks valid
   for it, and invokes those — today `strategy-range-liquidity-sweep` on a range
   day, and nothing at all on a trending one. Neither function writes to
   Postgres.
@@ -148,7 +148,7 @@ Two planes on different clocks, deliberately uncoupled:
   see.
 
 **Nothing sequences these, with one deliberate exception.** The strategy plane
-is chained rather than scheduled, because the orchestrator's input *is* the
+is chained rather than scheduled, because the manager's input *is* the
 snapshot — see [architecture.md](docs/architecture.md). Every invoke in that
 chain is asynchronous, so no function can be failed by something downstream of
 it. An earlier design had a Step Functions state

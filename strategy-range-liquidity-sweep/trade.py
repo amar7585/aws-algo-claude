@@ -20,11 +20,16 @@ Neither carries a buffer of any size.
 The rule wins, for the same reason as the sweep band: it is stated with its
 rationale, while the examples are arithmetic that silently omits it. The
 consequence is that this function quotes a wider risk and a lower
-risk-reward than the playbook's examples do for the same two setups - with
-only the fixed 0.03% term, Example 1 grades 1:1.56 rather than 1:2.15 and
-Example 2 grades 1:1.91 rather than 1:2.79. Both still clear the 1.5 floor,
-which is the useful part: applying the rule the playbook states does not
-invalidate the setups it illustrates.
+risk-reward than the playbook's examples do for the same two setups. Measured,
+with only the fixed 0.03% term binding: Example 1 grades 1:1.56 against the
+playbook's 1:2.15, and Example 2 grades 1:1.81 against its 1:2.79. Both still
+clear the 1.5 floor, which is the useful part - applying the rule the playbook
+states does not invalidate the setups it illustrates.
+
+(Example 2's 1:1.81 also reflects _cluster() targeting the cluster's far edge
+at 24,132.13 rather than the playbook's quoted 24,134.45, which sits a little
+beyond every level it names. Against that quoted target the figure would be
+1:1.91.)
 ---------------------------------------------------------------------------
 """
 
@@ -59,7 +64,8 @@ def stop_buffer(bars, upto_index, level):
         mean_range = sum(bar["high"] - bar["low"] for bar in window) / len(window)
     else:
         mean_range = 0.0
-    return round(max(fixed, mean_range * STOP_BUFFER_ATR_FACTOR), 2), round(fixed, 2), round(mean_range, 2)
+    buffer_points = max(fixed, mean_range * STOP_BUFFER_ATR_FACTOR)
+    return round(buffer_points, 2), round(fixed, 2), round(mean_range, 2)
 
 
 def _cluster(entry, short, vwap, orb_mid, sma100, opposite):

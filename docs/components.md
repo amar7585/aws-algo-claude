@@ -14,7 +14,7 @@
 | `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
 | `intraday-market-sentiment` | Lambda function | every 15 min, 09:35–15:35 | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
-| `strategy-orchestrator` | Lambda function | on each snapshot, 25×/day | **built** | [README](../strategy-orchestrator/README.md) |
+| `strategy-manager` | Lambda function | on each snapshot, 25×/day | **built** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | when the regime is RANGE | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
@@ -29,7 +29,7 @@ doing the daily fetch and the daily read in one function, on one schedule, and
 `intraday-market-sentiment` writing the 15-minute read on a third.
 
 **The strategy plane is the one exception to "everything on its own cron", and
-deliberately so.** `strategy-orchestrator` has no schedule: its input *is*
+deliberately so.** `strategy-manager` has no schedule: its input *is*
 `intraday-market-sentiment`'s snapshot, so that function invokes it
 asynchronously once the row is written, and it in turn invokes the strategies
 valid for the regime it classifies. A schedule there would have to guess how
@@ -219,7 +219,7 @@ Its README carries the measured facts: the chain is at the flat
 as `open_interest` rather than `oi`, and IV and the greeks arrive as `0` when
 Dhan did not compute them — stored as `NULL`, because `0` poisons any skew.
 
-### strategy-orchestrator
+### strategy-manager
 
 Decides which playbooks are valid for the market as it stands, and invokes
 them. It evaluates no playbook, emits no signal and writes nothing.
@@ -252,7 +252,7 @@ legacy is to **raise** on a history too short for `sma200` rather than default
 the missing SMA to `0.0`, which silently caps the score at ±2.
 
 Full reasoning, the measured payload size, the registry and the IAM shape are in
-its [README](../strategy-orchestrator/README.md).
+its [README](../strategy-manager/README.md).
 
 ### strategy-range-liquidity-sweep
 
@@ -264,7 +264,7 @@ fails to hold, closes back inside, and rotates back across the range.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 7 modules |
 | Layers | **none** - stdlib only |
-| Trigger | asynchronous invoke from `strategy-orchestrator` |
+| Trigger | asynchronous invoke from `strategy-manager` |
 | Reads / writes | **nothing** - its log is its only output |
 | Secrets | **none** |
 

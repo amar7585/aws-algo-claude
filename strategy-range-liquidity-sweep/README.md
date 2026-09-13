@@ -14,7 +14,7 @@ targets and risk-reward.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 7 modules |
 | Layers | **none** — stdlib only |
-| Trigger | asynchronous invoke from `strategy-orchestrator` |
+| Trigger | asynchronous invoke from `strategy-manager` |
 | Reads | **nothing** — no database, no API |
 | Writes | **nothing** — its log is its only output |
 | Secrets | **none** |
@@ -30,7 +30,7 @@ for a function that never opens a connection. `error-notifier` does the same,
 for the same reason.
 
 The consequence worth knowing: **reading this function's log is how a session's
-candidates are recovered.** There is no `signal` table. The orchestrator's
+candidates are recovered.** There is no `signal` table. The manager's
 regime decision is recorded here, in the consumer, rather than duplicated by
 the producer.
 
@@ -46,9 +46,9 @@ reaches the same answer instead of double-counting an attempt.
 
 ## The gate
 
-The coarse gate already happened — `strategy-orchestrator` invokes this
+The coarse gate already happened — `strategy-manager` invokes this
 function only when the 15-minute regime is `RANGE`. Everything in `gate.py` is
-the part the orchestrator cannot know.
+the part the manager cannot know.
 
 | Check | Threshold | Source |
 |---|---|---|
@@ -78,7 +78,7 @@ re-scaling: 0.9 was calibrated against a 10-day mean of high-low, and against
 gap-inclusive true ATR the equivalent is roughly 0.78. It instructs confirming
 which definition `atr14` holds before trusting the number.
 
-It holds **Wilder true ATR**, computed by `strategy-orchestrator` from
+It holds **Wilder true ATR**, computed by `strategy-manager` from
 `candle_daily`. The premise is measured, not assumed — on the 40 real daily
 bars before 2026-09-11:
 
@@ -258,7 +258,7 @@ playbook are marked.
 
 | Variable | Default | Source |
 |---|---|---|
-| `EXPECTED_CONTEXT_VERSION` | 1 | asserted against the orchestrator |
+| `EXPECTED_CONTEXT_VERSION` | 1 | asserted against the manager |
 | `MIN_PENETRATION_PCT` | 0.04 | playbook — but see disagreement 1 |
 | `MAX_PENETRATION_PCT` | 0.30 | playbook |
 | `MIN_RISK_REWARD` | 1.5 | playbook |
