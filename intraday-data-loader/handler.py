@@ -4,14 +4,23 @@ Intraday Data Loader - AWS Lambda function
 Keeps algo.candle_5min, algo.candle_15min and algo.candle_1hr current for
 NIFTY and the current-month NIFTY future.
 
-Runs every 5 minutes from 10:00 to 15:30 IST on weekdays, plus one closing
-sweep at 15:35 - 68 invocations a trading day. Which intervals a given run
-fetches is decided by the clock:
+THE ONLY CRON IN THE INTRADAY PLANE. Runs every 15 minutes from 10:00 to
+15:30 IST on weekdays, plus one closing sweep at 15:35 - 24 invocations a
+trading day. When its candles are committed it invokes
+intraday-market-sentiment, which invokes strategy-manager, which invokes the
+playbooks: one schedule drives the whole chain rather than each function
+guessing how long the step before it takes. See dispatch.py.
+
+EVERY-15 DOES NOT THIN THE SERIES. The fetch window is a RANGE from the newest
+stored bar, not a single bar, so a run at 10:15 collects the 10:00, 10:05 and
+10:10 buckets in one call. Which intervals a given run fetches is decided by
+the clock:
 
     fetch interval I when (run time - 09:15) is a whole multiple of I minutes
 
-so 10:05 fetches 5-minute only, 10:30 fetches 5 and 15, and 10:15 fetches all
-three. That single rule reproduces the session-aligned bucket boundaries
+so 10:30 fetches 5 and 15, and 10:15 fetches all three - the hourly buckets
+start at 09:15 and so fall due at 10:15, 11:15 ... 15:15, every one of them on
+the 15-minute grid. That single rule reproduces the session-aligned boundaries
 rather than restating them as a table of times that can drift out of step with
 the data. The 15:35 sweep is the one explicit exception: it fetches everything
 so that the last bars of the session are finalised.
@@ -33,6 +42,7 @@ Modules:
                 secrets.py at the zip root shadows the stdlib one)
     dhan.py     charts + expiry client, and the measured facts about them
     db.py       Neon access and the upsert
+    dispatch.py handing the session on to intraday-market-sentiment
 
 Epoch/IST handling, the Neon connection and the shared connection-string read
 come from the neon-access layer.
@@ -59,6 +69,7 @@ from config import (
     SESSION_START,
 )
 from db import latest_candle_ts, resolve_by_symbol, resolve_instrument, upsert_candles
+from dispatch import dispatch_session
 from dhan import DhanClient, session_candles, to_candles
 from params import read_client_id, read_token_record
 
@@ -243,17 +254,28 @@ def lambda_handler(event, context):
             )
 
         elapsed = time.monotonic() - started
-        logger.info(
-            "done in %.1fs: intervals %s, %d rows",
-            elapsed, intervals, sum(written.values()),
-        )
-        return {
-            "status": "success",
+        summary = {
             "date": today.isoformat(),
             "time": now.strftime("%H:%M"),
             "intervals": intervals,
             "rows_written": sum(written.values()),
+        }
+        logger.info(
+            "done in %.1fs: intervals %s, %d rows",
+            elapsed, intervals, sum(written.values()),
+        )
+
+        # Committed, so the chain can start. Invoked last and never before the
+        # writes: the upsert makes a retry rewrite identical rows, whereas
+        # dispatching first could hand the snapshot a session whose candles
+        # were never stored. A failure here raises with the rows already safe.
+        dispatched = dispatch_session(summary)
+
+        return {
+            "status": "success",
+            **summary,
             "detail": written,
+            "dispatched_to": dispatched,
             "elapsed_seconds": round(elapsed, 2),
         }
     finally:

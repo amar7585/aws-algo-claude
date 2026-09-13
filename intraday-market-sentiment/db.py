@@ -19,6 +19,7 @@ name, and the generated form makes that impossible rather than merely
 unlikely.
 """
 
+import decimal
 import logging
 
 from config import UPSERT_BATCH_SIZE
@@ -46,6 +47,14 @@ SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     "mth_ce_oi_total", "mth_pe_oi_total", "mth_ce_oi_change_pct",
     "mth_pe_oi_change_pct", "mth_max_oi_call", "mth_max_oi_put",
     "mth_max_pain", "mth_ce_iv", "mth_pe_iv", "mth_iv_skew",
+    # The classification - market-classifier layer, 5-minute frame. Stored
+    # rather than recomputed downstream so the row explains its own regime,
+    # and so strategy-manager can stay a router that reads rather than a
+    # second place the rules live.
+    "bias", "structure", "regime", "volatility", "score", "max_score",
+    "confidence", "sma9", "sma50", "sma100", "sma200", "rsi",
+    "swing_direction", "swing_high", "swing_low", "structure_determined",
+    "range_used", "session_elapsed", "volatility_expanding",
     "created_at",
 )
 
@@ -186,6 +195,79 @@ def previous_snapshot(conn, instrument, snapshot_ts):
     baseline = dict(zip(BASELINE_COLUMNS, row))
     logger.info("baseline is snapshot_ts %s", baseline["snapshot_ts"])
     return baseline
+
+
+DAILY_SENTIMENT_TABLE = "algo.daily_market_sentiment"
+
+# Everything a playbook needs off the daily row. pd_high/pd_low are the
+# previous day's extremes, upper/lower_volatility bracket the VIX-implied move,
+# and the classification columns are on the SAME scale as this row's own -
+# max_score differs between the frames, which is why it is carried.
+DAILY_SENTIMENT_COLUMNS = (
+    "trade_date", "bias", "structure", "regime", "volatility",
+    "score", "max_score", "confidence",
+    "swing_direction", "swing_high", "swing_low", "structure_determined",
+    "range_used", "volatility_expanding", "gap_pct",
+    "pd_high", "pd_low", "pd_close",
+    "rsi", "sma9", "sma50", "sma100", "sma200",
+    "prev_volume", "avg_volume_50", "vix",
+    "price", "expected_move", "upper_volatility", "lower_volatility",
+    "min15_high", "min15_low", "created_at",
+)
+
+
+def daily_sentiment(conn, instrument, session_midnight):
+    """
+    The daily read in force for the session starting at `session_midnight`.
+
+    THE LOOKUP IS NOT trade_date = TODAY, AND THAT IS THE WHOLE POINT. A daily
+    row's trade_date is the session it DESCRIBES, which is the newest completed
+    daily candle - yesterday - because Dhan's daily endpoint lags a session.
+    The row daily-market-sentiment writes this morning at 09:50 is stamped
+    YESTERDAY. Verified against the live table: the only stored row carries
+    trade_date 2026-09-10 and was written during the 2026-09-11 session.
+
+    So the row in force today is the newest one stamped BEFORE today, not one
+    stamped today - which never exists.
+
+    FRESHNESS IS REPORTED, NOT ASSUMED. Taking "the newest row before today"
+    alone would silently return last Tuesday's read if this morning's 09:50 run
+    failed, and hand a playbook a stale pd_high as today's level - a wrong
+    level rather than a missing one, which is worse. created_at says when the
+    row was actually written, so the caller can tell today's read from a stale
+    one; `stale` carries that answer rather than leaving it to be inferred.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT {', '.join(DAILY_SENTIMENT_COLUMNS)} FROM {DAILY_SENTIMENT_TABLE} "
+        f"WHERE security_id = %s AND instrument_type = %s AND trade_date < %s "
+        f"ORDER BY trade_date DESC LIMIT 1",
+        (
+            str(instrument["security_id"]),
+            str(instrument["instrument_type"]),
+            int(session_midnight),
+        ),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        logger.warning(
+            "no %s row before %d - daily-market-sentiment has never run for "
+            "this instrument, or has never succeeded",
+            DAILY_SENTIMENT_TABLE, int(session_midnight),
+        )
+        return None
+
+    row = dict(zip(DAILY_SENTIMENT_COLUMNS, rows[0]))
+    row = {k: float(v) if isinstance(v, decimal.Decimal) else v
+           for k, v in row.items()}
+    row["stale"] = int(row["created_at"] or 0) < int(session_midnight)
+    if row["stale"]:
+        logger.warning(
+            "daily read for trade_date %s was written at %s, before today - "
+            "this morning's 09:50 run did not land",
+            row["trade_date"], row["created_at"],
+        )
+    return row
 
 
 def write_snapshot(conn, row, legs):

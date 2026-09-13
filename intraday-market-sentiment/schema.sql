@@ -16,26 +16,38 @@ BEGIN;
 -- ---------------------------------------------------------------------------
 -- intraday_market_sentiment : one row per snapshot, 25 a session.
 --
--- GRAIN. snapshot_ts is the timestamp of the last CLOSED 5-minute bar at the
--- moment of the run, not the run clock. Runs fire at 09:35, 09:50, 10:05 ...
--- 15:35, so snapshot_ts lands on 09:30, 09:45, 10:00 ... 15:15 - a clean
--- 15-minute grid - AND THEN 15:25.
+-- GRAIN. snapshot_ts is the timestamp of the NEWEST BAR DHAN RETURNED at the
+-- moment of the run - the one still forming, not the last closed one.
 --
--- The last one is not a bug. A session's final 5-minute bar is stamped 15:25
--- and there is no 15:30 bar (the market closes then, and a 15:30 stamp is
--- post-close data this system filters). So the 15:35 run describes 15:25, and
--- its deltas cover TEN minutes rather than fifteen. prev_snapshot_ts is what
--- tells a reader that, which is exactly why the window is stored rather than
--- assumed. Verified against the 2026-09-11 session: 75 bars, 09:15 to 15:25.
+-- intraday-data-loader is the only thing on a cron in this plane. It fires at
+-- 10:00, 10:15 ... 15:30 plus a 15:35 closing sweep, commits its candles, and
+-- invokes this function. At a 10:00 run the bucket stamped 10:00 has just
+-- opened, so snapshot_ts is 10:00 and `spot` is the live price. Two things
+-- follow:
 --
--- Three things follow from the grain and all of them matter:
---   * a re-run at 09:36 overwrites its own row by primary key instead of
+--   * snapshot_ts LANDS ON THE SAME GRID AS candle_5min.candle_ts. The row
+--     stamped 10:00 here describes the bar stamped 10:00 there, which the
+--     loader completes at the 10:15 run. The two tables join directly, which
+--     a last-closed rule would have prevented - it would have stamped this
+--     row 09:55 while the loader's 10:00 bar was a different bar entirely.
+--   * THE LAST SNAPSHOT OF THE DAY IS STAMPED 15:25. At 15:30 the market has
+--     closed and there is no 15:30 bucket, so the newest bar returned is
+--     15:25. That falls out of the rule rather than being a special case.
+--     Verified against the 2026-09-11 session: 75 bars, 09:15 to 15:25.
+--
+-- WHAT IS PARTIAL AND WHAT IS NOT. The bar snapshot_ts names is seconds old,
+-- so ITS OWN high, low and volume are near-empty - and nothing here is taken
+-- from them. `spot` is that bar's close, which is the live price. day_high,
+-- day_low, vwap and the opening range span every bar of the session. The
+-- classification reads close, the SMAs and RSI, all built from closes. The
+-- row is a snapshot of an instant, not a summary of a finished bar, and the
+-- loader's own candle_5min row for that stamp is corrected later.
+--
+-- Two more things follow from the grain:
+--   * a re-run at 10:01 overwrites its own row by primary key instead of
 --     writing a second, near-identical one;
---   * the previous-snapshot lookup is exact rather than approximate;
---   * every stored value describes a bar that has finished forming, so no
---     column here is ever partial (unlike candle_5min, which stores the
---     in-progress bucket on purpose).
--- captured_at holds the actual run time, so the ~5 minute lag stays visible.
+--   * the previous-snapshot lookup is exact rather than approximate.
+-- captured_at holds the actual run time.
 --
 -- BOTH EXPIRIES LIVE ON ONE ROW. near_* is the nearest expiry, mth_* the
 -- monthly. When the nearest expiry IS the last expiry of its month the two
@@ -134,6 +146,52 @@ CREATE TABLE IF NOT EXISTS algo.intraday_market_sentiment (
     mth_ce_iv              numeric,
     mth_pe_iv              numeric,
     mth_iv_skew            numeric,
+
+    -- ---- the classification ------------------------------------------------
+    -- Produced by the market-classifier layer on the 5-minute frame, with the
+    -- SAME rules daily-market-sentiment runs on daily candles. Stored rather
+    -- than recomputed downstream, so this row explains its own regime and
+    -- strategy-manager can be a router that reads instead of a second place
+    -- the rules live.
+    --
+    -- NONE OF THE OPTION COLUMNS ABOVE FEED IT YET. Dhan serves no historical
+    -- option chain, so PCR / IV-skew / straddle thresholds cannot be measured
+    -- until rows accumulate here; scoring them on invented numbers would make
+    -- `bias` mean one thing before recalibration and another after. When the
+    -- rows exist the agreed shape is a separate options overlay, not extra
+    -- terms folded into `score`.
+    --
+    -- score IS NOT COMPARABLE ACROSS FRAMES WITHOUT max_score. The 5-minute
+    -- frame carries a VWAP term the daily frame cannot (there is no session
+    -- VWAP on a daily candle), so max_score is 5 here and 4 there. It is
+    -- stored so a reader normalises rather than assumes.
+    bias                   text    NOT NULL,   -- bullish | bearish | range-bound
+    structure              text    NOT NULL,   -- trending | sideways | transitional
+    regime                 text    NOT NULL,   -- trending | sideways | volatile-expansion
+    volatility             text,               -- low | normal | high; null without VIX
+    score                  integer NOT NULL,
+    max_score              integer NOT NULL,
+    confidence             numeric NOT NULL,
+
+    -- the indicators the score was computed from, so the row is self-explaining
+    sma9                   numeric NOT NULL,
+    sma50                  numeric NOT NULL,
+    sma100                 numeric NOT NULL,
+    sma200                 numeric NOT NULL,   -- NOT NULL: see the handler's raise
+    rsi                    numeric NOT NULL,
+
+    -- the swing read behind `structure`
+    swing_direction        text    NOT NULL,   -- up | down | none
+    swing_high             numeric,            -- null until two swings confirm
+    swing_low              numeric,
+    structure_determined   boolean NOT NULL,   -- false = too few bars to say
+
+    -- the volatility read behind `regime`
+    -- range_used is the day's range over the expected move SCALED BY
+    -- sqrt(session_elapsed), so 1.5 means the same thing at 10:00 as at 15:15.
+    range_used             numeric,
+    session_elapsed        numeric,            -- fraction of the session, 0-1
+    volatility_expanding   boolean NOT NULL,
 
     created_at             bigint  NOT NULL,
 

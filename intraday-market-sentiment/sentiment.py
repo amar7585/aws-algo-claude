@@ -25,30 +25,37 @@ SHORT_COVERING = "SHORT_COVERING"
 FLAT = "FLAT"
 
 
-def last_closed(candles, now, interval_seconds, label):
+def newest_bar(candles, label):
     """
-    The newest bar that has finished forming.
+    The newest bar Dhan returned, INCLUDING the one still forming.
 
-    Dhan returns the in-progress bucket - intraday-data-loader stores it on
-    purpose and corrects it later. This function must not: a snapshot row is
-    never revisited, so a partial bar written here would be wrong forever with
-    nothing to correct it. The test is the same one that README documents for
-    reading candle_5min:
+    THIS DELIBERATELY REPLACED A last_closed() RULE. The earlier design took
+    the newest bar that had finished forming, so that no column on the row was
+    ever partial. The schedule now aligns the whole intraday plane on the
+    quarter hour - the loader fires at 10:00, commits, and invokes this
+    function - and the agreed grain is the bar that is open at that moment:
 
-        a bar is closed  iff  candle_ts + interval_seconds <= now
+        10:00 run -> the bucket stamped 10:00, seconds old, carrying the live
+                     price. The loader completes that same bar at the 10:15
+                     run, so snapshot_ts joins straight to candle_5min.
+        15:30 run -> there is no 15:30 bucket, the market has closed, so the
+                     newest bar returned is 15:25. The last snapshot of the
+                     day is stamped 15:25 without a special case.
 
-    The schedule is built so this is cheap - runs fire at :35, :50, :05 and
-    :20, five minutes after a 5-minute bucket closed - but the test is what
-    makes it true, not the schedule.
+    WHAT IS ACTUALLY PARTIAL, AND WHAT IS NOT. The forming bar's own high, low
+    and volume are near-empty at the instant of the run, and nothing scored
+    reads them: the classification reads `close`, which is the live price, and
+    the SMAs and RSI built from a series of closes. Session aggregates - day
+    high/low, VWAP, the opening range - span every bar of the day, so a
+    near-empty last bar moves them by nothing. The columns that would be
+    misleading are simply not taken from this bar.
     """
-    closed = [c for c in candles if c["ts"] + interval_seconds <= now]
-    if not closed:
+    if not candles:
         raise RuntimeError(
-            f"{label}: none of the {len(candles)} bar(s) returned have closed "
-            f"as of {ist_datetime(now):%Y-%m-%d %H:%M:%S} - too early in the "
-            f"session, or the schedule has drifted off the bucket grid"
+            f"{label}: no bars returned - too early in the session, or the "
+            f"exchange published nothing for this day"
         )
-    return max(closed, key=lambda c: c["ts"])
+    return max(candles, key=lambda c: c["ts"])
 
 
 def session_stats(candles, upto_ts):

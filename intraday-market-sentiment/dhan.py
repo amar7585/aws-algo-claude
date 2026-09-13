@@ -112,16 +112,23 @@ class DhanClient:
                 raise RuntimeError(f"dhan {url} -> HTTP {exc.code}: {body}") from exc
         raise RuntimeError(f"dhan {url} exhausted {retries} retries")
 
-    def intraday_candles(self, instrument, interval, day, with_oi=False):
+    def intraday_candles(self, instrument, interval, day, with_oi=False,
+                         from_day=None):
         """
-        One instrument, one interval, one whole session day.
+        One instrument, one interval, one whole session day - or a span of them.
 
         The window starts at 00:00:00 rather than 09:15:00 because fromDate is
         exclusive and 09:15 would drop the opening-range bar.
 
+        `from_day` widens the window backwards, which is what the classification
+        needs: sma200 on the 5-minute frame wants 200 closed bars and one
+        session supplies only 75. It defaults to `day`, so every existing
+        single-session call is unchanged.
+
         `with_oi` asks for open interest. It is meaningful for F&O instruments
         only, and the array comes back named `open_interest`.
         """
+        start = from_day or day
         return self._post(
             CHARTS_BASE + "intraday",
             {
@@ -130,7 +137,7 @@ class DhanClient:
                 "instrument": instrument["instrument_type"],
                 "interval": int(interval),
                 "oi": bool(with_oi),
-                "fromDate": f"{day.isoformat()} 00:00:00",
+                "fromDate": f"{start.isoformat()} 00:00:00",
                 "toDate": f"{day.isoformat()} 23:59:00",
             },
         )
@@ -235,6 +242,29 @@ def session_candles(candles, day):
     ]
     if len(candles) != len(kept):
         logger.info("dropped %d out-of-session candle(s)", len(candles) - len(kept))
+    return kept
+
+
+def in_session_candles(candles):
+    """
+    Keep bars stamped inside trading hours, ACROSS every day returned.
+
+    The same session-hours filter session_candles applies, minus the
+    single-day restriction. The classification history spans several sessions,
+    so the day test would throw away everything but the last one - but the
+    hours test still has to run, because Dhan emits post-close bars (a
+    zero-volume 19:20 candle on 2026-09-10) and those would sit in the series
+    as if they were real closes and pull every SMA.
+    """
+    kept = [
+        c
+        for c in candles
+        if SESSION_START <= ist_datetime(c["ts"]).time() < SESSION_END
+    ]
+    if len(candles) != len(kept):
+        logger.info(
+            "history: dropped %d out-of-session candle(s)", len(candles) - len(kept)
+        )
     return kept
 
 

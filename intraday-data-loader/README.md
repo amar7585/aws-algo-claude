@@ -5,7 +5,7 @@ the current-month NIFTY future, through the trading session.
 
 | | |
 |---|---|
-| Schedule | every 5 min 10:00–15:35, `Asia/Kolkata` — two rules, see [Deployment](#deployment-shape) |
+| Schedule | every **15** min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — two rules, 24 runs a day. **The only cron in the intraday plane**: it invokes `intraday-market-sentiment`, which invokes `strategy-manager`. See [Deployment](#deployment-shape) |
 | Invocations | **68** per trading day |
 | Writes | `algo.candle_5min`, `algo.candle_15min`, `algo.candle_1hr` |
 | Reads | `algo.instrument_master` |

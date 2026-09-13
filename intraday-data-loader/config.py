@@ -60,12 +60,61 @@ INTERVAL_TABLES = {
     60: "algo.candle_1hr",
 }
 
-# The closing sweep. The schedule runs to 15:30, but at 15:30 the 15:25 5-min
-# bar, the 15:15 15-min bar and the 15:15 hourly bar have only just closed -
-# with no later run they would sit PARTIAL in the database forever, quietly
-# corrupting any end-of-day read. One extra run at 15:35 fetches all three
-# intervals and finalises them.
+# THE SCHEDULE IS EVERY 15 MINUTES, 10:00 TO 15:30, PLUS A 15:35 SWEEP.
+#
+# This is the only cron in the intraday plane. It fires, commits, and invokes
+# intraday-market-sentiment, which invokes strategy-manager, which invokes the
+# playbooks - so these run times are the whole plane's run times.
+#
+# EVERY-15 STILL COLLECTS EVERY 5-MINUTE BAR. intervals_due() asks which
+# intervals are due from (now - 09:15) mod I, and the fetch window is a RANGE
+# from the newest stored bar, not a single bar - so a run at 10:15 collects the
+# 10:00, 10:05 and 10:10 buckets in one call. Dropping from every-5 to every-15
+# cuts the invocations without thinning the series.
+#
+# The hourly buckets start at 09:15, so they fall due at 10:15, 11:15, 12:15,
+# 13:15, 14:15 and 15:15 - all of which are on the 15-minute grid. Nothing is
+# missed by the coarser schedule.
 CLOSING_SWEEP = datetime.time(15, 35)
+
+# The closing sweep is not optional. The last scheduled run is 15:30, and at
+# 15:30 the 15:25 5-min bar, the 15:15 15-min bar and the 15:15 hourly bar have
+# only just closed - or not quite. With no later run they would sit PARTIAL in
+# the database forever, quietly corrupting any end-of-day read. One extra run
+# at 15:35 fetches all three intervals and finalises them.
+#
+# It is also the run that gives the day its final snapshot: by 15:35 there is
+# no 15:30 bucket, so intraday-market-sentiment stamps 15:25 and simply
+# overwrites what the 15:30 run wrote under the same key.
+
+# --------------------------------------------------------------------------
+# The sentiment chain
+#
+# Once the candles are committed this function invokes
+# intraday-market-sentiment - see dispatch.py for why the loader starts the
+# chain rather than each function carrying its own cron.
+#
+# UNSET MEANS OFF. With no name configured nothing is dispatched and a log line
+# says so, which lets this ship with no behavioural change at all: the chain is
+# switched on by setting one variable once both sides are deployed.
+#
+# Setting it also needs one IAM change - this function's execution role must
+# allow lambda:InvokeFunction on the sentiment function's ARN, and NOT on a
+# wildcard. Both console-generated roles in this account are scoped to a single
+# ARN and fail SILENTLY when borrowed; see CLAUDE.md.
+# --------------------------------------------------------------------------
+INTRADAY_SENTIMENT_FUNCTION_NAME = os.environ.get(
+    "INTRADAY_SENTIMENT_FUNCTION_NAME", ""
+)
+
+# Asynchronous, and the choice is load-bearing. This function returning is not
+# a claim that the snapshot succeeded - the sentiment function has its own log
+# group and error-notifier reports its failures from there. A synchronous
+# invoke would fold the snapshot's runtime, its Dhan calls and its two chain
+# fetches into this function's timeout.
+INTRADAY_SENTIMENT_INVOCATION_TYPE = os.environ.get(
+    "INTRADAY_SENTIMENT_INVOCATION_TYPE", "Event"
+)
 
 # --------------------------------------------------------------------------
 # Tunables

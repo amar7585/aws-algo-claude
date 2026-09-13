@@ -6,12 +6,17 @@ value it has. The playbook is explicit that these are starting values rather
 than laws - so each one is an environment override, and the ones that are NOT
 from the playbook are marked as such.
 
-NO LAYERS AND NO DATABASE. This function reads nothing and writes nothing: the
-whole context arrives in the invocation payload from strategy-manager,
-and what it finds goes to its own log. That is why IST lives here rather than
-coming from the neon-access layer - importing that layer would pull in pg8000
-for a function that never opens a connection, the same reason error-notifier
-does not use it either.
+IT READS, BUT IT STILL WRITES NOTHING. The two sentiment rows arrive in the
+invocation payload from strategy-manager, which is a pure router; the bars and
+the daily series this playbook scans it reads from Neon itself, because a
+playbook knows which bars it needs and the manager was guessing on its behalf.
+What it finds goes to its own log and nowhere else - no table, no signal, no
+order.
+
+There is no Dhan client here and no token. The only thing the manager ever
+called Dhan for was a live price, and this playbook never read it: a sweep is
+confirmed by a CLOSED bar reclaiming a level, so an unconfirmed live tick is
+exactly what the setup must not act on.
 """
 
 import datetime
@@ -26,12 +31,19 @@ import os
 # getting None, and gating on it. A gate that silently passes because its
 # input vanished is the worst failure this playbook can have.
 # --------------------------------------------------------------------------
-EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "1"))
+EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "2"))
 
 # --------------------------------------------------------------------------
 # IST
 #
-# Local, not from the neon-access layer - see the module docstring.
+# STILL LOCAL, BUT NO LONGER BECAUSE IT HAS TO BE. The original reason was that
+# this function carried no layers at all. It now carries neon-access, which
+# exports the same constant, so the two exist side by side and agree by
+# definition - both are UTC+05:30, which is fixed and has no daylight rule.
+#
+# Kept local so that levels.py, sweep.py and trade.py stay pure over plain
+# dicts and can be exercised with no layer on the path; the handler, which
+# already needs the layer for connect(), uses the layer's helpers.
 # --------------------------------------------------------------------------
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 
@@ -56,22 +68,59 @@ FIRST_HOUR_END = datetime.time(10, 15)
 # The regime gate
 #
 # The coarse gate already happened: strategy-manager only invokes this
-# function when the 15-minute regime is RANGE. This is the fine gate, and it
-# exists because the manager's registry cannot know what this playbook
-# needs - and because a strategy that trusts an upstream gate it cannot see
-# fires on a bad day the moment that gate changes.
+# function for the regime/bias combinations its registry allows. This is the
+# fine gate, and it exists because the manager's registry cannot know what this
+# playbook needs - and because a strategy that trusts an upstream gate it
+# cannot see fires on a bad day the moment that gate changes.
 # --------------------------------------------------------------------------
 # The playbook allows neutral range, bullish sideways and bearish sideways.
-# The classification expresses exactly those three as regime RANGE with bias
-# NEUTRAL, BULLISH or BEARISH, so every bias is allowed here and the regime
-# does the work. Held as a set rather than assumed so a future regime value
-# cannot quietly become eligible.
+# The shared classifier expresses exactly those three as regime `sideways`
+# with any bias, so every bias is allowed here and the regime does the work.
+# Held as a set rather than assumed so a future regime value cannot quietly
+# become eligible.
+#
+# THE VALUES ARE LOWER CASE NOW, and that is the taxonomy change rather than a
+# style choice: the old pair was RANGE/TREND with bias NEUTRAL, and the shared
+# layer emits sideways/trending/volatile-expansion with bias range-bound.
+# Comparing against the old strings would fail every check silently-ish - the
+# gate would stand down on every session and look merely cautious.
 ALLOWED_REGIMES = frozenset(
-    os.environ.get("ALLOWED_REGIMES", "RANGE").split(",")
+    os.environ.get("ALLOWED_REGIMES", "sideways").split(",")
 )
 ALLOWED_BIASES = frozenset(
-    os.environ.get("ALLOWED_BIASES", "BULLISH,BEARISH,NEUTRAL").split(",")
+    os.environ.get("ALLOWED_BIASES", "bullish,bearish,range-bound").split(",")
 )
+
+# --------------------------------------------------------------------------
+# The data this playbook fetches for itself
+#
+# strategy-manager is a pure router: it hands over the two sentiment rows and
+# nothing else. A playbook knows which bars it needs, so it reads them - the
+# manager used to fetch a fixed window on every playbook's behalf and guess at
+# the size.
+#
+# IT READS NEON, NOT DHAN. The only thing the manager ever called Dhan for was
+# a live price, and this playbook never read it: a sweep is confirmed by a
+# CLOSED bar reclaiming a level, so an unconfirmed live tick is precisely the
+# thing the setup must not act on. Dropping that call removed this function's
+# need for a Dhan token, an SSM read and a rate limit budget entirely.
+#
+# A STALE CANDLE COSTS ONE SCAN, NOT A WRONG ROW. This function persists
+# nothing, so reading intraday-data-loader's tables is safe here in a way it
+# is not in intraday-market-sentiment, where a stale input would be written
+# into a snapshot row that is never revisited.
+# --------------------------------------------------------------------------
+CANDLE_INTERVAL_MINUTES = int(os.environ.get("CANDLE_INTERVAL_MINUTES", "5"))
+CANDLE_INTERVAL_SECONDS = CANDLE_INTERVAL_MINUTES * 60
+
+# One session is 75 five-minute bars. 120 covers a full session with headroom
+# and is trimmed to the session day before anything is scanned.
+HISTORY_5MIN_BARS = int(os.environ.get("HISTORY_5MIN_BARS", "120"))
+
+# Wilder ATR14 over daily bars needs 15 closes for its first value; 40 gives
+# the average time to settle.
+HISTORY_DAILY_BARS = int(os.environ.get("HISTORY_DAILY_BARS", "40"))
+ATR_PERIOD = int(os.environ.get("ATR_PERIOD", "14"))
 
 # India VIX must not be moving. The playbook's number: within +-5%.
 MAX_VIX_CHANGE_PCT = float(os.environ.get("MAX_VIX_CHANGE_PCT", "5.0"))
@@ -81,11 +130,11 @@ MAX_VIX_CHANGE_PCT = float(os.environ.get("MAX_VIX_CHANGE_PCT", "5.0"))
 #
 # RE-SCALED, AND THE PLAYBOOK ASKS FOR THIS EXPLICITLY. 0.9 was calibrated
 # against a 10-day mean of high-low, which excludes overnight gaps. The
-# manager computes Wilder TRUE ATR14, which includes them and is
-# therefore a LARGER number for the same market - so the same 0.9 would be a
+# handler computes Wilder TRUE ATR14 over candle_daily, which includes them
+# and is therefore a LARGER number for the same market - so the same 0.9 would be a
 # looser gate than intended. The playbook states the equivalent as "roughly
 # 0.78" and instructs confirming which definition atr14 holds before trusting
-# the number. It holds true ATR; hence 0.78.
+# the number. It holds true ATR - see handler.lambda_handler; hence 0.78.
 MAX_RANGE_USED_VS_ATR = float(os.environ.get("MAX_RANGE_USED_VS_ATR", "0.78"))
 
 # The opening range must be wide enough to pay a 1:2. The playbook: at least

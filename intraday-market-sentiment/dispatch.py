@@ -37,7 +37,7 @@ from config import STRATEGY_MANAGER_FUNCTION_NAME, STRATEGY_MANAGER_INVOCATION_T
 logger = logging.getLogger()
 
 
-def dispatch_snapshot(row, instrument, client=None):
+def dispatch_snapshot(row, instrument, daily=None, client=None):
     """
     Invoke strategy-manager with the row just written.
 
@@ -53,10 +53,17 @@ def dispatch_snapshot(row, instrument, client=None):
         )
         return None
 
+    # BOTH SENTIMENTS TRAVEL TOGETHER. The manager routes on the combination
+    # of the intraday read and the daily one, and it is a pure router with no
+    # database of its own - so the daily row has to arrive here or not at all.
+    # It can legitimately be None: daily-market-sentiment runs at 09:50 and
+    # may not have succeeded. The manager decides what a missing daily read
+    # means rather than this function guessing.
     payload = {
         "source": "intraday-market-sentiment",
         "instrument": instrument,
         "snapshot": row,
+        "daily": daily,
     }
     client = client or boto3.client("lambda")
     response = client.invoke(

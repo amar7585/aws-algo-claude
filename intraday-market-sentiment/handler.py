@@ -4,10 +4,16 @@ Intraday Market Sentiment - AWS Lambda function
 Writes one row to algo.intraday_market_sentiment every fifteen minutes through
 the session, plus the ten raw option legs behind it to algo.option_chain_snapshot.
 
-Runs at 09:35, 09:50, 10:05 ... 15:35 IST on weekdays - 25 invocations a
-trading day. The five-minute offset is the point: at each of those times a
-5-minute bucket has just closed, so the bar the snapshot describes is final
-rather than still forming.
+NOT ON A CRON. intraday-data-loader is the only scheduled function in this
+plane; it commits its candles at 10:00, 10:15 ... 15:30 plus a 15:35 closing
+sweep, then invokes this function. The chain is
+loader -> this -> strategy-manager -> playbooks, one schedule driving all of it.
+
+SNAPSHOT_TS IS THE NEWEST BAR DHAN RETURNED, FORMING ONE INCLUDED. At a 10:00
+run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
+`spot` is the live price - and it joins straight to the candle_5min row the
+loader completes at 10:15. At 15:30 there is no 15:30 bucket, so the day's
+last snapshot is stamped 15:25 with no special case. See sentiment.newest_bar.
 
 EVERYTHING COMES FROM THE DHAN API, WITH ONE EXCEPTION. This function does not
 read candle_5min or any other table that intraday-data-loader writes; it
@@ -16,10 +22,11 @@ row, read back to provide the baseline for every *_change_pct - Dhan serves
 only a live option chain and has no historical-chain endpoint, so an intraday
 OI delta cannot be had any other way.
 
-NOTHING HERE IS EVER PARTIAL. intraday-data-loader stores the in-progress
-bucket deliberately and corrects it by primary key later. A snapshot row is
-never revisited, so this function reads only closed bars - see
-sentiment.last_closed().
+WHAT IS PARTIAL, AND WHAT IS NOT. The bar snapshot_ts names is seconds old,
+so its own high, low and volume are near-empty - and nothing is taken from
+them. `spot` is its close, which is the live price; day_high, day_low, vwap and
+the opening range span every bar of the session; the classification reads
+closes. The row describes an instant, not a finished bar.
 
 Writes only to Neon project "AI Trader APP" (nameless-mountain-15353651),
 database Algo, schema algo.
@@ -31,7 +38,8 @@ Modules:
     dhan.py       charts + expiry list + option chain, and the measured facts
     expiry.py     which two expiries a snapshot describes
     chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
-    sentiment.py  session stats and the buildup label
+    sentiment.py  session stats, the newest-bar rule and the buildup label
+    classification.py  what to hand the market-classifier layer, and why
     db.py         Neon access, the baseline read, the two-table write
     dispatch.py   handing the finished snapshot to strategy-manager
 
@@ -57,12 +65,12 @@ import expiry as expiry_lib
 from config import (
     AGGREGATE_STRIKES_PER_SIDE,
     CANDLE_INTERVAL_MINUTES,
-    CANDLE_INTERVAL_SECONDS,
     FIRST_RUN,
     FUTURES_INSTRUMENT_TYPE,
     FUTURES_SYMBOL_TEMPLATE,
     FUTURES_UNDERLYING_SCRIP,
     FUTURES_UNDERLYING_SEG,
+    HISTORY_DAYS,
     LAST_RUN,
     MONTH_ABBREVIATIONS,
     NIFTY_INSTRUMENT_TYPE,
@@ -72,15 +80,23 @@ from config import (
     VIX_SECURITY_ID,
 )
 from db import (
+    daily_sentiment,
     previous_snapshot,
     resolve_by_symbol,
     resolve_instrument,
     write_snapshot,
 )
-from dhan import DhanClient, require_oi, session_candles, to_candles
+from dhan import (
+    DhanClient,
+    in_session_candles,
+    require_oi,
+    session_candles,
+    to_candles,
+)
+from classification import classify_snapshot, row_columns
 from dispatch import dispatch_snapshot
 from params import read_client_id, read_token_record
-from sentiment import buildup, last_closed, pct_change, session_stats
+from sentiment import buildup, newest_bar, pct_change, session_stats
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -173,9 +189,9 @@ def lambda_handler(event, context):
         logger.info("%s is a %s - not a trading day", today, today.strftime("%A"))
         return {"status": "skipped_non_trading_day", "date": today.isoformat()}
 
-    # Second line of defence only. Three EventBridge rules already produce
-    # exactly the 25 in-window times; this catches a manual invocation or a
-    # rule edited by hand.
+    # Second line of defence only. This function has no schedule of its own -
+    # intraday-data-loader invokes it, and the loader's cron produces exactly
+    # the in-window times. This catches a manual invocation.
     if not FIRST_RUN <= now.time() <= LAST_RUN:
         logger.info("%s is outside %s-%s", now.strftime("%H:%M"), FIRST_RUN, LAST_RUN)
         return {"status": "skipped_outside_session", "time": now.strftime("%H:%M")}
@@ -189,7 +205,21 @@ def lambda_handler(event, context):
         vix_instrument = resolve_instrument(conn, VIX_SECURITY_ID, VIX_INSTRUMENT_TYPE)
 
         # ---- the index sets the clock for everything else -----------------
-        index_bars = fetch_session(client, index, today)
+        #
+        # ONE FETCH, TWO JOBS. The window runs back HISTORY_DAYS so that
+        # sma200 has its 200 bars, and today's session is taken out of the
+        # same response rather than fetched again. Two calls could disagree
+        # about the newest bar - they are milliseconds apart on a series that
+        # is still forming - and the whole row is pinned to that bar.
+        history_from = today - datetime.timedelta(days=HISTORY_DAYS)
+        index_history = in_session_candles(
+            to_candles(
+                client.intraday_candles(
+                    index, CANDLE_INTERVAL_MINUTES, today, from_day=history_from
+                )
+            )
+        )
+        index_bars = [c for c in index_history if ist_datetime(c["ts"]).date() == today]
         if not index_bars:
             # A holiday needs no calendar: the exchange published no bars, so
             # there is nothing to describe and nothing is written.
@@ -197,13 +227,17 @@ def lambda_handler(event, context):
             return {"status": "skipped_non_trading_day", "date": today.isoformat()}
 
         run_epoch = int(now.timestamp())
-        spot_bar = last_closed(index_bars, run_epoch, CANDLE_INTERVAL_SECONDS, "NIFTY")
+        spot_bar = newest_bar(index_bars, "NIFTY")
         snapshot_ts = spot_bar["ts"]
+        # The history must end on the same bar the snapshot is stamped with,
+        # or the classification would describe a later instant than the row.
+        index_history = [c for c in index_history if c["ts"] <= snapshot_ts]
         index_stats = session_stats(index_bars, snapshot_ts)
         spot = index_stats["close"]
         logger.info(
-            "snapshot %s (run %s), spot %.2f",
+            "snapshot %s (run %s), spot %.2f, %d bars of history from %s",
             ist_datetime(snapshot_ts).strftime("%H:%M"), now.strftime("%H:%M"), spot,
+            len(index_history), ist_datetime(index_history[0]["ts"]).date(),
         )
 
         # ---- expiries, then the future they imply --------------------------
@@ -245,8 +279,16 @@ def lambda_handler(event, context):
             near["strikes_scoped"], near["strike_step"],
         )
 
-        # ---- the one thing read back from the database ---------------------
+        # ---- the two things read back from the database --------------------
+        # The baseline is this function's own previous row, which is the only
+        # source for an intraday OI delta - Dhan serves no historical chain.
         baseline = previous_snapshot(conn, index, snapshot_ts)
+        # The daily read travels WITH the snapshot to strategy-manager, so the
+        # manager stays a router and does not need a database of its own. The
+        # lookup is "newest row stamped before today", not "today's row" - a
+        # daily row describes the previous session, so a row stamped today
+        # never exists. See db.daily_sentiment.
+        daily = daily_sentiment(conn, index, ist_midnight_epoch(today))
 
         basis = future_bar["close"] - spot
         row = {
@@ -298,6 +340,31 @@ def lambda_handler(event, context):
             row["fut_price_change_pct"], row["fut_oi_change_pct"]
         )
 
+        # ---- the classification -------------------------------------------
+        #
+        # Last, because it reads the VIX and the previous row's VIX, and both
+        # had to be resolved first. The rules are the market-classifier
+        # layer's and are shared with daily-market-sentiment; only the inputs
+        # are assembled here. It RAISES on too little history rather than
+        # writing a row whose regime came from a missing sma200.
+        #
+        # NO OPTION DATA FEEDS THIS YET. The chain aggregates above sit on the
+        # same row and are deliberately not scored - option history can only
+        # accumulate forward (Dhan serves no historical chain), so any PCR or
+        # IV-skew threshold today would be invented, and rows written before
+        # it was calibrated would carry a bias meaning something different
+        # from rows written after. See the layer README, "Revisit once
+        # sessions have accumulated".
+        classification = classify_snapshot(
+            index_history,
+            index_bars,
+            index_stats,
+            now,
+            row["vix"],
+            baseline["vix"] if baseline else None,
+        )
+        row.update(row_columns(classification))
+
         for prefix, summary, expiry_ts, expiry_key in (
             ("near", near, near_expiry_ts, "near_expiry_ts"),
             ("mth", mth, mth_expiry_ts, "mth_expiry_ts"),
@@ -347,13 +414,16 @@ def lambda_handler(event, context):
         # first and dispatched second on purpose: a failed invoke raises with
         # the row already committed, and the upsert makes a retry rewrite the
         # identical row rather than duplicate it.
-        dispatched = dispatch_snapshot(row, index)
+        dispatched = dispatch_snapshot(row, index, daily)
 
         elapsed = time.monotonic() - started
         logger.info(
-            "done in %.1fs: snapshot %s, %d legs, buildup %s",
+            "done in %.1fs: snapshot %s, %d legs, buildup %s, "
+            "bias %s structure %s regime %s (%+d/%d, confidence %.1f)",
             elapsed, ist_datetime(snapshot_ts).strftime("%H:%M"),
             legs_written, row["buildup"],
+            row["bias"], row["structure"], row["regime"],
+            row["score"], row["max_score"], row["confidence"],
         )
         return {
             "status": "success",
@@ -367,7 +437,22 @@ def lambda_handler(event, context):
             "monthly_expiry": monthly_date.isoformat(),
             "near_straddle": near["straddle"],
             "near_pcr_oi": near["pcr_oi"],
+            "bias": row["bias"],
+            "structure": row["structure"],
+            "regime": row["regime"],
+            "volatility": row["volatility"],
+            "score": f"{row['score']:+d}/{row['max_score']}",
+            "confidence": row["confidence"],
             "legs_written": legs_written,
+            "daily_read": (
+                None if not daily
+                else {
+                    "trade_date": daily["trade_date"],
+                    "regime": daily["regime"],
+                    "bias": daily["bias"],
+                    "stale": daily["stale"],
+                }
+            ),
             "dispatched_to": dispatched,
             "elapsed_seconds": round(elapsed, 2),
         }

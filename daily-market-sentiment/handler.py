@@ -131,10 +131,13 @@ def lambda_handler(event, context):
             logger.info("no intraday candles for %s - market did not open", today)
             session_open = min15_high = min15_low = None
 
+        # The whole VIX series, not just its last close: the expansion test
+        # needs the previous session's close as a baseline, the same way the
+        # intraday frame uses the previous snapshot's VIX.
         sentiment = build_daily_sentiment(
             nifty,
             nifty_daily,
-            vix_daily[-1]["close"] if vix_daily else None,
+            vix_daily,
             session_open,
             min15_high,
             min15_low,

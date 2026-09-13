@@ -70,20 +70,70 @@ SESSION_END = datetime.time(15, 30)
 # The opening range: bars stamped 09:15, 09:20 and 09:25, i.e. 09:15-09:30.
 ORB_END = datetime.time(9, 30)
 
-# Snapshots are taken FIVE MINUTES AFTER a 15-minute boundary - 09:35, 09:50,
-# 10:05 ... 15:35 - so that the 5-minute bar the snapshot describes has just
-# closed. FIRST_RUN and LAST_RUN bound the window; three EventBridge rules
-# produce exactly these 25 times, and the guard in the handler is the second
-# line of defence rather than the mechanism.
-FIRST_RUN = datetime.time(9, 35)
+# THIS FUNCTION HAS NO SCHEDULE. intraday-data-loader is the only thing on a
+# cron in the intraday plane; it invokes this function once its candles are
+# committed, so the run times below are the loader's - 10:00, 10:15 ... 15:30,
+# plus the 15:35 closing sweep. FIRST_RUN and LAST_RUN are a second line of
+# defence against a manual invocation, not the mechanism.
+FIRST_RUN = datetime.time(10, 0)
 LAST_RUN = datetime.time(15, 35)
 
-# The interval whose bars the snapshot reads. 5 is not arbitrary: at :35, :50,
-# :05 and :20 a 5-minute bucket has closed exactly on the run time, so the
-# newest CLOSED bar is never more than a few seconds stale. A 15-minute fetch
-# would be up to 5 minutes behind at every run.
+# The interval whose bars the snapshot reads.
+#
+# SNAPSHOT_TS IS THE NEWEST BAR DHAN RETURNS, INCLUDING THE ONE STILL FORMING.
+# At a 10:00 run the bucket stamped 10:00 has just opened, so the snapshot is
+# stamped 10:00 and carries the live price rather than the 09:55 close. Two
+# things follow and both are intended:
+#
+#   * snapshot_ts lands on the same grid as candle_5min.candle_ts - the row
+#     stamped 10:00 here describes the bar stamped 10:00 there, which the
+#     loader completes at the next run. The two tables join directly.
+#   * at the 15:30 run there is no 15:30 bucket, because the market has
+#     closed, so the newest bar returned is 15:25 and the last snapshot of the
+#     day is stamped 15:25. That falls out of the rule rather than being a
+#     special case.
+#
+# The cost is that the bar is seconds old: its own high, low and volume are
+# near-empty. Nothing scored reads them - the classification reads `close`,
+# which is the live price, and the SMAs and RSI built from closes. Session
+# aggregates (day high/low, VWAP, the opening range) span every bar of the day
+# and are unaffected.
 CANDLE_INTERVAL_MINUTES = 5
-CANDLE_INTERVAL_SECONDS = CANDLE_INTERVAL_MINUTES * 60
+
+# --------------------------------------------------------------------------
+# Classification
+#
+# The rules live in the market-classifier layer and are shared with
+# daily-market-sentiment - see layers/market-classifier/README.md. Only the
+# amount of history to feed them is this function's business.
+#
+# THIS FUNCTION STILL FETCHES ITS OWN CANDLES. It does not read candle_5min,
+# even though intraday-data-loader has just written it and invoked this
+# function. A snapshot row is never revisited, so a stale input here is wrong
+# forever; the loader having run is not proof that its write covered the bar
+# this snapshot describes.
+# --------------------------------------------------------------------------
+# sma200 on the 5-minute frame needs 200 closed bars. A session is 75 five
+# minute bars, so 200 bars is under three sessions - but weekends and holidays
+# make calendar days a poor proxy for sessions, so the window is generous and
+# the bar count is what is actually checked.
+HISTORY_DAYS = int(os.environ.get("HISTORY_DAYS", "10"))
+
+# Below this the run RAISES rather than classifying on partial inputs. The
+# layer raises too; this is the earlier, clearer failure, naming the fetch
+# rather than the indicator.
+MIN_BARS_TO_CLASSIFY = int(os.environ.get("MIN_BARS_TO_CLASSIFY", "200"))
+
+# The session is 09:15-15:30, which is 375 minutes. The range-expansion test
+# scales the expected move by sqrt(elapsed / SESSION_MINUTES) so that it means
+# the same thing at 10:00 as at 15:15 - see the layer README.
+SESSION_MINUTES = 375
+
+# The VIX-implied expected move: price x (vix/100) / sqrt(252) x K. The same
+# formula and the same K daily-market-sentiment uses, so the two frames'
+# volatility reads are comparable.
+EXPECTED_MOVE_K = float(os.environ.get("EXPECTED_MOVE_K", "1.0"))
+TRADING_DAYS_PER_YEAR = 252
 
 # --------------------------------------------------------------------------
 # Option chain windows

@@ -147,7 +147,7 @@ rather than being a fitted constant.
 
 ## The sma200 guard
 
-`detect_market_regime` compares against `sma200`. With fewer than 200 stored
+The shared classifier compares against `sma200`. With fewer than 200 stored
 candles that value is absent, every comparison with `None`/NaN is false,
 `bull_stack` and `bear_stack` both go false, and legacy **returned `TRANSITION`
 without raising** — a plausible regime built on a missing indicator.
@@ -187,7 +187,7 @@ already happened, not a forecast."* Do not size a trade off this column.
 
 Two related findings from the same measurement:
 
-- `atr_floor = 0.004` in `detect_market_regime` has **never fired**. NIFTY's
+- `atr_floor = 0.004` in the OLD `detect_market_regime` had **never fired**. NIFTY's
   `atr_14/close` has a floor around 0.72% (p5); 0.40% is below p0, so
   `compressed` was False on all 943 sessions. It is an inherited constant that
   does nothing.
@@ -198,9 +198,34 @@ Two related findings from the same measurement:
 
 ## Porting notes
 
-Formulas are ported formula-for-formula from `trading-algo/helpers/` —
-`detect_market_regime`, `calculate_sentiment`, `sentiment_bias`,
-`calculate_confidence`, Wilder RSI/ATR — with four deliberate exceptions.
+**The classification is no longer a port, and no longer lives here.** It comes
+from the shared [`market-classifier` layer](../layers/market-classifier/README.md),
+which runs the *same* rules on daily candles here and on 5-minute candles in
+`intraday-market-sentiment`.
+
+What it replaced: `detect_market_regime`, `calculate_sentiment`,
+`sentiment_bias`, `calculate_confidence` and `combined_label`, all ported
+formula-for-formula from `trading-algo/helpers/`, plus a local `indicators.py`
+that duplicated `strategy-manager`'s copy byte for byte. All are deleted.
+
+**Why they went rather than being kept.** The intraday path carried a port of a
+*different* legacy builder, and the two disagreed about everything that
+matters — `±7` score against `±3`, bias at `±4` against `±2`,
+`TREND`/`RANGE`/`TRANSITION` against `TREND`/`RANGE`. So `regime` on a daily row
+and `regime` on an intraday row were different measurements wearing one name,
+and a score of `−3` meant "mildly bearish" in one and "as bearish as it gets" in
+the other. Reconciling meant imposing one frame's rules on the other; both were
+discarded and the replacement defined fresh.
+
+**What changed in this table as a result:** `bias` is now
+`bullish`/`bearish`/`range-bound` (was `neutral`, not `range-bound`); `regime`
+is `trending`/`sideways`/`volatile-expansion` (was the six combined labels);
+`sma20` became `sma9`; and `max_score`, `volatility`, `swing_*`,
+`structure_determined`, `range_used`, `volatility_expanding` and `gap_pct` are
+new columns. The single test row that predated the change was deleted.
+
+Wilder RSI/ATR still match legacy formula-for-formula. The four deliberate
+departures below all still hold.
 
 1. **The `df.iloc[:-1]` drop is gone.** Legacy dropped the newest row because it
    ran intraday and that row was today's forming candle. The daily endpoint lags
@@ -214,9 +239,10 @@ Formulas are ported formula-for-formula from `trading-algo/helpers/` —
 3. **`price` comes from intraday**, since today's daily candle does not exist.
 4. **`expected_move` is VIX-implied** — see above.
 
-The six-label taxonomy (`bias` + `structure` combined into `regime`) is also
-new; legacy stored `TREND`/`TRANSITION`/`RANGE` and the bias separately. Those
-are the same information taken apart.
+`bias`, `structure` and `regime` are now three separate answers rather than a
+combined label: `structure` is the swing read alone, and `regime` is that read
+after volatility has had a veto. See the layer README for why those are not the
+same question.
 
 ## Configuration
 
@@ -297,6 +323,8 @@ Covered before deploy:
 - `SENTIMENT_FIELDS` count equals the placeholder count, and the insert's column
   list matches `schema.sql` in **both** directions
 - the `sma200` guard raises at 84 candles rather than emitting a regime
+- `SENTIMENT_FIELDS` was diffed against `information_schema.columns` on the live
+  table after the migration: 35 columns each way, zero drift
 
 ## First live run — 2026-09-11
 

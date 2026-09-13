@@ -38,10 +38,10 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
 | Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
 | Daily candles + daily read | daily, weekdays 09:50 | EventBridge Scheduler cron | **built** |
-| Intraday candles | every 5 min, 10:00–15:35 | EventBridge Scheduler cron | **built** |
-| Intraday market read | every 15 min, 09:35–15:35 | EventBridge Scheduler cron | **built** |
-| Strategy routing | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
-| Range sweep playbook | when the regime is RANGE | invoke from `strategy-manager` | **built** |
+| Intraday candles | every 15 min, 10:00–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
+| Intraday market read | on each loader run, 24×/day | invoke from `intraday-data-loader` | **built** |
+| Strategy routing | on each snapshot, 24×/day | invoke from `intraday-market-sentiment` | **built** |
+| Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -53,7 +53,7 @@ output.
 **The strategy plane is chained rather than scheduled, and it is the one
 exception.** `strategy-manager`'s input *is* the intraday snapshot, so
 `intraday-market-sentiment` invokes it once the row is written, and it invokes
-the strategies valid for the regime it classifies. A cron there would have to
+the strategies valid for the regime and bias the snapshot carries. A cron there would have to
 guess how long the snapshot takes, read the row back out of Postgres, and decide
 what to do when it is not there yet.
 

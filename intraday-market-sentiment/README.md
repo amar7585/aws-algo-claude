@@ -7,7 +7,7 @@ pain, IV skew) for two expiries at once.
 
 | | |
 |---|---|
-| Schedule | 09:35 → 15:35 at 15-min steps, `Asia/Kolkata` — three rules, see [Deployment](#deployment-shape) |
+| Schedule | **none** — invoked by `intraday-data-loader` once its candles are committed, 24×/day |
 | Invocations | **25** per trading day |
 | Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
 | Reads | `algo.instrument_master`, and its own previous row |
@@ -31,7 +31,7 @@ records.
 
 ## The five-minute offset is the point
 
-Runs fire at 09:35, 09:50, 10:05 … 15:35 — five minutes past each 15-minute
+Runs follow the loader at 10:00, 10:15 … 15:30 plus the 15:35 sweep — the loader's
 boundary. At each of those moments a 5-minute bucket has *just closed*, so the
 bar the snapshot describes is final.
 
@@ -49,7 +49,8 @@ The schedule makes that test cheap. The test is what makes it *true*.
 
 ## snapshot_ts is the bar, not the clock
 
-`snapshot_ts` is the timestamp of that last closed bar — 09:30 for the 09:35
+`snapshot_ts` is the timestamp of the NEWEST bar Dhan returned, the forming one
+included — 10:00 for the 10:00
 run, 09:45 for the 09:50 run. `captured_at` holds the actual run time, so the
 lag stays visible. Three things follow:
 
@@ -78,7 +79,7 @@ to today. Three consequences, all intended:
 | Situation | Baseline | Effect |
 |---|---|---|
 | Normal run | 15 minutes earlier | a 15-minute delta |
-| First run of a day (09:35) | **previous session's 15:30** | deltas span the overnight gap |
+| First run of a day (10:00) | **previous session's last snapshot** | deltas span the overnight gap |
 | After a missed run | 30+ minutes earlier | a wider delta, no special handling |
 
 Because the window varies, `prev_snapshot_ts` is stored on every row. A reader
@@ -266,18 +267,22 @@ end, so failing early is clearer.
 
 ## Deployment shape
 
-Three EventBridge Scheduler rules, `Asia/Kolkata`, all targeting this function:
+**No schedule.** The three EventBridge Scheduler rules this function used to
+carry — `cron(35,50 9 …)`, `cron(5,20,35,50 10-14 …)`, `cron(5,20,35 15 …)` —
+were deleted on 2026-09-13. `intraday-data-loader` invokes this function once
+its candles are committed, so the loader's cron is the whole plane's cron:
 
 ```
-cron(35,50 9 ? * MON-FRI *)             09:35, 09:50              2
-cron(5,20,35,50 10-14 ? * MON-FRI *)    10:05 … 14:50            20
-cron(5,20,35 15 ? * MON-FRI *)          15:05, 15:20, 15:35       3
+cron(0,15,30,45 10-14 ? * MON-FRI *)    10:00 … 14:45            20
+cron(0,15,30,35 15 ? * MON-FRI *)       15:00, 15:15, 15:30, 15:35  4
 ```
 
-Three rather than one because a single `9-15` rule would also fire 09:05, 09:20
-and 15:50. The handler keeps an outside-session guard anyway, as a second line
-of defence against a manual invocation or a hand-edited rule — not as the
-mechanism.
+24 runs a trading day. The handler keeps its outside-session guard anyway, as a
+second line of defence against a manual invocation — not as the mechanism.
+
+Its execution role needs `lambda:InvokeFunction` on **`strategy-manager`'s ARN**
+and nothing wider, and `STRATEGY_MANAGER_FUNCTION_NAME` must be set or the
+chain stays dark and says so in the log.
 
 ### Two IAM roles, both dedicated — and why reusing the loader's failed
 

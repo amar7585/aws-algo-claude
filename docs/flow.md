@@ -18,29 +18,33 @@ flowchart TD
         DAILY["daily-market-sentiment<br/><i>cron, 09:50</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
         DAILY --> TG1{{"Telegram"}}
 
-        CANDLES["intraday-data-loader<br/><i>cron, every 5 min<br/>10:00-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
+        CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>10:00-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
 
-        SENT["intraday-market-sentiment<br/><i>cron, every 15 min<br/>09:35-15:35</i>"] --> STBL[("intraday_market_sentiment<br/>option_chain_snapshot")]
+        SENT["intraday-market-sentiment<br/><i>invoked, 24x/day</i>"] --> STBL[("intraday_market_sentiment<br/>option_chain_snapshot")]
     end
 
     subgraph STRAT["The strategy plane - chained, not scheduled"]
-        MGR["<b>strategy-manager</b><br/><i>invoked, 25x/day</i>"]
-        SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked when RANGE</i>"]
-        MGR -->|"Event: the context"| SWEEP
+        MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
+        SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on sideways|range-bound</i>"]
+        MGR -->|"Event: both sentiments"| SWEEP
         SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
     end
 
+    CANDLES -->|"Event: candles committed"| SENT
     SENT -->|"Event: the snapshot it just wrote"| MGR
 
     SSM -.token.-> DAILY
     SSM -.token.-> CANDLES
     SSM -.token.-> SENT
-    SSM -.token.-> MGR
-    CTBL -.candles.-> MGR
-    DTBL -.daily read.-> MGR
+    CTBL -.bars + daily series.-> SWEEP
+    DTBL -.daily read.-> SENT
     IM -.identity.-> CANDLES
     IM -.identity.-> SENT
-    IM -.identity.-> MGR
+
+    CLS[["market-classifier layer<br/><i>one rule set, both frames</i>"]]
+    CLS -.-> DAILY
+    CLS -.-> SENT
+    style CLS fill:#4c1d95,color:#fff
 
     ERR["error-notifier<br/><i>log subscription</i>"] --> TG2{{"Telegram"}}
     LOG -.errors only.-> ERR
@@ -60,16 +64,23 @@ Read in clock order, a weekday looks like this:
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
 | 08:00 | `auth-dhan-broker` | cron | `/algo/dhan/token` |
 | 09:50 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
-| 10:00–15:30 every 5 min, + 15:35 | `intraday-data-loader` | cron | the three candle tables |
-| 09:35–15:35 every 15 min | `intraday-market-sentiment` | cron | `intraday_market_sentiment`, `option_chain_snapshot` |
-| immediately after each of those 25 runs | `strategy-manager` | **invoke** | nothing |
-| immediately after, when the regime is RANGE | `strategy-range-liquidity-sweep` | **invoke** | nothing |
+| 10:00–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
+| immediately after each of those 24 runs | `intraday-market-sentiment` | **invoke** | `intraday_market_sentiment`, `option_chain_snapshot` |
+| immediately after | `strategy-manager` | **invoke** | nothing |
+| immediately after, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
-**Six of the seven run on their own cron. The strategy plane is the exception.**
-`strategy-manager`'s input *is* the intraday snapshot, so the function that
-writes the snapshot invokes it — a cron there would have to guess how long the
-write takes, read the row back, and decide what to do when it is not there yet.
+**Four schedules in total, and only one of them is intraday.**
+`instrument-master-loader` monthly, `auth-dhan-broker` at 08:00,
+`daily-market-sentiment` at 09:50, and `intraday-data-loader` every 15 minutes.
+Everything else in the session is chained: the loader commits and invokes the
+sentiment function, which writes its row and invokes the manager, which routes.
+
+**Why chained rather than four crons.** Each step's input *is* the previous
+step's output. A cron on the sentiment function would have to guess how long
+the loader takes; a cron on the manager would have to read the snapshot back
+out of Postgres and decide what to do when it is not there yet. The completion
+of the write is the only honest trigger, so it is the trigger.
 
 **Nothing in the chain can fail its caller.** Every invoke is `Event`, so
 `intraday-market-sentiment` finishing is not a claim that the manager
@@ -233,11 +244,11 @@ There is no holiday gate. On a holiday the fetch returns nothing new and the
 sentiment row is simply not written — a calendar would be a second source of
 truth to keep correct.
 
-## Intraday candles — every 5 minutes, 10:00–15:35
+## Intraday candles — every 15 minutes, 10:00–15:35
 
 ```mermaid
 flowchart TD
-    START(["EventBridge Scheduler<br/>every 5 min 10:00–15:30<br/>+ 15:35 sweep, IST"]) --> WKND{"Saturday<br/>or Sunday?"}
+    START(["EventBridge Scheduler<br/>every 15 min 10:00–15:30<br/>+ 15:35 sweep, IST"]) --> WKND{"Saturday<br/>or Sunday?"}
     WKND -->|yes| SKIP(["skip"])
     WKND -->|no| DUE["intervals due =<br/><b>(now − 09:15) mod I == 0</b><br/>15:35 ⇒ all three"]
 
@@ -288,100 +299,87 @@ index candles are already committed rather than lost alongside it.
 There is no holiday gate, for the same reason as the daily read: on a holiday
 the fetch returns nothing new and nothing is written.
 
-## Strategy routing — on each snapshot, 25× a day
+## Snapshot, routing and the playbook — on each of the 24 loader runs
 
-No schedule. `intraday-market-sentiment` invokes `strategy-manager` once its
-row is committed, and the manager invokes the playbooks the regime allows.
+No schedule anywhere in this chain. `intraday-data-loader` commits its candles
+and invokes `intraday-market-sentiment`; that writes its row and invokes
+`strategy-manager`; that routes.
 
 ```mermaid
 flowchart TD
-    START(["intraday-market-sentiment<br/><b>Event invoke, the snapshot as payload</b>"]) --> VAL{"snapshot carries<br/>snapshot_ts,<br/>security_id,<br/>instrument_type?"}
-    VAL -->|no| RAISE(["raise"])
-    VAL -->|yes| ASOF["<b>as_of = snapshot_ts + 5 min</b><br/>every read bounded by this,<br/>never by the wall clock"]
+    START(["intraday-data-loader<br/><b>Event invoke</b>"]) --> FETCH
 
-    ASOF --> TOK["read /algo/dhan/token"]
-    TOK --> RES["resolve instrument<br/><b>on (security_id, instrument_type)</b>"]
-    RES --> C15["candle_15min: newest 260 CLOSED bars<br/><i>candle_ts + interval &le; as_of</i>"]
+    FETCH["fetch 5-min bars, HISTORY_DAYS back<br/><i>one call: sma200 needs 200 bars,<br/>a session gives 75</i>"]
+    FETCH --> NEWEST["<b>snapshot_ts = newest bar returned</b><br/><i>the FORMING one included</i>"]
+    NEWEST --> CHAIN["expiries, future, VIX, both option chains"]
+    CHAIN --> DREAD["read daily_market_sentiment<br/><b>newest row stamped BEFORE today</b>"]
+    DREAD --> CLS
 
-    C15 --> FRESH{"newest closed bar<br/>within 1 bar<br/>of the snapshot?"}
-    FRESH -->|"no - stalled loader"| RAISE
-    FRESH -->|"yes - or the :35 write/read race"| BARS{"&ge; 200<br/>closed bars?"}
-    BARS -->|no| RAISE
-    BARS -->|yes| IND["SMA 20/50/100/200, Wilder RSI"]
+    CLS["<b>market-classifier layer</b>, 5-min frame<br/>sma9/50/100/200, RSI, swing structure,<br/>VWAP term, time-scaled volatility"]
+    CLS -->|"< 200 bars, or an SMA absent"| RAISE(["raise"])
+    CLS --> WRITE[("intraday_market_sentiment<br/>+ option_chain_snapshot<br/><i>classification stored as columns</i>")]
 
-    IND --> MISS{"any of sma20/50/100/200,<br/>rsi absent on the<br/>newest bar?"}
-    MISS -->|yes| RAISE
-    MISS -->|no| CLS["<b>classify</b><br/>score -3..+3, bias, regime,<br/>confidence"]
+    WRITE --> MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
+    MGR --> KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
+    KEY -->|"no - drift"| RAISE
+    KEY -->|"present, empty"| NONE(["no playbook is valid<br/>on this kind of day"])
+    KEY -->|"sideways|range-bound"| INV["<b>Event invoke</b>, context v2<br/><i>two rows and an instrument, ~840 bytes</i>"]
 
-    CLS --> C5["candle_5min: newest 200 closed bars"]
-    C5 --> DLY["daily_market_sentiment row<br/>+ Wilder true ATR14 from candle_daily"]
-    DLY --> LIVE["Dhan /v2/charts/intraday<br/><b>keeps the forming bar</b> - the live price"]
-
-    LIVE --> REG{"regime in<br/>STRATEGY_REGISTRY?"}
-    REG -->|"no - drift"| RAISE
-    REG -->|"TREND &rarr; empty list"| NONE(["no playbook is valid<br/>on this kind of day"])
-    REG -->|"RANGE"| SIZE{"context<br/>&le; 256 KB?"}
-    SIZE -->|no| RAISE
-    SIZE -->|yes| INV["<b>Event invoke</b> each eligible playbook<br/><i>all attempted, failures raised together</i>"]
-
-    INV --> GATE["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
-    GATE --> FINE{"regime RANGE<br/>VIX within &plusmn;5%<br/>adr &lt; 0.78 &times; ATR14<br/>opening range &ge; 0.15%<br/>09:45-15:00?"}
+    INV --> SWEEP["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
+    SWEEP --> OWN["reads its OWN bars from candle_5min<br/><i>as_of = snapshot_ts, so the forming<br/>bar is excluded</i>"]
+    OWN --> FINE{"regime sideways<br/>VIX within &plusmn;5%<br/>adr &lt; 0.78 &times; ATR14<br/>opening range &ge; 0.15%<br/>09:45-15:00?"}
     FINE -->|"any fails"| DOWN(["stand down,<br/>naming every failed check"])
-    FINE -->|all pass| POOLS["8 pools: 15min H/L, PDH/PDL,<br/>1Hr H/L, session H/L"]
-    POOLS --> SCAN["replay the session's sweeps in order:<br/>penetration 0.04-0.30%, rejection,<br/>no extension, reclaim"]
-    SCAN --> BROKE{"a level<br/>accepted through?"}
-    BROKE -->|yes| DEAD(["both sides dead -<br/>the range no longer exists"])
-    BROKE -->|no| RR{"RR &ge; 1.5 against T2?"}
-    RR -->|no| REJ(["rejected, with the reason"])
-    RR -->|yes| OUT{{"SWEEP CANDIDATE<br/>entry, stop, T1/T2/T3, grade<br/><i>to the log</i>"}}
+    FINE -->|all pass| SCAN["8 pools, replay the session's sweeps"]
+    SCAN --> OUT{{"SWEEP CANDIDATE or a reason<br/><i>to the log</i>"}}
 
     style RAISE fill:#7f1d1d,color:#fff
     style NONE fill:#78350f,color:#fff
     style DOWN fill:#78350f,color:#fff
-    style DEAD fill:#78350f,color:#fff
-    style REJ fill:#78350f,color:#fff
+    style WRITE fill:#14532d,color:#fff
     style OUT fill:#14532d,color:#fff
 ```
 
 Six things in that diagram are load-bearing:
 
-**`as_of` comes from the snapshot, not the clock.** Every candle read is
-bounded by the instant the snapshot's own 5-minute bar closed, so two runs over
-the same snapshot see the same bars and reach the same decision. That is what
-makes re-running the manager meaningful rather than merely repeated.
+**`snapshot_ts` is the newest bar returned, forming one included.** At a 10:00
+run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
+`spot` is the live price — and it joins directly to the `candle_5min` row the
+loader completes at 10:15. At 15:30 there is no 15:30 bucket, so the day's last
+snapshot is stamped 15:25 with no special case. What is genuinely partial —
+that bar's own high, low and volume — is not read by anything.
 
-**The freshness check allows exactly one bar, and only because of a race.**
-`intraday-data-loader` fires every five minutes and
-`intraday-market-sentiment` at :35/:50/:05/:20, so the loader's write of the
-bar the snapshot describes and the manager's read of it fall in the same
-minute. Demanding equality would raise on the ordinary case. Beyond one bar it
-is not a race but a stalled loader, and the SMAs would then be computed from a
-series that ends before the market does.
+**One classification, two frames.** `daily-market-sentiment` and
+`intraday-market-sentiment` call the same `market-classifier` layer, so a daily
+row and an intraday row are on one scale. They were not before: the daily path
+ported `detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the
+intraday path a different legacy builder (±3, TREND/RANGE), and `regime` meant
+two different things depending on which table you read it from. `max_score` is
+stored because the frames are still not on one *total* — the 5-minute frame
+carries a VWAP term the daily frame cannot.
 
-**A missing SMA raises rather than defaulting to zero.** The legacy builder ran
-every indicator through a `safe_value()` mapping NaN to `0.0`, which makes
-`close > sma100 > sma200` read as `close > 0 > 0` — False — so the longer-SMA
-test silently contributes nothing and the score caps at ±2. Nothing raises and
-nothing looks wrong. This is the same defence `daily_market_sentiment` already
-carries as `sma200 NOT NULL`.
+**The daily lookup is "newest row before today", not "today's row".** A daily
+row is stamped with the session it *describes*, which is yesterday, because
+Dhan's daily endpoint lags. A row stamped today never exists. The previous
+version of the manager looked it up with today's midnight and therefore always
+got `None` — every playbook gating on the daily read was gating on nothing.
+`stale` now says whether this morning's 09:50 run actually landed.
 
-**An unknown regime raises; a regime mapping to `[]` does not.** Those are
-different things. `TREND → []` is a deliberate "no playbook is valid today",
-which is the correct answer for every playbook built so far. A regime *missing
-from the map* means `classify.py` and the registry have drifted apart, and
-routing nothing would otherwise look exactly like a correct stand-down.
+**The manager reads, computes and writes nothing.** The classification moved
+*up* into the layer and is stored by the function that computes it; the data
+fetch moved *down* into the playbooks. What is left is the routing decision.
 
-**Both gates run, and that is not redundancy.** The manager's registry answers
-"is this playbook valid for this kind of day at all"; the playbook's own gate
-answers what only it can know. A strategy that trusted an upstream gate it
-cannot see would fire on a bad day the moment that gate moved.
+**Routing is on `regime|bias`, and every cell is listed.** A key present and
+mapping to `[]` is a deliberate "no playbook today"; a key *missing* means the
+classifier and the registry have drifted apart, and that raises — routing
+nothing would otherwise look exactly like a correct stand-down. Eight of the
+nine cells are deliberately empty: which combinations run which playbook is a
+decision to take against observed sessions, and there are none yet.
 
-**Acceptance kills both sides, not just one.** Two consecutive 5-minute closes
-beyond a level means the range broke — and if the opening-range high has been
-accepted through, a later sweep of the range low is not a range trade either,
-because there is no longer a range. Measured on the real 2026-09-11 session:
-the high was accepted through at 10:10, which stands down the otherwise-
-qualifying 10:20 sweep.
+**The playbook fetches its own bars, from Neon, not Dhan.** The only thing the
+manager ever called Dhan for was a live price, and this playbook never read it
+— a sweep is confirmed by a *closed* bar reclaiming a level. Bounding the read
+on `snapshot_ts` rather than the clock is what makes a re-run reach the same
+answer rather than merely repeat.
 
 ## How a failure reaches you
 
@@ -447,14 +445,15 @@ exactly the same way as a quiet market.
 | Neon compute suspended | — | first `connect()` absorbs the wake-up |
 | TOTP generation fails | non-200 from `/app/generateAccessToken` | raise — no token exists |
 | Dhan refuses with a 200 envelope | no `accessToken` in body | raise, quoting the body |
-| `intraday-data-loader` has stalled | newest closed bar > 1 bar behind the snapshot | raise — no routing on stale SMAs |
-| Fewer than 200 closed 15-min bars | `MIN_BARS_TO_CLASSIFY` | raise — not a score capped at ±2 |
-| An SMA absent on the newest bar | explicit `None` check | raise — never defaulted to `0.0` |
-| `classify.py` and the registry drift apart | regime absent from `STRATEGY_REGISTRY` | raise — not an empty shortlist |
-| The dispatched context exceeds 256 KB | checked before `invoke` | raise, naming the candle count |
+| `intraday-data-loader` has stalled | the sentiment function fetches its own bars and never reads the loader's tables | cannot happen there; in the playbook a stale bar costs one scan the next run corrects |
+| Fewer than 200 closed 5-min bars | `MIN_BARS_TO_CLASSIFY`, before the layer is called | raise — not a score capped at ±2 |
+| An SMA absent on the newest bar | explicit `None` check in the layer | raise — never defaulted to `0.0` |
+| the classifier and the registry drift apart | `regime\|bias` key absent from `STRATEGY_REGISTRY` | raise — not an empty shortlist |
+| The dispatched context exceeds 256 KB | checked before `invoke` | raise, naming the two rows (a real one measures ~840 bytes) |
 | A strategy invoke is refused | `StatusCode` / `FunctionError` | every invoke attempted, then one raise naming all failures |
-| The manager's payload shape changes | `context_version` assertion in each strategy | raise — never a gate passing on a vanished input |
+| The manager's payload shape changes | `context_version` assertion in each strategy (now v2) | raise — never a gate passing on a vanished input |
 | A strategy fails after dispatch | its own log group → `error-notifier` | reported from there; the manager cannot see it and does not claim to |
+| The daily read is missing or stale | `stale` flag from `created_at`, set where the row is read | logged by both the reader and the router; playbooks stand down on their own gate |
 | Token JWT has no `exp` claim | claim check before write | raise — nothing stored |
 | Dhan token expired | `expires_at` check before any call | raise — never call with a dead token |
 | `security_id` matches 0 or 2+ rows | exactly-one check in `resolve_instrument` | raise — no silent wrong instrument |

@@ -11,11 +11,12 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| `intraday-data-loader` | Lambda function | every 5 min, 10:00–15:35 | **built, running** | [README](../intraday-data-loader/README.md) |
+| `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron** | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
-| `intraday-market-sentiment` | Lambda function | every 15 min, 09:35–15:35 | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
-| `strategy-manager` | Lambda function | on each snapshot, 25×/day | **built** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | when the regime is RANGE | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
+| `market-classifier` | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
+| `intraday-market-sentiment` | Lambda function | invoked by the loader, 24×/day | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
+| `strategy-manager` | Lambda function | on each snapshot, 24×/day — a pure router | **built** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -24,9 +25,22 @@ alarm rather than fail a session.
 
 **There is no Step Functions state machine and no History/Regime split.** An
 earlier design recorded both; what got built instead is `daily-market-sentiment`
-doing the daily fetch and the daily read in one function, on one schedule, and
-`intraday-data-loader` filling the three intraday candle tables on another, and
-`intraday-market-sentiment` writing the 15-minute read on a third.
+doing the daily fetch and the daily read in one function on one schedule, and a
+single intraday cron on `intraday-data-loader` that chains the rest.
+
+**Four schedules, and only one is intraday.** Monthly for the instrument
+master, 08:00 for the token, 09:50 for the daily read, every 15 minutes for the
+loader. The loader invokes `intraday-market-sentiment`, which invokes
+`strategy-manager`, which invokes the playbooks — each step's input is the
+previous step's output, so the completion of a write is the only honest trigger
+for what follows.
+
+**One classification, two frames.** `daily-market-sentiment` and
+`intraday-market-sentiment` both call the `market-classifier` layer — the same
+rules on daily candles and on 5-minute candles. Before it, the daily path
+ported `detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the
+intraday path a different legacy builder (±3, TREND/RANGE), so `regime` meant
+two different things depending on which table it was read from.
 
 **The strategy plane is the one exception to "everything on its own cron", and
 deliberately so.** `strategy-manager` has no schedule: its input *is*
@@ -131,7 +145,7 @@ and the current-month NIFTY future, through the session. It computes nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 5 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Schedule | every 5 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 68 invocations a day |
+| Schedule | every 15 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 24 invocations a day |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables at all |
 
 Which intervals a run fetches follows one rule — **fetch interval *I* when
@@ -191,7 +205,7 @@ plus the ten raw option legs behind it.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 8 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Schedule | 09:35–15:35 every 15 min, `Asia/Kolkata` — three rules, 25 invocations a day |
+| Schedule | **none** — invoked by `intraday-data-loader` after it commits, 24×/day |
 | Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
@@ -202,12 +216,19 @@ provide the baseline for every `*_change_pct`: Dhan serves only a live option
 chain and has no historical-chain endpoint, so an intraday OI delta cannot be
 had any other way.
 
-**Runs fire five minutes past each 15-minute boundary** — 09:35, 09:50, 10:05 —
-so a 5-minute bucket has just closed and the bar the snapshot describes is
-final. Nothing it writes is ever partial, which is the opposite of the loader's
-deliberate choice: a snapshot row is never revisited, so a partial bar here
-would be wrong forever. `snapshot_ts` is that closed bar, not the run clock,
-which also makes a re-run idempotent.
+**`snapshot_ts` is the newest bar Dhan returns, the forming one included.** At
+a 10:00 run the bucket stamped 10:00 has just opened, so the row is stamped
+10:00 and `spot` is the live price — and it joins directly to the `candle_5min`
+row the loader completes at 10:15. At 15:30 there is no 15:30 bucket, so the
+day's last snapshot is stamped 15:25 without a special case. What is genuinely
+partial on that bar — its own high, low and volume — is read by nothing: the
+classification reads closes, and the session aggregates span every bar of the
+day. The primary key still makes a re-run idempotent.
+
+**It also reads `daily_market_sentiment` and passes it on**, so the manager can
+stay a router with no database. The lookup is the newest row stamped *before*
+today, not today's row: a daily row describes the previous session, so a row
+stamped today never exists.
 
 Two strike widths, not interchangeable: aggregates over ATM ±20, raw legs
 stored for ATM ±2 (10 rows a snapshot). Both expiries sit on one row as
@@ -237,19 +258,24 @@ them. It evaluates no playbook, emits no signal and writes nothing.
 `intraday-market-sentiment` shares no tables with `intraday-data-loader` so a
 stall cannot feed it stale inputs; that reason does not transfer here, because a
 snapshot row is never revisited while this function persists nothing - a stale
-SMA costs one routing decision that the next run corrects. A genuinely stalled
-loader raises, with one bar of tolerance for the race between the loader's write
-and this function's read, which land in the same minute.
+**It is now a pure router.** It opens no database connection, calls no API,
+computes no indicator and writes no row — everything it decides on arrives in
+the payload. Two things moved out of it:
 
-It still calls Dhan once, for the live price: `snapshot_ts` is the last *closed*
-5-minute bar and so is up to five minutes old by construction, and the routing
-question is what price is doing now.
+- **the classification moved up**, into the `market-classifier` layer, and is
+  *stored* on the snapshot row by the function that computes it. The manager
+  used to recompute a 15-minute classification of its own, so the rules lived
+  in two places and the regime a strategy acted on was never persisted.
+- **the data fetch moved down**, into the playbooks. A playbook knows which
+  bars it needs; the manager was fetching a fixed window on their behalf.
 
-The classification is a port of `build_intraday_sentiment`, **not** of
-`detect_market_regime()` - that is the daily path and returns a third value,
-`TRANSITION`, which the intraday path never produces. Its one departure from
-legacy is to **raise** on a history too short for `sma200` rather than default
-the missing SMA to `0.0`, which silently caps the score at ±2.
+Its Dhan call for a live price went with them — the only playbook built never
+read it, because a sweep is confirmed by a *closed* bar.
+
+**Routing is on `regime|bias`, and every one of the nine cells is listed.** A
+key present and mapping to `[]` is a deliberate "no playbook today"; a key
+*missing* means the classifier and the registry have drifted apart, and that
+raises. Eight cells are deliberately empty pending observed sessions.
 
 Full reasoning, the measured payload size, the registry and the IAM shape are in
 its [README](../strategy-manager/README.md).

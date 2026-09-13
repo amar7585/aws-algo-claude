@@ -4,9 +4,10 @@ The regime gate and the dispatch.
 Two jobs, and the split between them is the whole point of this function:
 
   shortlist()  decides WHICH playbooks are even eligible, from the regime
-               alone. A playbook fired in the wrong regime is the main way
-               this loses money, so that decision is a lookup in a table
-               rather than a judgement inside a strategy that wants to trade.
+               and bias the sentiment row already carries. A playbook fired on
+               the wrong kind of day is the main way this loses money, so that
+               decision is a lookup in a table rather than a judgement inside
+               a strategy that wants to trade.
 
   dispatch()   invokes them, asynchronously, each with the full context.
 
@@ -36,32 +37,44 @@ from config import (
 logger = logging.getLogger()
 
 
-def shortlist(regime):
-    """
-    The strategy functions valid for `regime`.
+def routing_key(regime, bias):
+    """The registry key for a market that looks like this."""
+    return f"{regime}|{bias}"
 
-    An UNKNOWN regime raises rather than returning nothing. A regime this
-    function has never heard of means classify.py and this map have drifted
-    apart, and the symptom of returning [] would be a session that routes
-    nothing and looks merely quiet - indistinguishable from a correct
+
+def shortlist(regime, bias):
+    """
+    The strategy functions valid for this regime AND bias.
+
+    ROUTING IS ON THE COMBINATION. "sideways" says the swing read found no
+    progression; it does not say whether the market is leaning up, leaning
+    down, or genuinely balanced, and a playbook that is right on a balanced
+    day can be wrong on a sideways day with a bearish lean.
+
+    AN UNKNOWN COMBINATION RAISES rather than returning nothing. A key this
+    function has never heard of means the market-classifier layer and this map
+    have drifted apart - a new regime or bias value appeared and nobody told
+    the router - and the symptom of returning [] would be a session that
+    routes nothing and looks merely quiet, indistinguishable from a correct
     stand-down. Those two must not look the same.
 
-    A regime that is present and maps to [] is a different thing entirely:
-    that is a deliberate "no playbook is valid on this kind of day", which is
-    the correct answer on a trending day for every playbook here so far.
+    A key that is PRESENT and maps to [] is a different thing entirely: a
+    deliberate "no playbook is valid on this kind of day", which is currently
+    the answer for eight of the nine cells.
     """
-    if regime not in STRATEGY_REGISTRY:
+    key = routing_key(regime, bias)
+    if key not in STRATEGY_REGISTRY:
         raise RuntimeError(
-            f"regime {regime!r} is not in STRATEGY_REGISTRY "
-            f"({sorted(STRATEGY_REGISTRY)}) - classify.py and the registry "
-            f"have drifted apart, and routing nothing would look like a quiet "
-            f"session rather than a misconfiguration"
+            f"routing key {key!r} is not in STRATEGY_REGISTRY "
+            f"({sorted(STRATEGY_REGISTRY)}) - the market-classifier layer and "
+            f"the registry have drifted apart, and routing nothing would look "
+            f"like a quiet session rather than a misconfiguration"
         )
-    functions = list(STRATEGY_REGISTRY[regime])
+    functions = list(STRATEGY_REGISTRY[key])
     if not functions:
-        logger.info("regime %s: no playbook is valid on this kind of day", regime)
+        logger.info("%s: no playbook is valid on this kind of day", key)
     else:
-        logger.info("regime %s: eligible %s", regime, ", ".join(functions))
+        logger.info("%s: eligible %s", key, ", ".join(functions))
     return functions
 
 
@@ -93,9 +106,9 @@ def dispatch(context, functions, client=None):
     if len(payload) > MAX_PAYLOAD_BYTES:
         raise RuntimeError(
             f"context is {len(payload)} bytes against a {MAX_PAYLOAD_BYTES} "
-            f"limit - it carries "
-            f"{len(context.get('candles', {}).get('bars', []))} candle bars; "
-            f"lower HISTORY_5MIN_BARS or stop passing the series"
+            f"limit - it carries the snapshot row "
+            f"({len(context.get('snapshot') or ())} keys) and the daily row "
+            f"({len(context.get('daily') or ())} keys)"
         )
 
     dispatched, failures = [], []

@@ -8,7 +8,8 @@ lower-confidence candidate, it does not get averaged with the checks that
 passed, and nothing below reports a near miss as a pass.
 
 strategy-manager has already applied the coarse gate - this function is
-only invoked when the 15-minute regime is RANGE. Everything here is the part
+only invoked for the regime/bias combinations its registry allows.
+Everything here is the part
 the manager cannot know: what THIS playbook needs of the VIX, of how
 much range the day has already spent, of the opening range's width, and of the
 clock. Re-checking the regime as well is deliberate; a strategy that trusts an

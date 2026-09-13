@@ -6,12 +6,25 @@ liquidity sweep - price runs a pool of resting stops, fails to hold beyond it,
 closes back inside, and rotates back across the range - and reports the
 candidates with entry, stop, targets and risk-reward.
 
-INVOKED BY strategy-manager, NOT BY A SCHEDULE. The manager classifies
-the 15-minute regime and only invokes this function when that regime is RANGE,
-handing over the whole context in the payload: the snapshot, the daily read,
-the classification, the candle history and a live price. This function opens no
-database connection and makes no API call of its own - which is why it carries
-no layers at all.
+INVOKED BY strategy-manager, NOT BY A SCHEDULE. The manager is a pure
+router: it reads the regime and bias off the snapshot that
+intraday-market-sentiment already classified and stored, and invokes this
+function only for the combinations its registry allows. It hands over two rows
+and an instrument - the snapshot (which CARRIES its own classification) and the
+daily read - and nothing else.
+
+THIS FUNCTION FETCHES ITS OWN BARS. A playbook knows which bars it needs; the
+manager used to fetch a fixed window on every playbook's behalf and guess at
+the size. It reads NEON, not Dhan: the only thing the manager ever called Dhan
+for was a live price, and this playbook never read it - a sweep is confirmed by
+a CLOSED bar reclaiming a level, so an unconfirmed live tick is precisely what
+the setup must not act on. That is why there is no token here, no SSM read and
+no rate-limit budget.
+
+Reading intraday-data-loader's tables is safe HERE in a way it is not in
+intraday-market-sentiment: this function persists nothing, so a stale bar costs
+one scan that the next run corrects, rather than a snapshot row that is never
+revisited.
 
 WHAT IT PRODUCES. Log output, and nothing else. It writes no table, emits no
 signal, places no order and sizes nothing - the playbook rules the last two out
@@ -28,6 +41,7 @@ the same answer rather than double-counting.
 
 Modules:
     config.py   every threshold the playbook states, and the ones it does not
+    db.py       the Neon reads - the bars and the daily series. No writes.
     levels.py   the liquidity pools, and which of them stack
     sweep.py    detection, acceptance, and what became of each attempt
     trade.py    entry, stop, targets, risk-reward, grade
@@ -37,14 +51,22 @@ Modules:
 
 import logging
 
+from market_classifier import wilder_atr
+from neon_access import connect, ist_midnight_epoch, read_neon_connection_string
+
 import gate as gate_lib
 import report
 import sweep as sweep_lib
 import trade as trade_lib
 from config import (
+    ATR_PERIOD,
+    CANDLE_INTERVAL_MINUTES,
     EXPECTED_CONTEXT_VERSION,
+    HISTORY_5MIN_BARS,
+    HISTORY_DAILY_BARS,
     MAX_ATTEMPTS_PER_SIDE,
 )
+from db import closed_candles, daily_candles
 from levels import HIGH, LOW, build_pools, ist_datetime, session_bars, stacked_with
 
 logger = logging.getLogger()
@@ -74,13 +96,25 @@ def read_context(event):
             f"{sorted(event)}"
         )
 
-    for field in ("snapshot", "classification", "candles"):
+    for field in ("snapshot", "instrument"):
         if not isinstance(event.get(field), dict):
             raise RuntimeError(f"context carries no `{field}` object")
 
-    bars = event["candles"].get("bars")
-    if not bars:
-        raise RuntimeError("context carries no candle bars to scan")
+    # THE CLASSIFICATION IS ON THE SNAPSHOT NOW, not in a block beside it.
+    # intraday-market-sentiment runs the shared market-classifier layer and
+    # stores the result as columns, so a snapshot without them is a row
+    # written before that wiring - and the gate below would read None for
+    # regime and stand down for the wrong reason.
+    missing = [
+        key for key in ("snapshot_ts", "regime", "bias", "sma100")
+        if event["snapshot"].get(key) is None
+    ]
+    if missing:
+        raise RuntimeError(
+            f"snapshot is missing {missing} - the classification columns are "
+            f"written by intraday-market-sentiment via the market-classifier "
+            f"layer, and the gate cannot run without them"
+        )
     return event
 
 
@@ -208,23 +242,64 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     ctx = read_context(event)
 
     snapshot = ctx["snapshot"]
-    classification = ctx["classification"]
+    # The classification IS the snapshot - regime, bias and sma100 are columns
+    # on the row, not a separate block. Passed under its own name so the gate
+    # and the walk read from one object rather than two views of it.
+    classification = snapshot
+    instrument = ctx["instrument"]
     daily = ctx.get("daily")
     snapshot_ts = int(snapshot["snapshot_ts"])
     session_day = ist_datetime(snapshot_ts).date()
 
-    bars = session_bars(ctx["candles"]["bars"], session_day)
+    # ---- the reads ---------------------------------------------------------
+    #
+    # as_of IS snapshot_ts, AND THAT IS EXACTLY RIGHT under the current grain.
+    # snapshot_ts names the bar that was still FORMING when the snapshot was
+    # taken, so `candle_ts + interval <= snapshot_ts` selects every bar that
+    # had CLOSED at that instant and excludes the forming one. A sweep is
+    # confirmed by a closed bar reclaiming a level, so the forming bar is
+    # precisely what must not be scanned.
+    #
+    # Bounding on the snapshot rather than the wall clock is what makes a
+    # re-run meaningful: two runs over the same snapshot read the same bars and
+    # reach the same answer, rather than merely repeating.
+    conn = connect(read_neon_connection_string())
+    try:
+        all_bars = closed_candles(
+            conn, CANDLE_INTERVAL_MINUTES, instrument, snapshot_ts,
+            HISTORY_5MIN_BARS,
+        )
+        # True ATR over daily bars, for the "how much of the day's range is
+        # already spent" gate. Bounded before today's midnight: today's daily
+        # candle does not exist yet at any point during the session.
+        atr14 = wilder_atr(
+            daily_candles(
+                conn, instrument, ist_midnight_epoch(session_day),
+                HISTORY_DAILY_BARS,
+            ),
+            period=ATR_PERIOD,
+        )
+        daily_atr14 = next((v for v in reversed(atr14) if v is not None), None)
+    finally:
+        # Any exception propagates - Lambda must record an error. Never return
+        # a {"statusCode": 500} shape; Lambda counts that as a success.
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    bars = session_bars(all_bars, session_day)
     if not bars:
         raise RuntimeError(
-            f"none of the {len(ctx['candles']['bars'])} bars supplied fall in "
-            f"the {session_day} session - the manager and this function "
-            f"disagree about which day is being scanned"
+            f"none of the {len(all_bars)} closed bars read fall in the "
+            f"{session_day} session - intraday-data-loader has not written "
+            f"today's candles, or has stalled"
         )
 
     pools, orb = build_pools(bars, previous_day=daily, snapshot=snapshot)
 
     passed, failures, details = gate_lib.evaluate(
-        snapshot, classification, ctx.get("daily_atr14"), orb, snapshot_ts
+        snapshot, classification, daily_atr14, orb, snapshot_ts
     )
     if not passed:
         logger.info(report.stand_down_block(failures, details))

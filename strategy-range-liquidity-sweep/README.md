@@ -22,9 +22,14 @@ targets and risk-reward.
 ## It reads nothing and writes nothing
 
 The whole context arrives in the invocation payload: the snapshot, the daily
-read, the classification, the candle history and a live price. So this function
+read. It does NOT hand over candles: this function reads its own bars from
+Neon, because a playbook knows which bars it needs. So this function
 opens no connection, holds no credential and makes no API call — which is why
-it carries **no layers at all**. IST lives in its own `config.py` rather than
+it carries `neon-db-driver`, `neon-access` and `market-classifier` (for Wilder
+ATR only). There is **no Dhan client and no token** — the only thing the
+manager ever called Dhan for was a live price, and this playbook never read it:
+a sweep is confirmed by a *closed* bar reclaiming a level, so an unconfirmed
+live tick is exactly what the setup must not act on. IST stays in `config.py` rather than
 coming from `neon-access`, because importing that layer would pull in `pg8000`
 for a function that never opens a connection. `error-notifier` does the same,
 for the same reason.
@@ -47,12 +52,13 @@ reaches the same answer instead of double-counting an attempt.
 ## The gate
 
 The coarse gate already happened — `strategy-manager` invokes this
-function only when the 15-minute regime is `RANGE`. Everything in `gate.py` is
+function only for the `regime|bias` combinations its registry allows — today
+that is `sideways|range-bound`. Everything in `gate.py` is
 the part the manager cannot know.
 
 | Check | Threshold | Source |
 |---|---|---|
-| Regime | `RANGE`, any bias | the playbook's "neutral range / bullish sideways / bearish sideways" is exactly `RANGE` × the three biases |
+| Regime | `sideways`, any bias | the playbook's "neutral range / bullish sideways / bearish sideways" is exactly `sideways` × the three biases. Lower case since the shared classifier replaced the old `RANGE`/`TREND` pair |
 | India VIX | within ±5% | playbook |
 | Range already spent | `adr` < **0.78** × true ATR14 | **re-scaled — see below** |
 | Opening-range width | ≥ 0.15% of price | playbook |
@@ -63,7 +69,7 @@ first problem and hide the rest, so a session that failed on VIX would look
 like it might otherwise have traded when the range was also spent.
 
 **A check whose input is missing fails as unknown rather than passing.** The
-09:35 run has no `daily_market_sentiment` row yet — that function runs at 09:50
+10:00 run may have no `daily_market_sentiment` row yet — that function runs at 09:50
 — so `pd_high`/`pd_low` are absent and the range gate has nothing to compare
 against. A missing input must not read as a satisfied condition.
 
