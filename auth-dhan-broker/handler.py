@@ -4,12 +4,35 @@ Dhan Broker Auth — AWS Lambda function
 Mints a DhanHQ v2 access token and stores it in SSM Parameter Store, so the
 session functions never have to authenticate themselves.
 
+    weekday? ──no──▶ skip
+       │yes
+    holiday? ──yes──▶ DISABLE daily + intraday schedules ──▶ skip
+       │no
     TOTP ──▶ POST /app/generateAccessToken ──▶ write /algo/dhan/token
-                                          └──▶ non-200 or no token ──▶ raise
+                                          ├──▶ non-200 or no token ──▶ raise
+                                          └──▶ ENABLE daily + intraday schedules
 
 Trigger: EventBridge Scheduler, cron(0 8 ? * MON-FRI *) Asia/Kolkata — once
 each weekday morning, before the 09:15 open. A token lives 24 hours, so the
 08:00 token covers the whole session with hours to spare.
+
+THIS FUNCTION DECIDES WHETHER THE DAY HAPPENS. It is the only thing that runs
+before the session on every weekday, holiday included — a holiday IS a weekday,
+so the MON-FRI cron still fires and the decision point is symmetric: disable on
+a holiday, enable on a trading day. The session functions are therefore never
+invoked on a holiday rather than invoked and skipping.
+
+That concentration is deliberate and costs little, because this function is
+already a hard dependency of the whole day: every consumer calls
+read_token_record(), which RAISES on a missing or expired token. A morning
+where auth fails is already a dead day, alarmed by error-notifier. Attaching
+the schedule decision to it adds no new way to lose a session.
+
+WHY A HOLIDAY IS AN ABSENT ROW. algo.trading_holiday stores closures only, so
+"not in the table" means a normal session. A calendar nobody reseeded keeps the
+system trading — a few no-op invocations — rather than making it go quiet,
+which nothing here can detect: no alarm in this system can see a function that
+was never invoked. See trading-calendar/README.md.
 
 Why there is no renew path. /v2/RenewToken exists and would have let one TOTP
 login carry a whole week, but it refuses tokens minted this way:
@@ -29,8 +52,12 @@ Weekends are skipped because nothing trades then; Monday simply mints a fresh
 token like any other weekday.
 
 Packaging notes:
-  - stdlib plus boto3, which is pre-installed in the Lambda Python runtime.
-    No layer, no compiled wheels, nothing to build.
+  - stdlib, boto3 (pre-installed in the runtime), and the neon-db-driver +
+    neon-access layers. THIS FUNCTION USED TO NEED NO LAYERS AT ALL, and the
+    holiday read is what changed that: it now also needs NEON_CONNECTION_STRING
+    and so ssm:GetParameter + kms:Decrypt, which had been removed here on the
+    grounds that this function only writes. Both layer ARNs are pinned and must
+    be repointed together when either is republished.
   - TOTP is implemented inline (RFC 6238, ~10 lines of hmac/struct) rather
     than pulling in pyotp, and the Dhan endpoint is called with urllib rather
     than the dhanhq SDK, which would drag in pandas/numpy.
@@ -59,6 +86,8 @@ import urllib.request
 
 import boto3
 
+from neon_access import connect, read_neon_connection_string, today_ist
+
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
@@ -75,8 +104,27 @@ HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "30"))
 TOTP_STEP_SECONDS = 30
 TOTP_DIGITS = 6
 
+HOLIDAY_TABLE = "algo.trading_holiday"
+
+# The schedules this function switches on and off. NAMES, not ARNs: the
+# Scheduler API addresses a schedule by name within its group. Configured
+# rather than hardcoded so renaming a schedule is an environment change.
+#
+# THIS FUNCTION'S OWN SCHEDULE MUST NEVER APPEAR HERE. It is the heartbeat that
+# makes the decision, so a run that switched it off could never switch it back
+# on — the system would stay dark until someone noticed by hand.
+MANAGED_SCHEDULES = [
+    name.strip()
+    for name in os.environ.get(
+        "MANAGED_SCHEDULE_NAMES", "daily-market-sentiment,intraday-data-loader"
+    ).split(",")
+    if name.strip()
+]
+SCHEDULE_GROUP = os.environ.get("SCHEDULE_GROUP_NAME", "default")
+
 # Reused across warm invocations; creating a boto3 client is not cheap.
 _ssm = boto3.client("ssm")
+_scheduler = boto3.client("scheduler")
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +263,83 @@ def generate_token(client_id, pin, totp_secret):
 
 
 # ---------------------------------------------------------------------------
+# Trading calendar
+# ---------------------------------------------------------------------------
+def holiday_for(conn, trade_date):
+    """The holiday on `trade_date`, or None when it is a normal session.
+
+    A ROW MEANS CLOSED; NO ROW MEANS A NORMAL SESSION. algo.trading_holiday
+    stores closures only, so "absent" is both the common answer and the
+    permissive one — a calendar nobody reseeded keeps the system trading
+    instead of making it go quiet. That asymmetry is the point, and the
+    reasoning is in trading-calendar/README.md.
+
+    Returns the description where one is known. Most rows have none: the seed
+    source publishes dates without names, so the label is for humans reading
+    logs, never for logic.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT description FROM {HOLIDAY_TABLE} WHERE trade_date = %s",
+        (trade_date,),
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    return row[0] or "unnamed holiday"
+
+
+# ---------------------------------------------------------------------------
+# EventBridge Scheduler
+#
+# UPDATE IS A REPLACE, NOT A PATCH. Scheduler has no EnableSchedule /
+# DisableSchedule pair — that is EventBridge Rules, a different service with a
+# different API. Every field not sent back to UpdateSchedule is dropped, so a
+# hand-built payload silently discards whatever the schedule was created with:
+# its timezone, its retry policy, its flexible time window. The definition is
+# therefore read with GetSchedule and returned whole, with only State changed.
+# ---------------------------------------------------------------------------
+# Present in a GetSchedule response and rejected by UpdateSchedule.
+_READ_ONLY_SCHEDULE_KEYS = (
+    "Arn",
+    "CreationDate",
+    "LastModificationDate",
+    "ResponseMetadata",
+)
+
+
+def set_schedule_state(name, state):
+    """Switch one schedule to ENABLED or DISABLED. Returns what it did."""
+    definition = _scheduler.get_schedule(Name=name, GroupName=SCHEDULE_GROUP)
+    current = definition.get("State")
+    if current == state:
+        logger.info("schedule %s already %s", name, state)
+        return "unchanged"
+
+    payload = {
+        key: value
+        for key, value in definition.items()
+        if key not in _READ_ONLY_SCHEDULE_KEYS
+    }
+    payload["State"] = state
+    _scheduler.update_schedule(**payload)
+    logger.info("schedule %s %s -> %s", name, current, state)
+    return "updated"
+
+
+def set_managed_schedules(state):
+    """Switch every managed schedule.
+
+    Any failure propagates. A schedule left in the wrong state is invisible,
+    and the two directions are not equally bad: enabled-when-it-should-be-off
+    wastes a few no-op invocations, while disabled-when-it-should-be-on costs
+    the entire session and alarms nothing, because no alarm here can see a
+    function that was never invoked. Raising is the only thing that reports it.
+    """
+    return {name: set_schedule_state(name, state) for name in MANAGED_SCHEDULES}
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 def lambda_handler(event, context):
@@ -224,19 +349,62 @@ def lambda_handler(event, context):
     schedule's retry policy applies. Returns metadata only — never the token;
     consumers read that from the parameter.
     """
+    started = time.time()
+    today = today_ist()
+
+    # Only reachable by hand: the cron is MON-FRI. The session schedules are
+    # MON-FRI too, so a weekend run has nothing to switch and mints no token.
+    if today.weekday() >= 5:
+        logger.info("%s is a %s - not a trading day", today, today.strftime("%A"))
+        return {
+            "status": "skipped_non_trading_day",
+            "date": today.isoformat(),
+            "reason": "weekend",
+        }
+
+    conn = connect(read_neon_connection_string())
+    try:
+        holiday = holiday_for(conn, today)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    if holiday:
+        # Disabled before anything else, and no token is minted: nothing will
+        # run today that could use one, and this token would be long expired
+        # before the next session anyway.
+        schedules = set_managed_schedules("DISABLED")
+        logger.info("%s is a holiday (%s) - session schedules disabled", today, holiday)
+        return {
+            "status": "skipped_non_trading_day",
+            "date": today.isoformat(),
+            "reason": "holiday",
+            "holiday": holiday,
+            "schedules": schedules,
+        }
+
+    # Read here rather than at the top so a holiday still disables the
+    # schedules on a day when one of these is missing.
     client_id = os.environ["DHAN_CLIENT_ID"]
     pin = os.environ["DHAN_PIN"]
     totp_secret = os.environ["DHAN_TOTP_SECRET"]
-
-    started = time.time()
 
     access_token = generate_token(client_id, pin, totp_secret)
     expires_at = token_expiry_epoch(access_token)
     record = write_stored_token(access_token, expires_at)
 
+    # Armed only once the token is stored. The other order would switch the
+    # session schedules on against a token that was never refreshed, turning a
+    # recoverable auth failure into a day of failing invocations.
+    schedules = set_managed_schedules("ENABLED")
+
     result = {
         "status": "success",
         "source": "totp",
+        "date": today.isoformat(),
+        "schedules": schedules,
         "expires_at": expires_at,
         "expires_in_hours": round((expires_at - time.time()) / 3600, 2),
         "parameter": TOKEN_PARAMETER_NAME,
