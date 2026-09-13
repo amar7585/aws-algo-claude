@@ -13,7 +13,7 @@ deterministic to read.
 |---|---|
 | [instrument-master-loader](instrument-master-loader/README.md) | **running** — 15,463 instruments, monthly |
 | [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 08:00; also the holiday gate that arms the day's schedules |
-| [trading-calendar](trading-calendar/README.md) | **seeded** — `algo.trading_holiday`, 30 weekday holidays through 2026-12-31 |
+| [trading-calendar](trading-calendar/README.md) | **live** — `algo.trading_holiday`, all 16 NSE holidays for 2026 |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
@@ -112,8 +112,8 @@ aws-algo-claude/
 │   └── README.md
 ├── trading-calendar/             reference data: exchange holidays (no Lambda)
 │   ├── schema.sql                algo.trading_holiday
-│   ├── seed_2025_2026.sql        30 weekday holidays, generated
-│   ├── generate_seed.py          the generator — laptop only, never in Lambda
+│   ├── seed_2026.sql             16 holidays, from NSE's circular
+│   ├── generate_seed.py          transcription cross-check — laptop only
 │   └── README.md
 └── layers/
     ├── neon-db-driver/           Lambda layer: pure-Python Postgres driver

@@ -1,13 +1,23 @@
 """
-Generate the algo.trading_holiday seed from exchange_calendars.
+Cross-check a hand-transcribed algo.trading_holiday seed against
+exchange_calendars.
+
+NOT THE SOURCE OF TRUTH. NSE's annual circular is, and it is transcribed by
+hand into seed_<year>.sql because it carries the holiday NAMES, which this
+package does not publish. What this script is for is catching a date that was
+mistyped or missed in that transcription, which is otherwise silent. For 2026
+it produced exactly the same 16 dates as the circular, independently.
 
 RUNS ON A LAPTOP, NEVER IN LAMBDA. exchange_calendars pulls in pandas and
 numpy, which is exactly the dependency weight this repo keeps out of its
-functions. That is fine here: the output of this script is a .sql file that is
-committed and applied by hand. Nothing at runtime imports it.
+functions. Nothing at runtime imports it.
 
     python -m venv .venv && ./.venv/bin/pip install exchange_calendars
-    ./.venv/bin/python generate_seed.py 2025 2026 > seed_2025_2026.sql
+    ./.venv/bin/python generate_seed.py 2027 > /tmp/check_2027.sql
+    # then diff the dates against seed_2027.sql
+
+The package TRAILS the circular - it gains a year only once a release picks
+that circular up - so in December there may be nothing to check against yet.
 
 WHY XBOM AND NOT AN NSE CALENDAR. exchange_calendars ships no NSE calendar;
 XBOM (Bombay) is the only Indian one. NSE and BSE observe the same holiday
