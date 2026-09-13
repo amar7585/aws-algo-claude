@@ -11,8 +11,12 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| Intraday task | Lambda function | every 5 min, market hours | planned | — |
-| Strategy task | Lambda function | per session | planned | — |
+| `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron** | **built, running** | [README](../intraday-data-loader/README.md) |
+| `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
+| `market-classifier` | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
+| `intraday-market-sentiment` | Lambda function | invoked by the loader, 24×/day | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
+| `strategy-manager` | Lambda function | on each snapshot, 24×/day — a pure router | **built** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -21,9 +25,32 @@ alarm rather than fail a session.
 
 **There is no Step Functions state machine and no History/Regime split.** An
 earlier design recorded both; what got built instead is `daily-market-sentiment`
-doing the daily fetch and the daily read in one function, on one schedule. The
-intraday half — 5/15/60-minute candles into `candle_5min` and its aggregates —
-is the remaining planned piece.
+doing the daily fetch and the daily read in one function on one schedule, and a
+single intraday cron on `intraday-data-loader` that chains the rest.
+
+**Four schedules, and only one is intraday.** Monthly for the instrument
+master, 08:00 for the token, 09:50 for the daily read, every 15 minutes for the
+loader. The loader invokes `intraday-market-sentiment`, which invokes
+`strategy-manager`, which invokes the playbooks — each step's input is the
+previous step's output, so the completion of a write is the only honest trigger
+for what follows.
+
+**One classification, two frames.** `daily-market-sentiment` and
+`intraday-market-sentiment` both call the `market-classifier` layer — the same
+rules on daily candles and on 5-minute candles. Before it, the daily path
+ported `detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the
+intraday path a different legacy builder (±3, TREND/RANGE), so `regime` meant
+two different things depending on which table it was read from.
+
+**The strategy plane is the one exception to "everything on its own cron", and
+deliberately so.** `strategy-manager` has no schedule: its input *is*
+`intraday-market-sentiment`'s snapshot, so that function invokes it
+asynchronously once the row is written, and it in turn invokes the strategies
+valid for the regime it classifies. A schedule there would have to guess how
+long the snapshot takes, read the row back, and decide what to do when it is
+not there yet. Failure domains still stay apart — every invoke is `Event`, so
+no function can be failed by something downstream of it, and each has its own
+log group with `error-notifier` watching.
 
 ## Built
 
@@ -34,7 +61,7 @@ Refreshes `algo.instrument_master` from Dhan's public scrip master.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12, zip package |
+| Runtime | Python 3.14, zip package |
 | Layer | `neon-db-driver` |
 | Package contents | `handler.py` alone — everything else is stdlib |
 | Dependencies | pg8000 (from the layer). No pandas, no `dhanhq`, no compiled wheels |
@@ -66,7 +93,7 @@ function has to authenticate itself and no token is refreshed by hand.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12, zip package |
+| Runtime | Python 3.14, zip package |
 | Layer | none — `boto3` ships with the runtime, the rest is stdlib |
 | Package contents | `handler.py` alone |
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
@@ -94,7 +121,7 @@ Three Dhan calls, ~12 s.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.12+, zip package, 8 modules |
+| Runtime | Python 3.14, zip package, 8 modules |
 | Layers | `neon-db-driver` + `neon-access` |
 | Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
@@ -108,25 +135,195 @@ Its README carries the measured facts that make it work: `fromDate` is
 exclusive, the daily endpoint lags a session, `security_id` alone is not unique,
 and the sentiment score is **not** predictive of forward return.
 
+### intraday-data-loader
+
+Fills `algo.candle_5min`, `algo.candle_15min` and `algo.candle_1hr` for NIFTY
+and the current-month NIFTY future, through the session. It computes nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 5 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Schedule | every 15 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 24 invocations a day |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables at all |
+
+Which intervals a run fetches follows one rule — **fetch interval *I* when
+`(run time − 09:15)` is a whole multiple of *I* minutes** — because Dhan's
+intraday buckets are session-aligned from 09:15, not clock-aligned. That was
+measured, not assumed, and is asserted at runtime.
+
+The current-month future is never hardcoded: the nearest option expiry's month
+names the contract, which rolls itself at each expiry. It belongs here rather
+than in the daily function because its daily series is a rolled continuous one
+that changes meaning at each expiry, while its intraday series is
+contract-specific and safe to store per `security_id`.
+
+**Partial candles are stored on purpose** — Dhan returns the in-progress bucket
+and the primary-key upsert corrects it on a later pass. A consumer tells the two
+apart with `candle_ts + interval_seconds <= now`; only the newest bar per table
+is ever partial. Its README carries the reasoning and the measured facts.
+
+### error-notifier
+
+Pushes failures from every other function to Telegram. It computes nothing and
+stores nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 3 modules |
+| Layers | **none** — stdlib plus the runtime's boto3 |
+| Trigger | CloudWatch Logs subscription filters on every other log group |
+| Secrets | `/algo/telegram/brief` |
+
+**Why a log subscription rather than a `try/except` in each function.** A
+timeout kills the process before any `except` runs, and an import error fires
+before the handler module loads — the two failures most likely to go unnoticed.
+Both still reach the log. It also touches none of the existing functions.
+
+**Why not a CloudWatch alarm.** An alarm can only say `Errors >= 1`; the log
+event carries the exception, so the message names the instrument, the interval
+and the HTTP status.
+
+Its own log group must never be subscribed to it — that is a billing loop. The
+handler refuses payloads from its own log group so the mistake is inert rather
+than expensive.
+
+Deliberately no `neon-access` layer: that package imports pg8000, and this
+function never touches the database.
+
+### intraday-market-sentiment
+
+Writes one row describing the market every fifteen minutes — futures basis and
+open-interest buildup, INDIA VIX, and the option-chain read (straddle, PCR, OI
+walls, max pain, IV skew) for the nearest **and** monthly expiries at once —
+plus the ten raw option legs behind it.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 8 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Schedule | **none** — invoked by `intraday-data-loader` after it commits, 24×/day |
+| Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
+
+**It shares no tables with `intraday-data-loader`.** Everything comes from the
+Dhan API — its own candles, its own chains — so a stalled loader cannot feed it
+stale inputs. The single exception is **its own previous row**, read back to
+provide the baseline for every `*_change_pct`: Dhan serves only a live option
+chain and has no historical-chain endpoint, so an intraday OI delta cannot be
+had any other way.
+
+**`snapshot_ts` is the newest bar Dhan returns, the forming one included.** At
+a 10:00 run the bucket stamped 10:00 has just opened, so the row is stamped
+10:00 and `spot` is the live price — and it joins directly to the `candle_5min`
+row the loader completes at 10:15. At 15:30 there is no 15:30 bucket, so the
+day's last snapshot is stamped 15:25 without a special case. What is genuinely
+partial on that bar — its own high, low and volume — is read by nothing: the
+classification reads closes, and the session aggregates span every bar of the
+day. The primary key still makes a re-run idempotent.
+
+**It also reads `daily_market_sentiment` and passes it on**, so the manager can
+stay a router with no database. The lookup is the newest row stamped *before*
+today, not today's row: a daily row describes the previous session, so a row
+stamped today never exists.
+
+Two strike widths, not interchangeable: aggregates over ATM ±20, raw legs
+stored for ATM ±2 (10 rows a snapshot). Both expiries sit on one row as
+`near_*` / `mth_*` column pairs, and the monthly is the first monthly
+*strictly after* the nearest so the two can never name the same contract.
+
+Its README carries the measured facts: the chain is at the flat
+`/v2/optionchain` while `expirylist` is nested, futures open interest returns
+as `open_interest` rather than `oi`, and IV and the greeks arrive as `0` when
+Dhan did not compute them — stored as `NULL`, because `0` poisons any skew.
+
+### strategy-manager
+
+Decides which playbooks are valid for the market as it stands, and invokes
+them. It evaluates no playbook, emits no signal and writes nothing.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 7 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Trigger | **asynchronous invoke from `intraday-market-sentiment`** - no schedule |
+| Writes | **nothing** |
+| Secrets | `/algo/dhan/token`, `/algo/neon/connection` |
+
+**It reads the loader's candle tables, which is a departure.**
+`intraday-market-sentiment` shares no tables with `intraday-data-loader` so a
+stall cannot feed it stale inputs; that reason does not transfer here, because a
+snapshot row is never revisited while this function persists nothing - a stale
+**It is now a pure router.** It opens no database connection, calls no API,
+computes no indicator and writes no row — everything it decides on arrives in
+the payload. Two things moved out of it:
+
+- **the classification moved up**, into the `market-classifier` layer, and is
+  *stored* on the snapshot row by the function that computes it. The manager
+  used to recompute a 15-minute classification of its own, so the rules lived
+  in two places and the regime a strategy acted on was never persisted.
+- **the data fetch moved down**, into the playbooks. A playbook knows which
+  bars it needs; the manager was fetching a fixed window on their behalf.
+
+Its Dhan call for a live price went with them — the only playbook built never
+read it, because a sweep is confirmed by a *closed* bar.
+
+**Routing is on `regime|bias`, and every one of the nine cells is listed.** A
+key present and mapping to `[]` is a deliberate "no playbook today"; a key
+*missing* means the classifier and the registry have drifted apart, and that
+raises. Eight cells are deliberately empty pending observed sessions.
+
+Full reasoning, the measured payload size, the registry and the IAM shape are in
+its [README](../strategy-manager/README.md).
+
+### strategy-range-liquidity-sweep
+
+The 15-minute opening-range liquidity sweep: price runs a pool of resting stops,
+fails to hold, closes back inside, and rotates back across the range.
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 7 modules |
+| Layers | **none** - stdlib only |
+| Trigger | asynchronous invoke from `strategy-manager` |
+| Reads / writes | **nothing** - its log is its only output |
+| Secrets | **none** |
+
+The whole context arrives in the payload, so it opens no connection and makes no
+API call - hence no layers, and IST defined locally rather than imported from
+`neon-access`, which would pull in `pg8000` for a function that never connects.
+`error-notifier` makes the same trade for the same reason.
+
+**It has no memory and needs none.** The playbook caps attempts at one re-entry
+per side per session, which looks like cross-invocation state; a candidate is a
+deterministic function of the bars, so re-deriving the day's whole sweep sequence
+each run reproduces the attempt count exactly and a re-run cannot double-count.
+
+Its README records three places where the playbook's explicit rules and its
+worked examples disagree - the sweep-band floor, the stop buffer, and the
+bias-adjusted target. The third was a real bug: targeting the *nearest* cluster
+member instead of the cluster's far edge would have rejected one of the
+playbook's own illustrated setups on risk-reward.
+
+Verified against the real 2026-09-11 session, which it correctly stands down:
+the day spent 1.27× its true ATR14 against a 0.78× limit.
+
 ## Planned
 
-### Intraday task
+Nothing is currently planned. The obvious next pieces, neither agreed nor
+designed:
 
-The remaining half: 5/15/60-minute candles into `candle_5min`, `candle_15min`
-and `candle_1hr`, every 5 minutes during market hours. Those three tables exist
-and are empty. Incremental from the last stored `candle_ts`, chunked forward in
-≤90-day windows because Dhan caps intraday fetches at 90 days per call.
-
-The current-month index future belongs here rather than in the daily function:
-its daily series is a rolled continuous one that changes meaning at each expiry,
-while its intraday series is contract-specific and safe to store per
-`security_id`.
-
-### Strategy task
-
-Evaluates the playbooks valid for the classified regime and emits signals. It
-never runs unconditionally: a playbook fired in the wrong regime is the main
-way this loses money, so the regime gate comes first.
+- **Backtesting** the playbooks under this architecture. `trading-algo/backtest/`
+  is its own runner, position tracker and report builder, and folding it in
+  would have tripled the scope of the round that built the two functions above.
+- **More playbooks.** The registry maps `TREND` to an empty list today, so a
+  trending day routes to nothing - correctly, since every playbook built so far
+  is a range playbook.
 
 ## Shared conventions
 

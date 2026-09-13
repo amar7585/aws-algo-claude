@@ -14,7 +14,8 @@ BEGIN;
 
 -- ---------------------------------------------------------------------------
 -- daily_market_sentiment : the daily read, computed from completed daily
--- candles. Ported from trading-algo/helpers/sentiment_builder.py.
+-- candles by the shared market-classifier layer. It is NO LONGER a port of
+-- trading-algo/helpers/sentiment_builder.py - see the classification block.
 --
 -- GRAIN. trade_date is the session the row describes - the newest COMPLETED
 -- daily candle, i.e. yesterday, because Dhan's daily endpoint lags a session
@@ -28,25 +29,63 @@ BEGIN;
 -- WHAT IS DELIBERATELY NOT HERE. Anything recomputable from candle_daily that
 -- nothing else in this row depends on - pivots (a pure function of
 -- pd_high/pd_low/pd_close), atr_14, adr10. The indicators that ARE stored are
--- the ones detect_market_regime() and calculate_sentiment() actually read, so
--- the row explains why its own regime and score came out as they did.
+-- the ones the classification actually reads, so the row explains why its own
+-- regime and score came out as they did.
+--
+-- NO OPTION DATA FEEDS THE CLASSIFICATION, on either frame. Dhan serves no
+-- historical option chain, so PCR / IV-skew / straddle thresholds cannot be
+-- measured until rows accumulate in intraday_market_sentiment. See the layer
+-- README, "Revisit once sessions have accumulated".
 --
 -- sma200 is NOT NULL by intent: a null means fewer than 200 stored candles,
--- and detect_market_regime() silently returns TRANSITION when it compares
--- against a missing sma200 rather than raising. The handler raises first; this
--- constraint is the second line of defence.
+-- and a classifier comparing against a missing sma200 would have its
+-- longer-SMA term contribute nothing while nothing raised - the score would
+-- silently cap. The layer raises, build_daily_sentiment raises before it, and
+-- this constraint is the third line of defence.
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS algo.daily_market_sentiment (
     security_id       text    NOT NULL,
     instrument_type   text    NOT NULL,
     trade_date        bigint  NOT NULL,   -- IST midnight of the session described
 
-    -- classification
-    bias              text    NOT NULL,   -- bullish | neutral | bearish
+    -- ---- classification ---------------------------------------------------
+    -- Produced by the market-classifier layer on the daily frame, with the
+    -- SAME rules intraday-market-sentiment runs on 5-minute candles. That is
+    -- new: this table previously held a port of trading-algo's
+    -- detect_market_regime / calculate_sentiment while the intraday path held
+    -- a port of a different legacy builder, so `regime` and `score` were
+    -- different measurements sharing a name across the two tables.
+    --
+    -- score IS NOT COMPARABLE ACROSS FRAMES WITHOUT max_score. The 5-minute
+    -- frame carries a VWAP term this frame cannot - there is no session VWAP
+    -- on a daily candle - so it scores out of 5 and this out of 4. Stored so a
+    -- reader normalises rather than assumes.
+    bias              text    NOT NULL,   -- bullish | bearish | range-bound
     structure         text    NOT NULL,   -- trending | sideways | transitional
-    regime            text    NOT NULL,   -- the two combined
+    regime            text    NOT NULL,   -- trending | sideways | volatile-expansion
+    volatility        text,               -- low | normal | high; null without VIX
     score             integer NOT NULL,
+    max_score         integer NOT NULL,
     confidence        numeric NOT NULL,
+
+    -- the swing read behind `structure`, over the recent DAILY bars rather
+    -- than one session - which is what identifies a broken trend and the
+    -- broader bias. swing_high/low are null until two swings of each kind
+    -- confirm; structure_determined says so explicitly rather than leaving a
+    -- caller to infer it from the nulls.
+    swing_direction        text    NOT NULL,   -- up | down | none
+    swing_high             numeric,
+    swing_low              numeric,
+    structure_determined   boolean NOT NULL,
+
+    -- the volatility read behind `regime`
+    range_used             numeric,            -- day range / expected move
+    volatility_expanding   boolean NOT NULL,
+
+    -- today's open against pd_close, in percent - the gap up/down. Carried,
+    -- NOT scored: it describes the open, and a gap that filled by 10:00 should
+    -- not keep voting on the daily bias all day.
+    gap_pct                numeric,
 
     -- previous-session price context
     pd_high           numeric NOT NULL,
@@ -55,7 +94,7 @@ CREATE TABLE IF NOT EXISTS algo.daily_market_sentiment (
 
     -- the inputs the classification above was computed from
     rsi               numeric,
-    sma20             numeric,
+    sma9              numeric,
     sma50             numeric,
     sma100            numeric,
     sma200            numeric NOT NULL,

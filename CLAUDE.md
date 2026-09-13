@@ -214,6 +214,25 @@ while production dropped every row.
 - **Neon autosuspends.** A monthly cron always hits a cold compute, and the
   wake-up lands inside `connect()` before any SQL runs. Expect noisy first-run
   timings; it is not a code regression.
+- **Never reuse another function's IAM role here. Both existing ones are
+  scoped to a single function, and both fail SILENTLY when borrowed.** Measured
+  while deploying `intraday-market-sentiment`, 2026-09-12:
+  - The console-generated **execution** role policy
+    (`AWSLambdaBasicExecutionRole-<uuid>`) allows `logs:CreateLogStream` and
+    `logs:PutLogEvents` on **one log group ARN only**. Attached to a second
+    function, that function runs correctly and writes its rows while producing
+    **no logs at all** — and with no logs, `error-notifier` can never report a
+    failure in it. The function looks healthy precisely because it is invisible.
+  - The console-generated **EventBridge Scheduler** role
+    (`Amazon_EventBridge_Scheduler_LAMBDA_<id>`) allows `lambda:InvokeFunction`
+    on **one function ARN only**. A schedule pointed at it for any other
+    function is created successfully, shows `ENABLED`, and simply never fires.
+    Nothing appears in the target's logs, because it is never invoked.
+
+  Give every new function its own pair. Widening a shared policy also works but
+  couples the functions' blast radius for no saving. Neither failure raises, so
+  neither is caught by testing the handler — check the policy document, not the
+  role name.
 
 ## Known gap — do not "fix" without deciding scope
 

@@ -38,7 +38,10 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
 | Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
 | Daily candles + daily read | daily, weekdays 09:50 | EventBridge Scheduler cron | **built** |
-| Intraday candles | every 5 min, market hours | EventBridge Scheduler cron | planned |
+| Intraday candles | every 15 min, 10:00–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
+| Intraday market read | on each loader run, 24×/day | invoke from `intraday-data-loader` | **built** |
+| Strategy routing | on each snapshot, 24×/day | invoke from `intraday-market-sentiment` | **built** |
+| Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -46,6 +49,20 @@ independently scheduled Lambdas, each on its own clock. That keeps failure
 domains separate — a bad token refresh raises its own alarm rather than failing
 a session — and it removed the plane where secrets would have travelled as step
 output.
+
+**The strategy plane is chained rather than scheduled, and it is the one
+exception.** `strategy-manager`'s input *is* the intraday snapshot, so
+`intraday-market-sentiment` invokes it once the row is written, and it invokes
+the strategies valid for the regime and bias the snapshot carries. A cron there would have to
+guess how long the snapshot takes, read the row back out of Postgres, and decide
+what to do when it is not there yet.
+
+Failure domains still stay apart, because **every invoke in the chain is
+`Event`**. An asynchronous invoke cannot fail its caller: the snapshot function
+finishing is not a claim that any strategy succeeded, and each function has its
+own log group with `error-notifier` reporting from it. What the chain buys over
+a state machine is that no step's output — and so no token — ever sits in an
+execution history.
 
 ## Why secrets live in SSM
 
@@ -61,8 +78,8 @@ now covers three parameters:
 
 | Parameter | Written by | Read by |
 |---|---|---|
-| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment` |
-| `/algo/telegram/brief` | by hand | `daily-market-sentiment` |
+| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader`, `intraday-market-sentiment` |
+| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier` |
 | `/algo/neon/connection` | by hand | every function that touches Neon |
 
 The last one replaced a `NEON_CONNECTION_STRING` environment variable
@@ -99,13 +116,42 @@ the cost of a wake-up on the first connection of each run.
 | `instrument_master` | `security_id, trading_symbol, exchange_segment, instrument_type, lot_units, updated_at` | 15,463 | instrument-master-loader |
 | `candle_daily` | `security_id, instrument_type, candle_ts, open, high, low, close, volume` | 408 | daily-market-sentiment |
 | `daily_market_sentiment` | 26 columns — bias, regime, score, the SMA/RSI inputs, VIX-implied expected move | 1 | daily-market-sentiment |
-| `candle_5min` | same shape as `candle_daily` | 0 | intraday task *(planned)* |
-| `candle_15min` | same | 0 | intraday task *(planned)* |
-| `candle_1hr` | same | 0 | intraday task *(planned)* |
+| `candle_5min` | same shape as `candle_daily` | 8,775 | intraday-data-loader |
+| `candle_15min` | same | 2,925 | intraday-data-loader |
+| `candle_1hr` | same | 819 | intraday-data-loader |
+| `intraday_market_sentiment` | 64 columns — basis, futures OI buildup, VIX, and straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs | 0 | intraday-market-sentiment |
+| `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 0 | intraday-market-sentiment |
 
-Row counts as of 2026-09-11. `candle_daily` holds 204 NIFTY and 204 INDIA VIX
-candles from the cold start; the intraday tables exist but nothing writes to
-them yet.
+**The strategy plane added no tables.** `strategy-manager` reads
+`candle_15min`, `candle_5min`, `candle_daily` and `daily_market_sentiment` and
+writes nothing; `strategy-range-liquidity-sweep` reads nothing at all. The
+regime the manager classifies travels in the invocation payload and each
+strategy records it in its own log alongside what it found, so the decision is
+recoverable from the consumer rather than duplicated by the producer. Nothing
+either function computes can therefore go stale in a table.
+
+Two things they need are deliberately **not** stored and are recomputed instead
+— daily `atr_14`, and the pivot levels, which `daily_market_sentiment`'s schema
+comment calls "a pure function of pd_high/pd_low/pd_close". No schema change
+was needed to build the strategy plane.
+
+Row counts as of 2026-09-11; the two `intraday-market-sentiment` tables sit at
+0 because the function has not yet run a live session - its schema is applied
+and its schedules are live from 2026-09-14. `candle_daily` holds 204 NIFTY
+and 204 INDIA VIX candles from the cold start. The intraday candle tables hold
+NIFTY and NIFTY-SEP2026-FUT over a 90-day window — exactly 75 five-minute, 25
+fifteen-minute and 7 hourly bars per session, with no misaligned rows.
+
+The intraday **candle** tables hold **one partial bar each while the session is
+open** — Dhan returns the in-progress bucket and the loader stores it,
+correcting it by primary key on a later pass. A reader tells a closed bar from a
+forming one with `candle_ts + interval_seconds <= now`; everything older than
+the newest bar is final, so replay is unaffected.
+
+The two **sentiment** tables are the deliberate opposite: a snapshot row is
+never revisited, so `intraday-market-sentiment` reads only closed bars and
+nothing it writes is ever partial. Its `snapshot_ts` is the closed bar itself
+rather than the run clock, which also makes a repeated invocation idempotent.
 
 **`security_id` alone is not an identity.** 19 security_ids carry more than one
 `instrument_type` — `13` is both NIFTY (`IDX_I`/`INDEX`) and ABB

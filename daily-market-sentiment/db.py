@@ -120,9 +120,17 @@ def upsert_daily_candles(conn, instrument, candles):
 
 
 SENTIMENT_FIELDS = (
-    "security_id", "instrument_type", "trade_date", "bias", "structure",
-    "regime", "score", "confidence", "pd_high", "pd_low", "pd_close",
-    "rsi", "sma20", "sma50", "sma100", "sma200", "prev_volume",
+    "security_id", "instrument_type", "trade_date",
+    # the classification - market-classifier layer, daily frame. The SAME
+    # rules intraday-market-sentiment runs on 5-minute candles, so a daily row
+    # and an intraday row are on one scale. max_score is stored because they
+    # are NOT on one total: the 5-minute frame carries a VWAP term this frame
+    # cannot, so it scores out of 5 and this out of 4.
+    "bias", "structure", "regime", "volatility", "score", "max_score",
+    "confidence", "swing_direction", "swing_high", "swing_low",
+    "structure_determined", "range_used", "volatility_expanding", "gap_pct",
+    "pd_high", "pd_low", "pd_close",
+    "rsi", "sma9", "sma50", "sma100", "sma200", "prev_volume",
     "avg_volume_50", "vix", "price", "expected_move", "upper_volatility",
     "lower_volatility", "min15_high", "min15_low", "created_at",
 )

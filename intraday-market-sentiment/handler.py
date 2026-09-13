@@ -1,0 +1,465 @@
+"""
+Intraday Market Sentiment - AWS Lambda function
+
+Writes one row to algo.intraday_market_sentiment every fifteen minutes through
+the session, plus the ten raw option legs behind it to algo.option_chain_snapshot.
+
+NOT ON A CRON. intraday-data-loader is the only scheduled function in this
+plane; it commits its candles at 10:00, 10:15 ... 15:30 plus a 15:35 closing
+sweep, then invokes this function. The chain is
+loader -> this -> strategy-manager -> playbooks, one schedule driving all of it.
+
+SNAPSHOT_TS IS THE NEWEST BAR DHAN RETURNED, FORMING ONE INCLUDED. At a 10:00
+run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
+`spot` is the live price - and it joins straight to the candle_5min row the
+loader completes at 10:15. At 15:30 there is no 15:30 bucket, so the day's
+last snapshot is stamped 15:25 with no special case. See sentiment.newest_bar.
+
+EVERYTHING COMES FROM THE DHAN API, WITH ONE EXCEPTION. This function does not
+read candle_5min or any other table that intraday-data-loader writes; it
+fetches its own candles and its own chains. The exception is its own previous
+row, read back to provide the baseline for every *_change_pct - Dhan serves
+only a live option chain and has no historical-chain endpoint, so an intraday
+OI delta cannot be had any other way.
+
+WHAT IS PARTIAL, AND WHAT IS NOT. The bar snapshot_ts names is seconds old,
+so its own high, low and volume are near-empty - and nothing is taken from
+them. `spot` is its close, which is the live price; day_high, day_low, vwap and
+the opening range span every bar of the session; the classification reads
+closes. The row describes an instant, not a finished bar.
+
+Writes only to Neon project "AI Trader APP" (nameless-mountain-15353651),
+database Algo, schema algo.
+
+Modules:
+    config.py     this function's tunables
+    params.py     the Dhan token and client id (named params, not secrets -
+                  secrets.py at the zip root shadows the stdlib one)
+    dhan.py       charts + expiry list + option chain, and the measured facts
+    expiry.py     which two expiries a snapshot describes
+    chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
+    sentiment.py  session stats, the newest-bar rule and the buildup label
+    classification.py  what to hand the market-classifier layer, and why
+    db.py         Neon access, the baseline read, the two-table write
+    dispatch.py   handing the finished snapshot to strategy-manager
+
+Epoch/IST handling, the Neon connection and the shared connection-string read
+come from the neon-access layer.
+"""
+
+import datetime
+import logging
+import time
+
+from neon_access import (
+    IST,
+    connect,
+    ist_datetime,
+    ist_midnight_epoch,
+    now_epoch,
+    read_neon_connection_string,
+)
+
+import chain as chain_lib
+import expiry as expiry_lib
+from config import (
+    AGGREGATE_STRIKES_PER_SIDE,
+    CANDLE_INTERVAL_MINUTES,
+    FIRST_RUN,
+    FUTURES_INSTRUMENT_TYPE,
+    FUTURES_SYMBOL_TEMPLATE,
+    FUTURES_UNDERLYING_SCRIP,
+    FUTURES_UNDERLYING_SEG,
+    HISTORY_DAYS,
+    LAST_RUN,
+    MONTH_ABBREVIATIONS,
+    NIFTY_INSTRUMENT_TYPE,
+    NIFTY_SECURITY_ID,
+    RAW_STRIKES_PER_SIDE,
+    VIX_INSTRUMENT_TYPE,
+    VIX_SECURITY_ID,
+)
+from db import (
+    daily_sentiment,
+    previous_snapshot,
+    resolve_by_symbol,
+    resolve_instrument,
+    write_snapshot,
+)
+from dhan import (
+    DhanClient,
+    in_session_candles,
+    require_oi,
+    session_candles,
+    to_candles,
+)
+from classification import classify_snapshot, row_columns
+from dispatch import dispatch_snapshot
+from params import read_client_id, read_token_record
+from sentiment import buildup, newest_bar, pct_change, session_stats
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+
+def fetch_session(client, instrument, day, with_oi=False):
+    """Today's closed-and-open 5-minute bars for one instrument."""
+    return session_candles(
+        to_candles(
+            client.intraday_candles(
+                instrument, CANDLE_INTERVAL_MINUTES, day, with_oi=with_oi
+            )
+        ),
+        day,
+    )
+
+
+def bar_at(candles, snapshot_ts, label):
+    """
+    The bar stamped `snapshot_ts`, or the newest closed one before it.
+
+    The index sets snapshot_ts and every other series is aligned to it, so
+    that basis, VIX and spot all describe the same instant. A series that is
+    short a bar at exactly that stamp falls back to its newest earlier one and
+    says so - a futures bar can be missing where the index has one, and taking
+    that series' own latest bar instead would compute basis across two
+    different minutes without a word.
+    """
+    exact = [c for c in candles if c["ts"] == snapshot_ts]
+    if exact:
+        return exact[0]
+    earlier = [c for c in candles if c["ts"] < snapshot_ts]
+    if not earlier:
+        raise RuntimeError(
+            f"{label} has no bar at or before {ist_datetime(snapshot_ts):%H:%M} "
+            f"- the series does not cover this snapshot"
+        )
+    fallback = max(earlier, key=lambda c: c["ts"])
+    logger.warning(
+        "%s has no bar at %s - falling back to %s, %d minute(s) stale",
+        label, ist_datetime(snapshot_ts).strftime("%H:%M"),
+        ist_datetime(fallback["ts"]).strftime("%H:%M"),
+        (snapshot_ts - fallback["ts"]) // 60,
+    )
+    return fallback
+
+
+def future_symbol(nearest_expiry):
+    """
+    The current-month future's trading symbol, from the NEAREST expiry's
+    month - the same rule intraday-data-loader uses, so the two functions
+    cannot disagree about which contract is current.
+    """
+    month, year = expiry_lib.futures_month(nearest_expiry)
+    return FUTURES_SYMBOL_TEMPLATE.format(
+        month=MONTH_ABBREVIATIONS[month - 1], year=year
+    )
+
+
+def oi_change(current_total, baseline, baseline_key, expiry_ts, baseline_expiry_key):
+    """
+    An OI delta, or None when the baseline describes a different contract.
+
+    Across an expiry roll the previous row's totals belong to a contract that
+    no longer exists here. A percentage between the two would be arithmetic on
+    unrelated numbers that reads exactly like a real collapse in open
+    interest, so it is left null instead.
+    """
+    if not baseline:
+        return None
+    if baseline.get(baseline_expiry_key) != expiry_ts:
+        logger.info(
+            "expiry rolled (%s -> %s) - %s left null",
+            baseline.get(baseline_expiry_key), expiry_ts, baseline_key,
+        )
+        return None
+    return pct_change(current_total, baseline.get(baseline_key))
+
+
+def lambda_handler(event, context):
+    event = event or {}
+    now = (
+        datetime.datetime.fromisoformat(event["now"]).replace(tzinfo=IST)
+        if event.get("now")
+        else datetime.datetime.now(IST)
+    )
+    today = now.date()
+
+    if today.weekday() >= 5:
+        logger.info("%s is a %s - not a trading day", today, today.strftime("%A"))
+        return {"status": "skipped_non_trading_day", "date": today.isoformat()}
+
+    # Second line of defence only. This function has no schedule of its own -
+    # intraday-data-loader invokes it, and the loader's cron produces exactly
+    # the in-window times. This catches a manual invocation.
+    if not FIRST_RUN <= now.time() <= LAST_RUN:
+        logger.info("%s is outside %s-%s", now.strftime("%H:%M"), FIRST_RUN, LAST_RUN)
+        return {"status": "skipped_outside_session", "time": now.strftime("%H:%M")}
+
+    started = time.monotonic()
+    record = read_token_record()
+    client = DhanClient(record["access_token"], read_client_id(record))
+    conn = connect(read_neon_connection_string())
+    try:
+        index = resolve_instrument(conn, NIFTY_SECURITY_ID, NIFTY_INSTRUMENT_TYPE)
+        vix_instrument = resolve_instrument(conn, VIX_SECURITY_ID, VIX_INSTRUMENT_TYPE)
+
+        # ---- the index sets the clock for everything else -----------------
+        #
+        # ONE FETCH, TWO JOBS. The window runs back HISTORY_DAYS so that
+        # sma200 has its 200 bars, and today's session is taken out of the
+        # same response rather than fetched again. Two calls could disagree
+        # about the newest bar - they are milliseconds apart on a series that
+        # is still forming - and the whole row is pinned to that bar.
+        history_from = today - datetime.timedelta(days=HISTORY_DAYS)
+        index_history = in_session_candles(
+            to_candles(
+                client.intraday_candles(
+                    index, CANDLE_INTERVAL_MINUTES, today, from_day=history_from
+                )
+            )
+        )
+        index_bars = [c for c in index_history if ist_datetime(c["ts"]).date() == today]
+        if not index_bars:
+            # A holiday needs no calendar: the exchange published no bars, so
+            # there is nothing to describe and nothing is written.
+            logger.info("%s returned no session bars - not a trading day", today)
+            return {"status": "skipped_non_trading_day", "date": today.isoformat()}
+
+        run_epoch = int(now.timestamp())
+        spot_bar = newest_bar(index_bars, "NIFTY")
+        snapshot_ts = spot_bar["ts"]
+        # The history must end on the same bar the snapshot is stamped with,
+        # or the classification would describe a later instant than the row.
+        index_history = [c for c in index_history if c["ts"] <= snapshot_ts]
+        index_stats = session_stats(index_bars, snapshot_ts)
+        spot = index_stats["close"]
+        logger.info(
+            "snapshot %s (run %s), spot %.2f, %d bars of history from %s",
+            ist_datetime(snapshot_ts).strftime("%H:%M"), now.strftime("%H:%M"), spot,
+            len(index_history), ist_datetime(index_history[0]["ts"]).date(),
+        )
+
+        # ---- expiries, then the future they imply --------------------------
+        nearest_date, monthly_date = expiry_lib.select(
+            client.expiry_list(FUTURES_UNDERLYING_SCRIP, FUTURES_UNDERLYING_SEG),
+            today,
+        )
+        near_expiry_ts = ist_midnight_epoch(nearest_date)
+        mth_expiry_ts = ist_midnight_epoch(monthly_date)
+
+        future = resolve_by_symbol(
+            conn, future_symbol(nearest_date), FUTURES_INSTRUMENT_TYPE
+        )
+        future_bars = require_oi(
+            fetch_session(client, future, today, with_oi=True),
+            future["trading_symbol"],
+        )
+        future_bar = bar_at(future_bars, snapshot_ts, future["trading_symbol"])
+
+        # ---- india vix ------------------------------------------------------
+        vix_bars = fetch_session(client, vix_instrument, today)
+        vix_bar = bar_at(vix_bars, snapshot_ts, "INDIA VIX") if vix_bars else None
+        vix_stats = session_stats(vix_bars, snapshot_ts) if vix_bars else None
+        if not vix_bars:
+            logger.warning("INDIA VIX returned no bars - vix columns left null")
+
+        # ---- the two chains, both centred on the SAME spot -----------------
+        near_data = client.option_chain(
+            FUTURES_UNDERLYING_SCRIP, FUTURES_UNDERLYING_SEG, nearest_date
+        )
+        mth_data = client.option_chain(
+            FUTURES_UNDERLYING_SCRIP, FUTURES_UNDERLYING_SEG, monthly_date
+        )
+        near = chain_lib.summarise(near_data, spot, AGGREGATE_STRIKES_PER_SIDE)
+        mth = chain_lib.summarise(mth_data, spot, AGGREGATE_STRIKES_PER_SIDE)
+        logger.info(
+            "nearest %s: atm %s straddle %s pcr_oi %s over %d strikes (step %s)",
+            nearest_date, near["atm_strike"], near["straddle"], near["pcr_oi"],
+            near["strikes_scoped"], near["strike_step"],
+        )
+
+        # ---- the two things read back from the database --------------------
+        # The baseline is this function's own previous row, which is the only
+        # source for an intraday OI delta - Dhan serves no historical chain.
+        baseline = previous_snapshot(conn, index, snapshot_ts)
+        # The daily read travels WITH the snapshot to strategy-manager, so the
+        # manager stays a router and does not need a database of its own. The
+        # lookup is "newest row stamped before today", not "today's row" - a
+        # daily row describes the previous session, so a row stamped today
+        # never exists. See db.daily_sentiment.
+        daily = daily_sentiment(conn, index, ist_midnight_epoch(today))
+
+        basis = future_bar["close"] - spot
+        row = {
+            "security_id": index["security_id"],
+            "instrument_type": index["instrument_type"],
+            "snapshot_ts": snapshot_ts,
+            "captured_at": run_epoch,
+            "prev_snapshot_ts": baseline["snapshot_ts"] if baseline else None,
+
+            "spot": spot,
+            "chain_spot": near_data.get("last_price"),
+            "spot_change_pct": pct_change(
+                spot, baseline["spot"] if baseline else None
+            ),
+            "day_high": index_stats["high"],
+            "day_low": index_stats["low"],
+            "vwap": index_stats["vwap"],
+            "orb_high": index_stats["orb_high"],
+            "orb_low": index_stats["orb_low"],
+
+            "fut_security_id": future["security_id"],
+            "fut_symbol": future["trading_symbol"],
+            "fut_price": future_bar["close"],
+            "fut_oi": future_bar["open_interest"],
+            "basis": basis,
+            "basis_pct": basis / spot * 100 if spot else None,
+            "fut_price_change_pct": pct_change(
+                future_bar["close"], baseline["fut_price"] if baseline else None
+            ),
+            "fut_oi_change_pct": pct_change(
+                future_bar["open_interest"], baseline["fut_oi"] if baseline else None
+            ),
+            "buildup": None,  # filled below, once both deltas exist
+
+            "vix": vix_bar["close"] if vix_bar else None,
+            "vix_open": vix_stats["open"] if vix_stats else None,
+            "vix_day_high": vix_stats["high"] if vix_stats else None,
+            "vix_day_low": vix_stats["low"] if vix_stats else None,
+            "vix_change_pct": pct_change(
+                vix_bar["close"] if vix_bar else None,
+                baseline["vix"] if baseline else None,
+            ),
+
+            "near_expiry_ts": near_expiry_ts,
+            "mth_expiry_ts": mth_expiry_ts,
+            "created_at": now_epoch(),
+        }
+        row["buildup"] = buildup(
+            row["fut_price_change_pct"], row["fut_oi_change_pct"]
+        )
+
+        # ---- the classification -------------------------------------------
+        #
+        # Last, because it reads the VIX and the previous row's VIX, and both
+        # had to be resolved first. The rules are the market-classifier
+        # layer's and are shared with daily-market-sentiment; only the inputs
+        # are assembled here. It RAISES on too little history rather than
+        # writing a row whose regime came from a missing sma200.
+        #
+        # NO OPTION DATA FEEDS THIS YET. The chain aggregates above sit on the
+        # same row and are deliberately not scored - option history can only
+        # accumulate forward (Dhan serves no historical chain), so any PCR or
+        # IV-skew threshold today would be invented, and rows written before
+        # it was calibrated would carry a bias meaning something different
+        # from rows written after. See the layer README, "Revisit once
+        # sessions have accumulated".
+        classification = classify_snapshot(
+            index_history,
+            index_bars,
+            index_stats,
+            now,
+            row["vix"],
+            baseline["vix"] if baseline else None,
+        )
+        row.update(row_columns(classification))
+
+        for prefix, summary, expiry_ts, expiry_key in (
+            ("near", near, near_expiry_ts, "near_expiry_ts"),
+            ("mth", mth, mth_expiry_ts, "mth_expiry_ts"),
+        ):
+            row.update({
+                f"{prefix}_atm_strike": summary["atm_strike"],
+                f"{prefix}_ce_ltp": summary["ce_ltp"],
+                f"{prefix}_pe_ltp": summary["pe_ltp"],
+                f"{prefix}_straddle": summary["straddle"],
+                f"{prefix}_straddle_pct": summary["straddle_pct"],
+                f"{prefix}_pcr_oi": summary["pcr_oi"],
+                f"{prefix}_pcr_volume": summary["pcr_volume"],
+                f"{prefix}_ce_oi_total": summary["ce_oi_total"],
+                f"{prefix}_pe_oi_total": summary["pe_oi_total"],
+                f"{prefix}_ce_oi_change_pct": oi_change(
+                    summary["ce_oi_total"], baseline,
+                    f"{prefix}_ce_oi_total", expiry_ts, expiry_key,
+                ),
+                f"{prefix}_pe_oi_change_pct": oi_change(
+                    summary["pe_oi_total"], baseline,
+                    f"{prefix}_pe_oi_total", expiry_ts, expiry_key,
+                ),
+                f"{prefix}_max_oi_call": summary["max_oi_call"],
+                f"{prefix}_max_oi_put": summary["max_oi_put"],
+                f"{prefix}_max_pain": summary["max_pain"],
+                f"{prefix}_ce_iv": summary["ce_iv"],
+                f"{prefix}_pe_iv": summary["pe_iv"],
+                f"{prefix}_iv_skew": summary["iv_skew"],
+            })
+
+        # Raw legs, NEAREST EXPIRY ONLY - 5 strikes x CE/PE = 10 rows.
+        legs = [
+            dict(
+                leg,
+                security_id=index["security_id"],
+                instrument_type=index["instrument_type"],
+                snapshot_ts=snapshot_ts,
+                expiry_ts=near_expiry_ts,
+                created_at=row["created_at"],
+            )
+            for leg in chain_lib.raw_legs(near_data, spot, RAW_STRIKES_PER_SIDE)
+        ]
+
+        legs_written = write_snapshot(conn, row, legs)
+
+        # The row exists now, so the strategies can be handed it. Written
+        # first and dispatched second on purpose: a failed invoke raises with
+        # the row already committed, and the upsert makes a retry rewrite the
+        # identical row rather than duplicate it.
+        dispatched = dispatch_snapshot(row, index, daily)
+
+        elapsed = time.monotonic() - started
+        logger.info(
+            "done in %.1fs: snapshot %s, %d legs, buildup %s, "
+            "bias %s structure %s regime %s (%+d/%d, confidence %.1f)",
+            elapsed, ist_datetime(snapshot_ts).strftime("%H:%M"),
+            legs_written, row["buildup"],
+            row["bias"], row["structure"], row["regime"],
+            row["score"], row["max_score"], row["confidence"],
+        )
+        return {
+            "status": "success",
+            "date": today.isoformat(),
+            "snapshot": ist_datetime(snapshot_ts).strftime("%H:%M"),
+            "captured": now.strftime("%H:%M"),
+            "spot": spot,
+            "basis": round(basis, 2),
+            "buildup": row["buildup"],
+            "near_expiry": nearest_date.isoformat(),
+            "monthly_expiry": monthly_date.isoformat(),
+            "near_straddle": near["straddle"],
+            "near_pcr_oi": near["pcr_oi"],
+            "bias": row["bias"],
+            "structure": row["structure"],
+            "regime": row["regime"],
+            "volatility": row["volatility"],
+            "score": f"{row['score']:+d}/{row['max_score']}",
+            "confidence": row["confidence"],
+            "legs_written": legs_written,
+            "daily_read": (
+                None if not daily
+                else {
+                    "trade_date": daily["trade_date"],
+                    "regime": daily["regime"],
+                    "bias": daily["bias"],
+                    "stale": daily["stale"],
+                }
+            ),
+            "dispatched_to": dispatched,
+            "elapsed_seconds": round(elapsed, 2),
+        }
+    finally:
+        # Any exception propagates - Lambda must record an error. Never return
+        # a {"statusCode": 500} shape; Lambda counts that as a success.
+        try:
+            conn.close()
+        except Exception:
+            pass

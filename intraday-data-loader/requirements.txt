@@ -1,0 +1,6 @@
+# Listed so handler.py can be imported and tested locally.
+# The function package must NOT bundle pg8000 - it comes from the
+# neon-db-driver layer, and a copy in the package would shadow it.
+# Keep this identical to layers/neon-db-driver/requirements.txt.
+
+pg8000~=1.31

@@ -16,14 +16,19 @@ deterministic to read.
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
-| Intraday task | planned — see [components](docs/components.md#planned) |
+| [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
+| [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 15 min 10:00–15:35. **The only intraday cron**: it invokes the sentiment function, which invokes the manager |
+| [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
+| [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — basis/OI buildup, VIX, two option chains, **and the stored classification**. Invoked by the loader, 24×/day |
+| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off the snapshot and invokes the playbooks that combination allows |
+| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
 
 ## Documentation
 
 | | |
 |---|---|
 | [**Architecture**](docs/architecture.md) | System context, the two planes, data store, invariants, why it is Lambda and not containers |
-| [**Flow charts**](docs/flow.md) | The monthly loader flow end to end, failure handling |
+| [**Flow charts**](docs/flow.md) | A trading day end to end, each plane in detail, how a failure reaches you |
 | [**Components**](docs/components.md) | Component register, what is built vs planned, shared conventions, source lineage |
 
 ### Component docs
@@ -33,8 +38,14 @@ deterministic to read.
 | [instrument-master-loader](instrument-master-loader/README.md) | Configuration, deployment, porting notes, the known `FUTIDXBSE` rule gap |
 | [auth-dhan-broker](auth-dhan-broker/README.md) | Token refresh flow, why there is no renew path, IAM, measured API findings |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | The measured Dhan API facts, why `expected_move` comes from VIX, why the score is not a forecast |
+| [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
+| [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
+| [intraday-market-sentiment](intraday-market-sentiment/README.md) | Why the five-minute offset, the one thing it reads back from Postgres, the two strike widths, the `open_interest` naming trap |
+| [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads nothing at all, the v2 payload contract, the `regime\|bias` registry |
+| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory and no layers |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
+| [layers/market-classifier](layers/market-classifier/README.md) | The taxonomy, the score terms, the swing read, the time-scaled volatility test, and the three decisions deferred until sessions accumulate |
 
 ## Layout
 
@@ -62,11 +73,47 @@ aws-algo-claude/
 │   ├── notify.py                 Telegram
 │   ├── schema.sql                algo.daily_market_sentiment
 │   └── README.md
+├── error-notifier/               Lambda: failures from every function to Telegram
+│   ├── handler.py                decode, loop guard, suppression, formatting
+│   ├── config.py notify.py       tunables; Telegram
+│   └── README.md
+├── intraday-data-loader/         Lambda: 5/15/60-min candles through the session
+│   ├── handler.py                entry point, schedule rule, resume, alignment guard
+│   ├── config.py params.py       tunables; the Dhan token and client id
+│   ├── dhan.py db.py             charts + expiry client; the candle upsert
+│   ├── requirements.txt
+│   └── README.md
+├── intraday-market-sentiment/    Lambda: the 15-minute market read
+│   ├── handler.py                entry point, alignment, the one baseline read
+│   ├── config.py params.py       tunables; the Dhan token and client id
+│   ├── dhan.py                   charts + expiry list + option chain
+│   ├── expiry.py chain.py        nearest/monthly selection; ATM, PCR, max pain
+│   ├── sentiment.py              session stats, the buildup label
+│   ├── db.py schema.sql          the two-table write; the schema
+│   ├── requirements.txt
+│   └── README.md
+├── strategy-manager/        Lambda: the regime/bias gate and the dispatch
+│   ├── handler.py                entry point, the freshness assertion
+│   ├── config.py params.py       tunables and the registry; the Dhan token
+│   ├── dhan.py db.py             the live price; the Neon reads - no writes
+│   ├── indicators.py             SMA/RSI/ATR/VWAP, pure Python
+│   ├── classify.py               bias, regime, score, confidence on 15-min
+│   ├── registry.py               regime -> strategies, and the async invoke
+│   └── README.md
+├── strategy-range-liquidity-sweep/  Lambda: the opening-range sweep playbook
+│   ├── handler.py                entry point, the session replay
+│   ├── config.py                 every threshold, and which are not from the playbook
+│   ├── levels.py                 the liquidity pools, and which of them stack
+│   ├── sweep.py                  detection, acceptance, Case A/B/C triage
+│   ├── trade.py                  entry, stop, targets, risk-reward, grade
+│   ├── gate.py report.py         the fine gate; the playbook's output blocks
+│   └── README.md
 └── layers/
     ├── neon-db-driver/           Lambda layer: pure-Python Postgres driver
     │   ├── requirements.txt
     │   └── README.md
-    └── neon-access/              Lambda layer: shared epoch/IST, connect, SSM
+    ├── neon-access/              Lambda layer: shared epoch/IST, connect, SSM
+    └── market-classifier/        Lambda layer: bias, structure, regime, volatility
         ├── python/neon_access/
         └── README.md
 ```
@@ -84,10 +131,32 @@ Two planes on different clocks, deliberately uncoupled:
 - **Each weekday at 09:50** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
   Telegram.
-- **Every 5 minutes during market hours** *(planned)* — the intraday task fills
-  `candle_5min` and its aggregates.
+- **Every 15 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —
+  `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
+  for NIFTY and the current-month future. 24 invocations a trading day, and
+  **the only cron in the intraday plane**: it invokes the sentiment function,
+  which invokes the manager, which invokes the playbooks.
+- **After each loader run, 24×/day** — `intraday-market-sentiment` writes
+  one row describing the market: futures basis and OI buildup, INDIA VIX, and
+  the option-chain read for the nearest and monthly expiries at once. It shares
+  no tables with the loader — it fetches its own candles and chains, so a
+  stalled loader cannot feed it stale inputs. 24 invocations a trading day.
+- **On each snapshot** — `intraday-market-sentiment` invokes
+  `strategy-manager` asynchronously with the row it just wrote. The
+  manager classifies the 15-minute regime, shortlists the playbooks valid
+  for it, and invokes those — today `strategy-range-liquidity-sweep` on a range
+  day, and nothing at all on a trending one. Neither function writes to
+  Postgres.
+- **On failure, and only on failure** — `error-notifier` picks errors out of
+  every function's CloudWatch log group and pushes them to Telegram. It catches
+  timeouts and import errors too, which no `try/except` inside a function can
+  see.
 
-**Nothing sequences these.** An earlier design had a Step Functions state
+**Nothing sequences these, with one deliberate exception.** The strategy plane
+is chained rather than scheduled, because the manager's input *is* the
+snapshot — see [architecture.md](docs/architecture.md). Every invoke in that
+chain is asynchronous, so no function can be failed by something downstream of
+it. An earlier design had a Step Functions state
 machine running History → Regime → Strategy; it was never built. Each component
 runs on its own EventBridge cron instead, which keeps failure domains apart — a
 failed token refresh raises its own alarm rather than failing a trading session.

@@ -80,7 +80,7 @@ No Dhan credentials are needed: the scrip master is a public file.
 
 ## Deployment shape
 
-- Runtime: Python 3.12+, handler `handler.lambda_handler`.
+- Runtime: Python 3.14, handler `handler.lambda_handler`.
 - Layers: `neon-db-driver` (pg8000) **and** `neon-access` (shared helpers).
   Attach both **before** uploading the code — `handler.py` imports
   `neon_access` at module load, so the reverse order gives

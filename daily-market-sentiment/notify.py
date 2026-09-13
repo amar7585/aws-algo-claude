@@ -19,12 +19,14 @@ def format_brief(instrument, sentiment):
         f"{instrument['trading_symbol']} daily read - {described:%a %d %b %Y}",
         "",
         sentiment["regime"].upper(),
-        f"score {sentiment['score']}  confidence {sentiment['confidence']:.0f}%",
+        f"score {sentiment['score']:+d}/{sentiment['max_score']}  "
+        f"confidence {sentiment['confidence']:.0f}%",
+        f"structure {sentiment['structure']}  volatility {sentiment['volatility']}",
         "",
         f"prev day   H {sentiment['pd_high']:.2f}  L {sentiment['pd_low']:.2f}  "
         f"C {sentiment['pd_close']:.2f}",
         f"rsi {sentiment['rsi']:.2f}",
-        f"sma 20/50/100/200  {sentiment['sma20']:.0f} / {sentiment['sma50']:.0f} / "
+        f"sma 9/50/100/200  {sentiment['sma9']:.0f} / {sentiment['sma50']:.0f} / "
         f"{sentiment['sma100']:.0f} / {sentiment['sma200']:.0f}",
     ]
     if sentiment.get("vix") is not None:
