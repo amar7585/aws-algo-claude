@@ -73,6 +73,7 @@ Conventions:
 """
 
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -86,7 +87,13 @@ import urllib.request
 
 import boto3
 
-from neon_access import connect, read_neon_connection_string, today_ist
+from neon_access import (
+    SSL_CONTEXT,
+    connect,
+    get_parameter,
+    read_neon_connection_string,
+    today_ist,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -97,6 +104,16 @@ GENERATE_URL = os.environ.get(
 )
 
 TOKEN_PARAMETER_NAME = os.environ.get("TOKEN_PARAMETER_NAME", "/algo/dhan/token")
+
+# The same parameter daily-market-sentiment and error-notifier read. One chat,
+# one bot: a holiday notice belongs beside the daily brief it replaces.
+TELEGRAM_PARAMETER_NAME = os.environ.get(
+    "TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief"
+)
+
+# How far ahead the holiday notice looks for the next session. Generous: the
+# longest run of weekday closures here is two (Diwali 2025, 21-22 October).
+NEXT_SESSION_HORIZON_DAYS = 10
 
 HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "30"))
 
@@ -289,6 +306,92 @@ def holiday_for(conn, trade_date):
     return row[0] or "unnamed holiday"
 
 
+def next_trading_day(conn, after):
+    """The next weekday that is not a stored closure, or None.
+
+    For the holiday notice only — nothing decides anything on this. It answers
+    the one question a holiday raises ("when do we resume"), and it answers it
+    the same way the gate does: a weekday with no row is a session.
+
+    None means the horizon ran out, which in practice means the calendar has
+    not been reseeded. The notice says so rather than inventing a date.
+    """
+    start = after + datetime.timedelta(days=1)
+    end = start + datetime.timedelta(days=NEXT_SESSION_HORIZON_DAYS)
+
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT trade_date FROM {HOLIDAY_TABLE} "
+        "WHERE trade_date >= %s AND trade_date <= %s",
+        (start, end),
+    )
+    closed = {row[0] for row in cursor.fetchall()}
+
+    day = start
+    while day <= end:
+        if day.weekday() < 5 and day not in closed:
+            return day
+        day += datetime.timedelta(days=1)
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Telegram
+# ---------------------------------------------------------------------------
+def format_holiday_notice(today, holiday, next_session, schedules):
+    """The holiday message. Plain text, same chat as the daily brief."""
+    lines = [
+        f"Market holiday - {today:%a %d %b %Y}",
+        "",
+        holiday,
+        "",
+        "No access token minted.",
+        "Session schedules disabled:",
+    ]
+    lines += [f"  {name} ({result})" for name, result in schedules.items()]
+    lines += [""]
+    if next_session:
+        lines.append(f"Next session: {next_session:%a %d %b %Y}")
+    else:
+        # Only reachable when the calendar has run out of rows, which is worth
+        # saying out loud - it is the one failure this design cannot see.
+        lines.append(
+            f"Next session: unknown - no open weekday found in the next "
+            f"{NEXT_SESSION_HORIZON_DAYS} days. The holiday calendar may need "
+            f"reseeding."
+        )
+    return "\n".join(lines)
+
+
+def send_telegram(text):
+    """Deliver one message. Raises if Telegram refuses it.
+
+    Called only AFTER the schedules are disabled. The notice is courtesy; the
+    gate is the job, and a Telegram outage must not leave the schedules armed
+    on a holiday.
+    """
+    config = json.loads(get_parameter(TELEGRAM_PARAMETER_NAME))
+    token, chat_id = config.get("bot_token"), config.get("chat_id")
+    if not token or not chat_id:
+        raise RuntimeError(
+            f"{TELEGRAM_PARAMETER_NAME} must hold bot_token and chat_id"
+        )
+
+    payload = urllib.parse.urlencode(
+        {"chat_id": str(chat_id), "text": text, "disable_web_page_preview": "true"}
+    ).encode()
+    request = urllib.request.Request(
+        f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST"
+    )
+    with urllib.request.urlopen(
+        request, timeout=HTTP_TIMEOUT_SECONDS, context=SSL_CONTEXT
+    ) as response:
+        body = json.loads(response.read().decode())
+    if not body.get("ok"):
+        raise RuntimeError(f"telegram refused the message: {body}")
+    logger.info("telegram holiday notice delivered to chat %s", chat_id)
+
+
 # ---------------------------------------------------------------------------
 # EventBridge Scheduler
 #
@@ -365,6 +468,9 @@ def lambda_handler(event, context):
     conn = connect(read_neon_connection_string())
     try:
         holiday = holiday_for(conn, today)
+        # Read on the same connection rather than reopening one for the
+        # notice: Neon autosuspends, and this is the cold wake-up of the day.
+        next_session = next_trading_day(conn, today) if holiday else None
     finally:
         try:
             conn.close()
@@ -372,16 +478,19 @@ def lambda_handler(event, context):
             pass
 
     if holiday:
-        # Disabled before anything else, and no token is minted: nothing will
-        # run today that could use one, and this token would be long expired
-        # before the next session anyway.
+        # Schedules go off FIRST, and no token is minted: nothing will run
+        # today that could use one, and it would be long expired before the
+        # next session anyway. The notice comes after, because the gate is the
+        # job — a Telegram outage must not leave the schedules armed.
         schedules = set_managed_schedules("DISABLED")
         logger.info("%s is a holiday (%s) - session schedules disabled", today, holiday)
+        send_telegram(format_holiday_notice(today, holiday, next_session, schedules))
         return {
             "status": "skipped_non_trading_day",
             "date": today.isoformat(),
             "reason": "holiday",
             "holiday": holiday,
+            "next_session": next_session.isoformat() if next_session else None,
             "schedules": schedules,
         }
 

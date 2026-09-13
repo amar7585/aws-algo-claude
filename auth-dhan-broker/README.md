@@ -14,7 +14,8 @@ refresh failure should raise its own alarm rather than fail a session.
 1. Skips a weekend. Only reachable by hand — the cron is `MON-FRI`.
 2. Asks `algo.trading_holiday` whether today is a closure.
 3. **On a holiday** — disables the `daily-market-sentiment` and
-   `intraday-data-loader` schedules and stops. No token is minted.
+   `intraday-data-loader` schedules, sends a Telegram notice, and stops. No
+   token is minted.
 4. **Otherwise** — generates a TOTP code from the stored authenticator seed,
    calls `POST /app/generateAccessToken` with client id + PIN + that code,
    reads the expiry out of the returned JWT's `exp` claim, writes token and
@@ -52,6 +53,43 @@ switch it back on, and the system would stay dark until someone noticed by hand.
 Order matters: the token is stored *before* the schedules are enabled. The other
 way round arms a session against a token that was never refreshed, turning a
 recoverable auth failure into a whole day of failing invocations.
+
+### The holiday notice
+
+On a holiday the function sends one Telegram message to the same chat as the
+daily brief — which is the message it replaces that morning:
+
+```
+Market holiday - Mon 14 Sep 2026
+
+Diwali Laxmi Pujan
+
+No access token minted.
+Session schedules disabled:
+  daily-market-sentiment (updated)
+  intraday-data-loader (updated)
+
+Next session: Tue 15 Sep 2026
+```
+
+Most rows have no name, and the notice says `unnamed holiday` rather than
+guessing — see [trading-calendar](../trading-calendar/README.md).
+
+**Next session is looked up on the connection already open**, because Neon
+autosuspends and this is the cold wake-up of the day. It walks forward from
+tomorrow, skipping weekends and stored closures, which is how Diwali 2025
+(21–22 October, two consecutive weekdays) resolves to Thursday the 23rd. It
+decides nothing; only the notice reads it.
+
+If no open weekday is found within `NEXT_SESSION_HORIZON_DAYS`, the notice says
+the calendar may need reseeding instead of naming a date. That is the one
+condition this design cannot otherwise see, so it is worth the line.
+
+**The notice is sent after the schedules are switched off,** and a Telegram
+failure raises. The gate is the job; a Telegram outage must never leave the
+schedules armed on a holiday. One consequence: if the run is retried after
+failing past that point, the notice is sent twice. A duplicate message is a
+cheaper problem than a suppressed one, so it is not deduplicated.
 
 ### There is deliberately no calendar check inside the session functions
 
@@ -173,12 +211,15 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `DHAN_CLIENT_ID` | yes | — |
 | `DHAN_PIN` | yes | — |
 | `DHAN_TOTP_SECRET` | yes | — |
-| `NEON_CONNECTION_STRING` | yes | — |
 | `TOKEN_PARAMETER_NAME` | no | `/algo/dhan/token` |
+| `TELEGRAM_PARAMETER_NAME` | no | `/algo/telegram/brief` |
+| `NEON_PARAMETER_NAME` | no | `/algo/neon/connection` |
+| `NEON_CONNECTION_STRING` | no | — (override; SSM is the source of truth) |
 | `DHAN_GENERATE_TOKEN_URL` | no | `https://auth.dhan.co/app/generateAccessToken` |
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
 | `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment,intraday-data-loader` |
 | `SCHEDULE_GROUP_NAME` | no | `default` |
+| `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
 
 `DHAN_PIN` and `DHAN_TOTP_SECRET` are **permanent, full-trading-authority
 credentials** — unlike the token, which dies in 24 hours. Anyone who can read
@@ -196,9 +237,9 @@ before this function can work at all.
 | Action | Resource |
 |---|---|
 | `ssm:PutParameter` | the `/algo/dhan/token` parameter ARN |
-| `ssm:GetParameter` | the parameter holding `NEON_CONNECTION_STRING` |
+| `ssm:GetParameter` | `/algo/neon/connection` and `/algo/telegram/brief` |
 | `kms:Encrypt` | the key backing the token parameter, via `kms:ViaService` |
-| `kms:Decrypt` | the key backing the connection-string parameter |
+| `kms:Decrypt` | the key backing those two read parameters |
 | `scheduler:GetSchedule` | each managed schedule ARN |
 | `scheduler:UpdateSchedule` | each managed schedule ARN |
 | `iam:PassRole` | each managed schedule's **own** execution role |
