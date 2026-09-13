@@ -7,7 +7,8 @@
 | Component | Kind | Cadence | Status | Docs |
 |---|---|---|---|---|
 | `instrument-master-loader` | Lambda function | monthly | **built, running** | [README](../instrument-master-loader/README.md) |
-| `auth-dhan-broker` | Lambda function | daily, weekdays 08:00 | **built, running** | [README](../auth-dhan-broker/README.md) |
+| `auth-dhan-broker` | Lambda function | daily, weekdays 08:00 — also the holiday gate | **built, running** | [README](../auth-dhan-broker/README.md) |
+| `trading-calendar` | reference data, no Lambda | seeded by hand, yearly | **seeded** | [README](../trading-calendar/README.md) |
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
@@ -94,14 +95,28 @@ function has to authenticate itself and no token is refreshed by hand.
 |---|---|
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package |
-| Layer | none — `boto3` ships with the runtime, the rest is stdlib |
+| Layer | `neon-db-driver`, `neon-access` — for the holiday read only |
 | Package contents | `handler.py` alone |
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
+| Switches | the `daily-market-sentiment` and `intraday-data-loader` schedules |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
 Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
 failure raises; there is no fallback path.
+
+**It also decides whether the trading day happens at all.** A holiday is a
+weekday, so the `MON-FRI` cron still fires on one: this is the only thing that
+runs before every session, which makes it the one symmetric decision point.
+On a holiday it disables the two session schedules, sends a Telegram notice and
+mints nothing; otherwise it mints, stores, and enables them. The session
+functions are therefore never invoked on a holiday rather than invoked and
+skipping. The calendar is [`algo.trading_holiday`](../trading-calendar/README.md),
+where a row means closed and absence means a normal session.
+
+That is also why this function now carries two layers, having needed none: the
+holiday read is the whole reason.
 
 **There is deliberately no renew step.** `/v2/RenewToken` would have let one
 TOTP login carry a week, but it refuses TOTP-minted tokens outright —
