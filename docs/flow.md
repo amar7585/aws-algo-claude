@@ -2,10 +2,88 @@
 
 ← [Back to root README](../README.md) · [Architecture](architecture.md) · [Components](components.md)
 
+## A trading day, end to end
+
+Everything below this section is one plane in detail. This is the order they
+actually happen in, and what hands off to what.
+
+```mermaid
+flowchart TD
+    subgraph BEFORE["Before the session"]
+        AUTH["auth-dhan-broker<br/><i>cron, weekdays 08:00</i>"] --> SSM[/"SSM /algo/dhan/token<br/>24h TOTP-minted token"/]
+        LOADER["instrument-master-loader<br/><i>cron, monthly</i>"] --> IM[("instrument_master")]
+    end
+
+    subgraph SESSION["09:15-15:30"]
+        DAILY["daily-market-sentiment<br/><i>cron, 09:50</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
+        DAILY --> TG1{{"Telegram"}}
+
+        CANDLES["intraday-data-loader<br/><i>cron, every 5 min<br/>10:00-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
+
+        SENT["intraday-market-sentiment<br/><i>cron, every 15 min<br/>09:35-15:35</i>"] --> STBL[("intraday_market_sentiment<br/>option_chain_snapshot")]
+    end
+
+    subgraph STRAT["The strategy plane - chained, not scheduled"]
+        MGR["<b>strategy-manager</b><br/><i>invoked, 25x/day</i>"]
+        SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked when RANGE</i>"]
+        MGR -->|"Event: the context"| SWEEP
+        SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
+    end
+
+    SENT -->|"Event: the snapshot it just wrote"| MGR
+
+    SSM -.token.-> DAILY
+    SSM -.token.-> CANDLES
+    SSM -.token.-> SENT
+    SSM -.token.-> MGR
+    CTBL -.candles.-> MGR
+    DTBL -.daily read.-> MGR
+    IM -.identity.-> CANDLES
+    IM -.identity.-> SENT
+    IM -.identity.-> MGR
+
+    ERR["error-notifier<br/><i>log subscription</i>"] --> TG2{{"Telegram"}}
+    LOG -.errors only.-> ERR
+
+    style STBL fill:#14532d,color:#fff
+    style CTBL fill:#14532d,color:#fff
+    style DTBL fill:#14532d,color:#fff
+    style IM fill:#14532d,color:#fff
+    style MGR fill:#1e3a8a,color:#fff
+    style SWEEP fill:#1e3a8a,color:#fff
+```
+
+Read in clock order, a weekday looks like this:
+
+| Time (IST) | What runs | Trigger | Writes |
+|---|---|---|---|
+| monthly | `instrument-master-loader` | cron | `instrument_master` |
+| 08:00 | `auth-dhan-broker` | cron | `/algo/dhan/token` |
+| 09:50 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
+| 10:00–15:30 every 5 min, + 15:35 | `intraday-data-loader` | cron | the three candle tables |
+| 09:35–15:35 every 15 min | `intraday-market-sentiment` | cron | `intraday_market_sentiment`, `option_chain_snapshot` |
+| immediately after each of those 25 runs | `strategy-manager` | **invoke** | nothing |
+| immediately after, when the regime is RANGE | `strategy-range-liquidity-sweep` | **invoke** | nothing |
+| on failure only | `error-notifier` | log subscription | Telegram |
+
+**Six of the seven run on their own cron. The strategy plane is the exception.**
+`strategy-manager`'s input *is* the intraday snapshot, so the function that
+writes the snapshot invokes it — a cron there would have to guess how long the
+write takes, read the row back, and decide what to do when it is not there yet.
+
+**Nothing in the chain can fail its caller.** Every invoke is `Event`, so
+`intraday-market-sentiment` finishing is not a claim that the manager
+succeeded, and the manager finishing is not a claim that any playbook did. Each
+function has its own log group and `error-notifier` reports from all of them.
+
+**The strategy plane writes nothing at all.** The regime the manager classifies
+travels in the invocation payload and the playbook records it in its own log
+beside whatever it found, so the decision is recoverable from the consumer
+rather than duplicated into a table by the producer.
+
 ## Instrument master refresh — monthly
 
-The only flow that is fully built today. Runs on an EventBridge Scheduler cron,
-independent of any trading session.
+Runs on an EventBridge Scheduler cron, independent of any trading session.
 
 ```mermaid
 flowchart TD
@@ -210,6 +288,101 @@ index candles are already committed rather than lost alongside it.
 There is no holiday gate, for the same reason as the daily read: on a holiday
 the fetch returns nothing new and nothing is written.
 
+## Strategy routing — on each snapshot, 25× a day
+
+No schedule. `intraday-market-sentiment` invokes `strategy-manager` once its
+row is committed, and the manager invokes the playbooks the regime allows.
+
+```mermaid
+flowchart TD
+    START(["intraday-market-sentiment<br/><b>Event invoke, the snapshot as payload</b>"]) --> VAL{"snapshot carries<br/>snapshot_ts,<br/>security_id,<br/>instrument_type?"}
+    VAL -->|no| RAISE(["raise"])
+    VAL -->|yes| ASOF["<b>as_of = snapshot_ts + 5 min</b><br/>every read bounded by this,<br/>never by the wall clock"]
+
+    ASOF --> TOK["read /algo/dhan/token"]
+    TOK --> RES["resolve instrument<br/><b>on (security_id, instrument_type)</b>"]
+    RES --> C15["candle_15min: newest 260 CLOSED bars<br/><i>candle_ts + interval &le; as_of</i>"]
+
+    C15 --> FRESH{"newest closed bar<br/>within 1 bar<br/>of the snapshot?"}
+    FRESH -->|"no - stalled loader"| RAISE
+    FRESH -->|"yes - or the :35 write/read race"| BARS{"&ge; 200<br/>closed bars?"}
+    BARS -->|no| RAISE
+    BARS -->|yes| IND["SMA 20/50/100/200, Wilder RSI"]
+
+    IND --> MISS{"any of sma20/50/100/200,<br/>rsi absent on the<br/>newest bar?"}
+    MISS -->|yes| RAISE
+    MISS -->|no| CLS["<b>classify</b><br/>score -3..+3, bias, regime,<br/>confidence"]
+
+    CLS --> C5["candle_5min: newest 200 closed bars"]
+    C5 --> DLY["daily_market_sentiment row<br/>+ Wilder true ATR14 from candle_daily"]
+    DLY --> LIVE["Dhan /v2/charts/intraday<br/><b>keeps the forming bar</b> - the live price"]
+
+    LIVE --> REG{"regime in<br/>STRATEGY_REGISTRY?"}
+    REG -->|"no - drift"| RAISE
+    REG -->|"TREND &rarr; empty list"| NONE(["no playbook is valid<br/>on this kind of day"])
+    REG -->|"RANGE"| SIZE{"context<br/>&le; 256 KB?"}
+    SIZE -->|no| RAISE
+    SIZE -->|yes| INV["<b>Event invoke</b> each eligible playbook<br/><i>all attempted, failures raised together</i>"]
+
+    INV --> GATE["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
+    GATE --> FINE{"regime RANGE<br/>VIX within &plusmn;5%<br/>adr &lt; 0.78 &times; ATR14<br/>opening range &ge; 0.15%<br/>09:45-15:00?"}
+    FINE -->|"any fails"| DOWN(["stand down,<br/>naming every failed check"])
+    FINE -->|all pass| POOLS["8 pools: 15min H/L, PDH/PDL,<br/>1Hr H/L, session H/L"]
+    POOLS --> SCAN["replay the session's sweeps in order:<br/>penetration 0.04-0.30%, rejection,<br/>no extension, reclaim"]
+    SCAN --> BROKE{"a level<br/>accepted through?"}
+    BROKE -->|yes| DEAD(["both sides dead -<br/>the range no longer exists"])
+    BROKE -->|no| RR{"RR &ge; 1.5 against T2?"}
+    RR -->|no| REJ(["rejected, with the reason"])
+    RR -->|yes| OUT{{"SWEEP CANDIDATE<br/>entry, stop, T1/T2/T3, grade<br/><i>to the log</i>"}}
+
+    style RAISE fill:#7f1d1d,color:#fff
+    style NONE fill:#78350f,color:#fff
+    style DOWN fill:#78350f,color:#fff
+    style DEAD fill:#78350f,color:#fff
+    style REJ fill:#78350f,color:#fff
+    style OUT fill:#14532d,color:#fff
+```
+
+Six things in that diagram are load-bearing:
+
+**`as_of` comes from the snapshot, not the clock.** Every candle read is
+bounded by the instant the snapshot's own 5-minute bar closed, so two runs over
+the same snapshot see the same bars and reach the same decision. That is what
+makes re-running the manager meaningful rather than merely repeated.
+
+**The freshness check allows exactly one bar, and only because of a race.**
+`intraday-data-loader` fires every five minutes and
+`intraday-market-sentiment` at :35/:50/:05/:20, so the loader's write of the
+bar the snapshot describes and the manager's read of it fall in the same
+minute. Demanding equality would raise on the ordinary case. Beyond one bar it
+is not a race but a stalled loader, and the SMAs would then be computed from a
+series that ends before the market does.
+
+**A missing SMA raises rather than defaulting to zero.** The legacy builder ran
+every indicator through a `safe_value()` mapping NaN to `0.0`, which makes
+`close > sma100 > sma200` read as `close > 0 > 0` — False — so the longer-SMA
+test silently contributes nothing and the score caps at ±2. Nothing raises and
+nothing looks wrong. This is the same defence `daily_market_sentiment` already
+carries as `sma200 NOT NULL`.
+
+**An unknown regime raises; a regime mapping to `[]` does not.** Those are
+different things. `TREND → []` is a deliberate "no playbook is valid today",
+which is the correct answer for every playbook built so far. A regime *missing
+from the map* means `classify.py` and the registry have drifted apart, and
+routing nothing would otherwise look exactly like a correct stand-down.
+
+**Both gates run, and that is not redundancy.** The manager's registry answers
+"is this playbook valid for this kind of day at all"; the playbook's own gate
+answers what only it can know. A strategy that trusted an upstream gate it
+cannot see would fire on a bad day the moment that gate moved.
+
+**Acceptance kills both sides, not just one.** Two consecutive 5-minute closes
+beyond a level means the range broke — and if the opening-range high has been
+accepted through, a later sweep of the range low is not a range trade either,
+because there is no longer a range. Measured on the real 2026-09-11 session:
+the high was accepted through at 10:10, which stands down the otherwise-
+qualifying 10:20 sweep.
+
 ## How a failure reaches you
 
 Every row in the table below ends in a raised exception, which is the point:
@@ -224,8 +397,11 @@ flowchart LR
     F2["daily-market-sentiment"] --> LG2[/"log group"/]
     F3["instrument-master-loader"] --> LG3[/"log group"/]
     F4["intraday-data-loader"] --> LG4[/"log group"/]
+    F5["intraday-market-sentiment"] --> LG5[/"log group"/]
+    F6["strategy-manager"] --> LG6[/"log group"/]
+    F7["strategy-range-liquidity-sweep"] --> LG7[/"log group"/]
 
-    LG1 & LG2 & LG3 & LG4 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
     EN --> TG(["Telegram"])
     EN -.->|"never subscribe<br/>its own log group"| EN
 
@@ -241,8 +417,24 @@ noticed, and the two a catch block can never see. Both still reach the log.
 trigger itself, and loop. The handler refuses payloads from its own log group so
 the mistake is inert rather than expensive.
 
+**Subscribing every log group is not optional for the chained plane.** The two
+strategy functions are invoked asynchronously, so nothing upstream fails when
+they do: `intraday-market-sentiment` returning success says only that its row
+was written and the invoke was accepted. Their own log groups are the only
+place their failures appear. An unsubscribed `strategy-manager` would stop
+routing and no alarm would fire anywhere.
+
+This compounds with the execution-role trap. A borrowed role allows
+`logs:PutLogEvents` on one log group ARN only, so a function using it produces
+**no logs at all** — and for `strategy-range-liquidity-sweep`, whose log *is*
+its entire output, that means it produces nothing whatsoever while appearing to
+succeed.
+
 **Two gaps remain.** Nothing watches the notifier itself, and nothing detects
 *silence* — a schedule that stops firing raises no error because nothing runs.
+The chained plane widens that second gap: a manager that is never invoked, or
+a playbook never dispatched because the registry lost its regime, is silent in
+exactly the same way as a quiet market.
 
 ## Failure handling
 
@@ -255,6 +447,14 @@ the mistake is inert rather than expensive.
 | Neon compute suspended | — | first `connect()` absorbs the wake-up |
 | TOTP generation fails | non-200 from `/app/generateAccessToken` | raise — no token exists |
 | Dhan refuses with a 200 envelope | no `accessToken` in body | raise, quoting the body |
+| `intraday-data-loader` has stalled | newest closed bar > 1 bar behind the snapshot | raise — no routing on stale SMAs |
+| Fewer than 200 closed 15-min bars | `MIN_BARS_TO_CLASSIFY` | raise — not a score capped at ±2 |
+| An SMA absent on the newest bar | explicit `None` check | raise — never defaulted to `0.0` |
+| `classify.py` and the registry drift apart | regime absent from `STRATEGY_REGISTRY` | raise — not an empty shortlist |
+| The dispatched context exceeds 256 KB | checked before `invoke` | raise, naming the candle count |
+| A strategy invoke is refused | `StatusCode` / `FunctionError` | every invoke attempted, then one raise naming all failures |
+| The manager's payload shape changes | `context_version` assertion in each strategy | raise — never a gate passing on a vanished input |
+| A strategy fails after dispatch | its own log group → `error-notifier` | reported from there; the manager cannot see it and does not claim to |
 | Token JWT has no `exp` claim | claim check before write | raise — nothing stored |
 | Dhan token expired | `expires_at` check before any call | raise — never call with a dead token |
 | `security_id` matches 0 or 2+ rows | exactly-one check in `resolve_instrument` | raise — no silent wrong instrument |

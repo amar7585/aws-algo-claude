@@ -27,7 +27,7 @@ deterministic to read.
 | | |
 |---|---|
 | [**Architecture**](docs/architecture.md) | System context, the two planes, data store, invariants, why it is Lambda and not containers |
-| [**Flow charts**](docs/flow.md) | The monthly loader flow end to end, failure handling |
+| [**Flow charts**](docs/flow.md) | A trading day end to end, each plane in detail, how a failure reaches you |
 | [**Components**](docs/components.md) | Component register, what is built vs planned, shared conventions, source lineage |
 
 ### Component docs
