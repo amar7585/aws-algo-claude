@@ -240,9 +240,17 @@ The explicit stamp check turns that into a loud failure.
 09:50 the newest stored daily candle is the previous session's. Today's open
 comes from the intraday call instead.
 
-There is no holiday gate. On a holiday the fetch returns nothing new and the
-sentiment row is simply not written — a calendar would be a second source of
-truth to keep correct.
+**This function does not run at all on a holiday.** Its schedule is switched
+off at 08:00 that morning by `auth-dhan-broker`, which reads
+`algo.trading_holiday` and disables the session schedules before the day starts
+— see [trading-calendar](../trading-calendar/README.md).
+
+There is no holiday gate *inside* this handler, and one should not be added.
+The old claim that a holiday wrote nothing was only ever true of the candle
+write — the Telegram brief went out regardless, with a null price and a null
+expected-move band. The schedule gate is what stops that, and the expired token
+is what makes a failure of that gate loud rather than silent. See
+[auth-dhan-broker](../auth-dhan-broker/README.md#there-is-deliberately-no-calendar-check-inside-the-session-functions).
 
 ## Intraday candles — every 15 minutes, 10:00–15:35
 
@@ -296,8 +304,18 @@ they would stay partial in the database permanently.
 costs an extra API call. If it fails, the exception still propagates — but the
 index candles are already committed rather than lost alongside it.
 
-There is no holiday gate, for the same reason as the daily read: on a holiday
-the fetch returns nothing new and nothing is written.
+**This function does not run at all on a holiday**, and neither does the chain
+it drives. Its schedule is switched off at 08:00 by `auth-dhan-broker` — so the
+snapshot, the manager and the playbooks are never invoked either, since every
+one of them is reached from here rather than from a cron of its own.
+
+There is still no holiday gate *inside* this handler, and adding one would be a
+regression. No token is minted on a holiday and the previous one expired at
+08:00 that morning, so a wrongly-enabled schedule fails loudly here and
+`error-notifier` reports it. A calendar check in the handler would turn that
+alarm into a polite skip and hide the broken toggle — see
+[auth-dhan-broker](../auth-dhan-broker/README.md#there-is-deliberately-no-calendar-check-inside-the-session-functions).
+The weekend check stays, as a second line of defence for a manual invoke.
 
 ## Snapshot, routing and the playbook — on each of the 24 loader runs
 

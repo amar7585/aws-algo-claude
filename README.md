@@ -12,7 +12,8 @@ deterministic to read.
 | Component | Status |
 |---|---|
 | [instrument-master-loader](instrument-master-loader/README.md) | **running** — 15,463 instruments, monthly |
-| [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 08:00 |
+| [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 08:00; also the holiday gate that arms the day's schedules |
+| [trading-calendar](trading-calendar/README.md) | **live** — `algo.trading_holiday`, all 16 NSE holidays for 2026 |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
@@ -36,7 +37,8 @@ deterministic to read.
 | | |
 |---|---|
 | [instrument-master-loader](instrument-master-loader/README.md) | Configuration, deployment, porting notes, the known `FUTIDXBSE` rule gap |
-| [auth-dhan-broker](auth-dhan-broker/README.md) | Token refresh flow, why there is no renew path, IAM, measured API findings |
+| [auth-dhan-broker](auth-dhan-broker/README.md) | Token refresh flow, why the holiday decision lives here, why `UpdateSchedule` replaces rather than patches, IAM, measured API findings |
+| [trading-calendar](trading-calendar/README.md) | Why a row means closed and absence means trading, why `trade_date` is a `date` and not epoch, reseeding, the 2026-12-31 coverage cliff |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | The measured Dhan API facts, why `expected_move` comes from VIX, why the score is not a forecast |
 | [intraday-data-loader](intraday-data-loader/README.md) | The one-line schedule rule, why partial candles are stored, how the current-month future resolves itself |
 | [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
@@ -108,6 +110,11 @@ aws-algo-claude/
 │   ├── trade.py                  entry, stop, targets, risk-reward, grade
 │   ├── gate.py report.py         the fine gate; the playbook's output blocks
 │   └── README.md
+├── trading-calendar/             reference data: exchange holidays (no Lambda)
+│   ├── schema.sql                algo.trading_holiday
+│   ├── seed_2026.sql             16 holidays, from NSE's circular
+│   ├── generate_seed.py          transcription cross-check — laptop only
+│   └── README.md
 └── layers/
     ├── neon-db-driver/           Lambda layer: pure-Python Postgres driver
     │   ├── requirements.txt
@@ -125,9 +132,12 @@ Two planes on different clocks, deliberately uncoupled:
 - **Monthly** — `instrument-master-loader` refreshes reference data from Dhan's
   public scrip master. Runs on its own EventBridge cron, outside the trading
   session entirely.
-- **Each weekday morning** — `auth-dhan-broker` mints a Dhan access token via
-  TOTP and writes it to SSM, so no session function authenticates itself and
-  nothing is refreshed by hand.
+- **Each weekday morning** — `auth-dhan-broker` decides whether the day happens.
+  It reads `algo.trading_holiday`: on a holiday it **disables** the daily and
+  intraday schedules and stops without minting anything; otherwise it mints a
+  Dhan access token via TOTP, writes it to SSM, and **enables** those schedules.
+  So no session function authenticates itself, nothing is refreshed by hand, and
+  nothing is invoked on a holiday at all.
 - **Each weekday at 09:50** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
   Telegram.

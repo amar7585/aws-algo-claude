@@ -11,13 +11,112 @@ refresh failure should raise its own alarm rather than fail a session.
 
 ## What it does
 
-1. Generates a TOTP code from the stored authenticator seed.
-2. Calls `POST /app/generateAccessToken` with client id + PIN + that code.
-3. Reads the expiry out of the returned JWT's `exp` claim.
-4. Writes token and expiry to `/algo/dhan/token`.
+1. Skips a weekend. Only reachable by hand — the cron is `MON-FRI`.
+2. Asks `algo.trading_holiday` whether today is a closure.
+3. **On a holiday** — disables the `daily-market-sentiment` and
+   `intraday-data-loader` schedules, sends a Telegram notice, and stops. No
+   token is minted.
+4. **Otherwise** — generates a TOTP code from the stored authenticator seed,
+   calls `POST /app/generateAccessToken` with client id + PIN + that code,
+   reads the expiry out of the returned JWT's `exp` claim, writes token and
+   expiry to `/algo/dhan/token`, and **then** enables those two schedules.
 
 Any failure raises. There is no fallback, because there is nothing to fall back
 to — see below.
+
+## Why the calendar decision lives here
+
+This is the only thing that runs before the session on **every** weekday, and a
+holiday *is* a weekday, so the `MON-FRI` cron still fires on one. That makes a
+single symmetric decision point: disable on a holiday, enable on a trading day.
+The session functions are never invoked on a holiday, rather than invoked and
+skipping.
+
+Concentrating the decision here costs little, because this function is already
+a hard dependency of the whole day: every consumer calls `read_token_record()`,
+which **raises** on a missing or expired token. A morning where this function
+fails is already a dead day, and `error-notifier` already reports it. Attaching
+the schedule decision to it adds no new way to lose a session.
+
+**A row in `algo.trading_holiday` means closed; no row means a normal session.**
+Absence is the permissive answer on purpose — a calendar nobody reseeded keeps
+the system trading, which costs a few no-op invocations, instead of making it go
+quiet, which nothing here can detect. See
+[trading-calendar](../trading-calendar/README.md).
+
+### The two schedules, and the one that is never touched
+
+`MANAGED_SCHEDULE_NAMES` must never list **this function's own schedule**. It is
+the heartbeat that makes the decision, so a run that switched it off could never
+switch it back on, and the system would stay dark until someone noticed by hand.
+
+Order matters: the token is stored *before* the schedules are enabled. The other
+way round arms a session against a token that was never refreshed, turning a
+recoverable auth failure into a whole day of failing invocations.
+
+### The holiday notice
+
+On a holiday the function sends one Telegram message to the same chat as the
+daily brief — which is the message it replaces that morning:
+
+```
+Market holiday - Mon 14 Sep 2026
+
+Diwali Laxmi Pujan
+
+No access token minted.
+Session schedules disabled:
+  daily-market-sentiment (updated)
+  intraday-data-loader (updated)
+
+Next session: Tue 15 Sep 2026
+```
+
+Most rows have no name, and the notice says `unnamed holiday` rather than
+guessing — see [trading-calendar](../trading-calendar/README.md).
+
+**Next session is looked up on the connection already open**, because Neon
+autosuspends and this is the cold wake-up of the day. It walks forward from
+tomorrow, skipping weekends and stored closures, which is how Diwali 2025
+(21–22 October, two consecutive weekdays) resolves to Thursday the 23rd. It
+decides nothing; only the notice reads it.
+
+If no open weekday is found within `NEXT_SESSION_HORIZON_DAYS`, the notice says
+the calendar may need reseeding instead of naming a date. That is the one
+condition this design cannot otherwise see, so it is worth the line.
+
+**The notice is sent after the schedules are switched off,** and a Telegram
+failure raises. The gate is the job; a Telegram outage must never leave the
+schedules armed on a holiday. One consequence: if the run is retried after
+failing past that point, the notice is sent twice. A duplicate message is a
+cheaper problem than a suppressed one, so it is not deduplicated.
+
+### There is deliberately no calendar check inside the session functions
+
+Do not add one. It would be worse than nothing.
+
+The schedule gate is not the only thing stopping a holiday run — **the missing
+token is**. No token is minted on a holiday, and the previous trading day's
+token expires at 08:00 that same morning (lifetime is exactly 86,400 s from
+08:00, measured), so it is already dead by the time any session function would
+run. `read_token_record()` raises on an expired token, and `error-notifier`
+reports it, with repeats suppressed for 1800 s so a stuck schedule produces a
+handful of alerts rather than one per invocation.
+
+That makes a failed toggle **loud**. A calendar check inside the handlers would
+make it silent instead: the schedule would sit wrongly enabled, the handler
+would skip politely, and nothing would ever tell you the gate had stopped
+working. The second line of defence would hide the failure of the first.
+
+### `UpdateSchedule` replaces, it does not patch
+
+EventBridge **Scheduler** has no `EnableSchedule`/`DisableSchedule` pair — that
+is EventBridge **Rules**, a different service. Every field not sent back to
+`UpdateSchedule` is dropped, so a hand-built payload silently discards whatever
+the schedule was created with: its timezone, retry policy, flexible time window.
+The code reads the definition with `GetSchedule` and returns it whole with only
+`State` changed, removing just the four keys `UpdateSchedule` rejects (`Arn`,
+`CreationDate`, `LastModificationDate`, `ResponseMetadata`).
 
 The response carries **metadata only** — status, expiry, elapsed — never the
 token. Consumers read the token from the parameter. Returning it would only
@@ -113,8 +212,14 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `DHAN_PIN` | yes | — |
 | `DHAN_TOTP_SECRET` | yes | — |
 | `TOKEN_PARAMETER_NAME` | no | `/algo/dhan/token` |
+| `TELEGRAM_PARAMETER_NAME` | no | `/algo/telegram/brief` |
+| `NEON_PARAMETER_NAME` | no | `/algo/neon/connection` |
+| `NEON_CONNECTION_STRING` | no | — (override; SSM is the source of truth) |
 | `DHAN_GENERATE_TOKEN_URL` | no | `https://auth.dhan.co/app/generateAccessToken` |
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
+| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment,intraday-data-loader` |
+| `SCHEDULE_GROUP_NAME` | no | `default` |
+| `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
 
 `DHAN_PIN` and `DHAN_TOTP_SECRET` are **permanent, full-trading-authority
 credentials** — unlike the token, which dies in 24 hours. Anyone who can read
@@ -132,11 +237,30 @@ before this function can work at all.
 | Action | Resource |
 |---|---|
 | `ssm:PutParameter` | the `/algo/dhan/token` parameter ARN |
-| `kms:Encrypt` | the key backing that parameter, via `kms:ViaService` |
+| `ssm:GetParameter` | `/algo/neon/connection` and `/algo/telegram/brief` |
+| `kms:Encrypt` | the key backing the token parameter, via `kms:ViaService` |
+| `kms:Decrypt` | the key backing those two read parameters |
+| `scheduler:GetSchedule` | each managed schedule ARN |
+| `scheduler:UpdateSchedule` | each managed schedule ARN |
+| `iam:PassRole` | each managed schedule's **own** execution role |
 | `logs:*` | standard Lambda logging |
 
-`ssm:GetParameter` and `kms:Decrypt` are no longer needed by this function — it
-only writes. Every *consumer* of the token still needs them.
+Three of these are easy to get wrong.
+
+**`iam:PassRole` is not optional.** `UpdateSchedule` re-passes the schedule's
+target role, so without it every toggle fails `AccessDenied`. That failure is at
+least loud.
+
+**`ssm:GetParameter` and `kms:Decrypt` are back.** They had been removed from
+this function on the grounds that it only writes. Reading the holiday calendar
+means reading the Neon connection string, so both return.
+
+**Scope to the two schedule ARNs, and widen this function's own policy** — never
+attach a role built for another function. Both console-generated roles in this
+project are scoped to a single resource and fail *silently* when borrowed: a
+shared execution role produces a function that runs and writes but emits no logs
+at all, and a shared Scheduler role produces a schedule that shows `ENABLED` and
+never fires.
 
 ## Cost
 
@@ -180,9 +304,12 @@ that costs nothing.
 ## Deployment shape
 
 - Runtime: Python 3.14, handler `handler.lambda_handler`.
-- **No layer.** `boto3` is pre-installed in the Lambda Python runtime, and
-  everything else is stdlib.
-- The function package is one file.
+- **Two layers: `neon-db-driver` and `neon-access`.** This function needed none
+  until it began reading the holiday calendar, and that is the whole cost of the
+  change — both ARNs are pinned and must be repointed together when either is
+  republished. `boto3` is still pre-installed in the runtime; everything outside
+  the layers is stdlib.
+- The function package is still one file.
 
 **Upload a zip rather than pasting into the console editor.** A browser paste of
 this file silently truncated at line 44 of 350, producing
