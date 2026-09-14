@@ -9,7 +9,7 @@ them. It evaluates no playbook itself and emits no signal.
 |---|---|
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
-| Layers | `neon-access` (for the IST/epoch helpers only) |
+| Layers | `neon-db-driver` + `neon-access` — only `neon-access` is used, for the IST/epoch helpers; it opens no connection |
 | Schedule | **none** — invoked by `intraday-market-sentiment`, 24×/day |
 | Reads | **nothing** |
 | Writes | **nothing** |

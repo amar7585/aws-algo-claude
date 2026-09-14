@@ -70,9 +70,10 @@ Read in clock order, a weekday looks like this:
 | immediately after, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
-**Four schedules in total, and only one of them is intraday.**
+**Five schedules in total, and two of them are intraday.**
 `instrument-master-loader` monthly, `auth-dhan-broker` at 08:00,
-`daily-market-sentiment` at 09:50, and `intraday-data-loader` every 15 minutes.
+`daily-market-sentiment` at 09:50, and `intraday-data-loader`'s pair — a
+quarter-hourly `-session` rule to 14:45 and a `-close` rule for 15:00 to 15:35.
 Everything else in the session is chained: the loader commits and invokes the
 sentiment function, which writes its row and invokes the manager, which routes.
 

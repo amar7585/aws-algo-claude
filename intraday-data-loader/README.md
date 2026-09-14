@@ -6,7 +6,7 @@ the current-month NIFTY future, through the trading session.
 | | |
 |---|---|
 | Schedule | every **15** min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — two rules, 24 runs a day. **The only cron in the intraday plane**: it invokes `intraday-market-sentiment`, which invokes `strategy-manager`. See [Deployment](#deployment-shape) |
-| Invocations | **68** per trading day |
+| Invocations | **24** per trading day |
 | Writes | `algo.candle_5min`, `algo.candle_15min`, `algo.candle_1hr` |
 | Reads | `algo.instrument_master` |
 | Instruments | NIFTY (`13`/`INDEX`) and the current-month future, resolved at run time |
@@ -25,18 +25,23 @@ One rule decides it:
 
 | Run | Fetches |
 |---|---|
-| 10:05, 10:35, … | 5-min |
-| 10:00, 10:30, 10:45, … | 5-min, 15-min |
+| 10:00, 10:30, 10:45, … — every quarter hour that is not `H:15` | 5-min, 15-min |
 | 10:15, 11:15, 12:15, 13:15, 14:15, 15:15 | 5-min, 15-min, 60-min |
 | **15:35** (closing sweep) | all three, always |
+| an off-grid manual invoke, 10:07 say | 5-min — the fallback, so an ad-hoc call still does something |
+
+On the deployed quarter-hour cron every scheduled run is a multiple of 5 and
+15, so the 5-min-only case never arises except on a hand-made invocation.
 
 The rule is written this way rather than as a table of trigger times because it
 derives from the bucket boundaries instead of restating them — if the two ever
 disagree, the schedule is wrong rather than merely stale. `assert_alignment()`
 turns that disagreement into a raised error instead of quietly misaligned rows.
 
-Per trading day that works out to 68 five-minute fetches, 24 fifteen-minute and
-7 hourly, per instrument.
+Per trading day that works out to 24 five-minute fetches, 24 fifteen-minute and
+7 hourly, per instrument — `intervals_due()` run against the deployed cron. The
+hourly count only reaches 7 because of the sweep: its aligned trigger times run
+out at 15:15, and the 15:35 override supplies the last one.
 
 **Why 15:35 exists.** The schedule runs to 15:30, but at 15:30 the 15:25
 five-minute bar, the 15:15 fifteen-minute bar and the 15:15 hourly bar have only
@@ -122,7 +127,7 @@ The `NIFTY-` prefix is load-bearing: `NIFTYFPI-SEP2026-FUT` and
 `NIFTYNXT50-SEP2026-FUT` are different contracts that a looser pattern eats.
 
 The result is cached per IST date in a module global, so warm containers do not
-re-fetch the expiry list on all 68 runs.
+re-fetch the expiry list on all 24 runs.
 
 ## Measured facts about Dhan's v2 charts API
 
@@ -179,6 +184,9 @@ so it shadows it for boto3 too.
 | `NIFTY_SECURITY_ID` / `NIFTY_INSTRUMENT_TYPE` | `13` / `INDEX` | always passed together |
 | `FUTURES_UNDERLYING_SCRIP` / `_SEG` | `13` / `IDX_I` | for the expiry list |
 | `FUTURES_INSTRUMENT_TYPE` | `FUTIDX` | |
+| `FUTURES_SYMBOL_TEMPLATE` | `NIFTY-{month}{year}-FUT` | the `NIFTY-` prefix is load-bearing — see [Resolving the current-month future](#resolving-the-current-month-future) |
+| `INTRADAY_SENTIMENT_FUNCTION_NAME` | — (empty) | **the switch for the whole intraday chain.** Unset means the dispatch does nothing and says so; setting it also needs `lambda:InvokeFunction` on that ARN in this function's role |
+| `INTRADAY_SENTIMENT_INVOCATION_TYPE` | `Event` | asynchronous, so a slow consumer cannot fail this run |
 | `COLD_START_DAYS` | `90` | also Dhan's per-call ceiling |
 | `API_PACING_SECONDS` | `4.0` | measured; tighter than the documented 5/s |
 | `HTTP_TIMEOUT_SECONDS` | `60` | |
@@ -286,16 +294,16 @@ a long handler has silently truncated before.
 Schedules, both `Asia/Kolkata` with the flexible window off:
 
 ```
-cron(0/5 10-14 ? * MON-FRI *)                     10:00–14:55   60 runs
-cron(0,5,10,15,20,25,30,35 15 ? * MON-FRI *)      15:00–15:35    8 runs
+cron(0,15,30,45 10-14 ? * MON-FRI *)              10:00–14:45   20 runs
+cron(0,15,30,35 15 ? * MON-FRI *)                 15:00–15:35    4 runs
 ```
 
-68 between them, the last being the closing sweep. The obvious single
-`cron(0/5 10-15 ? * MON-FRI *)` is **wrong**: it keeps firing to 15:55, well
-past the close, and collides with a separate 15:35 sweep rule. Splitting at the
-hour boundary is what makes the last run land exactly on 15:35. Hours 10–14 are
-complete, so a `0/5` step works; hour 15 stops early, so its minutes are spelled
-out.
+24 between them, the last being the closing sweep. The obvious single
+`cron(0,15,30,45 10-15 ? * MON-FRI *)` is **wrong**: it keeps firing to 15:45,
+past the close, and still misses 15:35. Splitting at the hour boundary is what
+makes the last run land exactly on 15:35. Hours 10–14 are complete quarter
+hours; hour 15 stops early and needs its 15:35 sweep, so its minutes are
+spelled out.
 
 Deployed as `intraday-data-loader-session` and `intraday-data-loader-close`,
 each with **its own execution role**. Reusing another schedule's role does not
@@ -305,7 +313,7 @@ mismatch surfaces only as a schedule that silently never fires.
 Retries are the console default (2 attempts, 1-hour maximum event age). Nothing
 depends on them: the upserts are idempotent and batched in timestamp order, so a
 retry re-writes identical rows, and a run that fails outright is picked up by the
-next one five minutes later — the resume window comes from `MAX(candle_ts)`, not
+next one fifteen minutes later — the resume window comes from `MAX(candle_ts)`, not
 from the schedule.
 
 Test events: `{"intervals": [5]}` forces a single interval,

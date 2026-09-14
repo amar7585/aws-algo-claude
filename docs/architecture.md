@@ -122,9 +122,11 @@ the cost of a wake-up on the first connection of each run.
 | `intraday_market_sentiment` | 64 columns — basis, futures OI buildup, VIX, and straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs | 0 | intraday-market-sentiment |
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 0 | intraday-market-sentiment |
 
-**The strategy plane added no tables.** `strategy-manager` reads
-`candle_15min`, `candle_5min`, `candle_daily` and `daily_market_sentiment` and
-writes nothing; `strategy-range-liquidity-sweep` reads nothing at all. The
+**The strategy plane added no tables.** `strategy-manager` is a pure router: it
+opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars
+— `candle_5min`, `candle_15min`, `candle_1hr`, `candle_daily` and
+`instrument_master` — because a playbook knows which bars it needs. Neither
+writes anything. The
 regime the manager classifies travels in the invocation payload and each
 strategy records it in its own log alongside what it found, so the decision is
 recoverable from the consumer rather than duplicated by the producer. Nothing

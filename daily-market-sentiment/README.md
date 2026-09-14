@@ -257,6 +257,8 @@ same question.
 | `EXPECTED_MOVE_K` | no | `1.0` |
 | `API_PACING_SECONDS` | no | `4.0` |
 | `UPSERT_BATCH_SIZE` | no | `5000` |
+| `DHAN_CHARTS_BASE` | no | `https://api.dhan.co/v2/charts/` |
+| `HTTP_TIMEOUT_SECONDS` | no | `60` |
 
 No credentials in environment variables. `/algo/telegram/brief` is a
 `SecureString` holding `{"bot_token": "...", "chat_id": "..."}`.

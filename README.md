@@ -44,7 +44,7 @@ deterministic to read.
 | [error-notifier](error-notifier/README.md) | Why a log subscription beats a catch block, the feedback-loop guard, noise suppression |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | Why the five-minute offset, the one thing it reads back from Postgres, the two strike widths, the `open_interest` naming trap |
 | [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads nothing at all, the v2 payload contract, the `regime\|bias` registry |
-| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory and no layers |
+| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 | [layers/market-classifier](layers/market-classifier/README.md) | The taxonomy, the score terms, the swing read, the time-scaled volatility test, and the three decisions deferred until sessions accumulate |
