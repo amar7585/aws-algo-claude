@@ -12,12 +12,12 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron** | **built, running** | [README](../intraday-data-loader/README.md) |
+| `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron**, as two rules | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
 | `market-classifier` | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
-| `intraday-market-sentiment` | Lambda function | invoked by the loader, 24×/day | **built, deployed** | [README](../intraday-market-sentiment/README.md) |
-| `strategy-manager` | Lambda function | on each snapshot, 24×/day — a pure router | **built** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built** | [README](../strategy-range-liquidity-sweep/README.md) |
+| `intraday-market-sentiment` | Lambda function | invoked by the loader, 24×/day | **built, running** | [README](../intraday-market-sentiment/README.md) |
+| `strategy-manager` | Lambda function | on each snapshot, 24×/day — a pure router | **built, running** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -27,11 +27,16 @@ alarm rather than fail a session.
 **There is no Step Functions state machine and no History/Regime split.** An
 earlier design recorded both; what got built instead is `daily-market-sentiment`
 doing the daily fetch and the daily read in one function on one schedule, and a
-single intraday cron on `intraday-data-loader` that chains the rest.
+single intraday cron on `intraday-data-loader` - two Scheduler rules, one
+function - that chains the rest.
 
-**Four schedules, and only one is intraday.** Monthly for the instrument
-master, 08:00 for the token, 09:50 for the daily read, every 15 minutes for the
-loader. The loader invokes `intraday-market-sentiment`, which invokes
+**Five schedules, and two of them are intraday.** Monthly for the instrument
+master, 08:00 for the token, 09:50 for the daily read, and the loader's own
+pair: `intraday-data-loader-session` every 15 minutes from 10:00 to 14:45, then
+`intraday-data-loader-close` at 15:00/15:15/15:30/15:35. The split exists
+because one cron spanning 10–15 would keep firing past the close; spelling out
+the last hour is what lands the final run exactly on 15:35. The loader
+invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
 previous step's output, so the completion of a write is the only honest trigger
 for what follows.
@@ -62,9 +67,9 @@ Refreshes `algo.instrument_master` from Dhan's public scrip master.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package |
-| Layer | `neon-db-driver` |
-| Package contents | `handler.py` alone — everything else is stdlib |
+| Runtime | Python 3.14, zip package, 5 modules |
+| Layers | `neon-db-driver` + `neon-access` |
+| Package contents | `handler`, `config`, `db`, `rules`, `scrip_master` — everything outside the layer is stdlib |
 | Dependencies | pg8000 (from the layer). No pandas, no `dhanhq`, no compiled wheels |
 | Reads | `https://images.dhan.co/api-data/api-scrip-master.csv` (public, unauthenticated) |
 | Writes | `algo.instrument_master` |
@@ -94,13 +99,13 @@ function has to authenticate itself and no token is refreshed by hand.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package |
+| Runtime | Python 3.14, zip package, 7 modules |
 | Layer | `neon-db-driver`, `neon-access` — for the holiday read only |
-| Package contents | `handler.py` alone |
+| Package contents | `handler`, `config`, `params`, `dhan`, `db`, `notify`, `schedules` |
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
-| Switches | the `daily-market-sentiment` and `intraday-data-loader` schedules |
+| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close` — all three, by name, from `MANAGED_SCHEDULE_NAMES` |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
 Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
@@ -109,7 +114,7 @@ failure raises; there is no fallback path.
 **It also decides whether the trading day happens at all.** A holiday is a
 weekday, so the `MON-FRI` cron still fires on one: this is the only thing that
 runs before every session, which makes it the one symmetric decision point.
-On a holiday it disables the two session schedules, sends a Telegram notice and
+On a holiday it disables all three session schedules, sends a Telegram notice and
 mints nothing; otherwise it mints, stores, and enables them. The session
 functions are therefore never invoked on a holiday rather than invoked and
 skipping. The calendar is [`algo.trading_holiday`](../trading-calendar/README.md),
@@ -136,8 +141,8 @@ Three Dhan calls, ~12 s.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules |
-| Layers | `neon-db-driver` + `neon-access` |
+| Runtime | Python 3.14, zip package, 7 modules |
+| Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
 
@@ -158,7 +163,7 @@ and the current-month NIFTY future, through the session. It computes nothing.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules |
+| Runtime | Python 3.14, zip package, 6 modules |
 | Layers | `neon-db-driver` + `neon-access` |
 | Schedule | every 15 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 24 invocations a day |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables at all |
@@ -218,8 +223,8 @@ plus the ten raw option legs behind it.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules |
-| Layers | `neon-db-driver` + `neon-access` |
+| Runtime | Python 3.14, zip package, 10 modules |
+| Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Schedule | **none** — invoked by `intraday-data-loader` after it commits, 24×/day |
 | Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
@@ -263,7 +268,7 @@ them. It evaluates no playbook, emits no signal and writes nothing.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 7 modules |
+| Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` |
 | Trigger | **asynchronous invoke from `intraday-market-sentiment`** - no schedule |
 | Writes | **nothing** |
@@ -303,16 +308,19 @@ fails to hold, closes back inside, and rotates back across the range.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 7 modules |
-| Layers | **none** - stdlib only |
+| Runtime | Python 3.14, zip package, 8 modules |
+| Layers | `neon-db-driver`, `neon-access`, `market-classifier` - the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` |
-| Reads / writes | **nothing** - its log is its only output |
-| Secrets | **none** |
+| Reads | `algo.instrument_master` and the candle tables - no broker API |
+| Writes | **nothing** - its log is its only output |
+| Secrets | `/algo/neon/connection` |
 
-The whole context arrives in the payload, so it opens no connection and makes no
-API call - hence no layers, and IST defined locally rather than imported from
-`neon-access`, which would pull in `pg8000` for a function that never connects.
-`error-notifier` makes the same trade for the same reason.
+The regime context arrives in the payload, but the bars do not: a playbook knows
+which bars it needs, so this function reads its own from Neon. It still calls no
+broker API - a sweep is confirmed by a *closed* bar, so a live tick is exactly
+what it must not act on - and it writes nothing, because the manager's decision
+is recorded in the consumer's log rather than duplicated into a `signal` table.
+`error-notifier` is the one function here that genuinely carries no layers.
 
 **It has no memory and needs none.** The playbook caps attempts at one re-entry
 per side per session, which looks like cross-invocation state; a candidate is a
@@ -346,6 +354,11 @@ Any new component in this repo is expected to hold to these. They are covered
 in more depth in [architecture.md](architecture.md#invariants).
 
 - **Epoch seconds** for every stored time value.
+- **`Asia/Kolkata` in every schedule.** EventBridge Scheduler stores and
+  reports it as `Asia/Calcutta`, the older IANA name for the same zone. They
+  are not two settings and the difference is cosmetic — do not "fix" a console
+  reading of `Asia/Calcutta` back to `Asia/Kolkata`, and do not treat it as
+  drift.
 - **Raw Dhan segment codes** in `exchange_segment`.
 - **`(security_id, instrument_type)`** as the instrument identity.
 - **Prefer pure Python** — a compiled dependency needs a stated reason and a

@@ -12,27 +12,32 @@ targets and risk-reward.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 7 modules |
-| Layers | **none** — stdlib only |
+| Runtime | Python 3.14, zip package, 8 modules |
+| Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` |
-| Reads | **nothing** — no database, no API |
+| Reads | `algo.instrument_master` and the candle tables — **no broker API** |
 | Writes | **nothing** — its log is its only output |
-| Secrets | **none** |
+| Secrets | `/algo/neon/connection` |
 
-## It reads nothing and writes nothing
+## It writes nothing, and calls no broker API
 
-The whole context arrives in the invocation payload: the snapshot, the daily
-read. It does NOT hand over candles: this function reads its own bars from
-Neon, because a playbook knows which bars it needs. So this function
-opens no connection, holds no credential and makes no API call — which is why
-it carries `neon-db-driver`, `neon-access` and `market-classifier` (for Wilder
-ATR only). There is **no Dhan client and no token** — the only thing the
-manager ever called Dhan for was a live price, and this playbook never read it:
-a sweep is confirmed by a *closed* bar reclaiming a level, so an unconfirmed
-live tick is exactly what the setup must not act on. IST stays in `config.py` rather than
-coming from `neon-access`, because importing that layer would pull in `pg8000`
-for a function that never opens a connection. `error-notifier` does the same,
-for the same reason.
+The regime context arrives in the invocation payload: the snapshot, the daily
+read. It does NOT hand over candles — this function reads its own bars from
+Neon, because a playbook knows which bars it needs. That is why it carries
+`neon-db-driver` and `neon-access`, and why its role can read
+`/algo/neon/connection`.
+
+There is still **no Dhan client and no token** — the only thing the manager
+ever called Dhan for was a live price, and this playbook never reads it: a
+sweep is confirmed by a *closed* bar reclaiming a level, so an unconfirmed live
+tick is exactly what the setup must not act on. The reads are all SELECTs;
+`db.py` contains no INSERT, no UPDATE and no upsert.
+
+`config.py` keeps its own `IST` constant and `levels.py` its own
+`ist_datetime`/`ist_time`, from when this function held no layers at all;
+`handler.py` takes `ist_midnight_epoch` from `neon-access` like everything
+else. `error-notifier` is the one function here that genuinely carries no
+layers.
 
 The consequence worth knowing: **reading this function's log is how a session's
 candidates are recovered.** There is no `signal` table. The manager's
@@ -280,19 +285,34 @@ playbook are marked.
 | `ACCEPTANCE_CLOSES` | 2 | playbook |
 | `NO_FOLLOW_THROUGH_BARS` | 8 | playbook |
 
+The rest are not thresholds — they decide when this playbook runs at all, and
+what it reads:
+
+| Variable | Default | Source |
+|---|---|---|
+| `ALLOWED_REGIMES` | `sideways` | the gate. This is a range playbook; firing it on a trend day is the main way it loses money |
+| `ALLOWED_BIASES` | `bullish,bearish,range-bound` | the gate — direction is not the constraint, regime is |
+| `CANDLE_INTERVAL_MINUTES` | 5 | which candle table the bars come from |
+| `HISTORY_5MIN_BARS` | 120 | how many 5-minute bars are read |
+| `HISTORY_DAILY_BARS` | 40 | enough for the ATR period with room to spare |
+| `ATR_PERIOD` | 14 | Wilder ATR, from the `market-classifier` layer |
+
 ## Deployment shape
 
-Zip the seven modules at the **zip root**. Handler `handler.lambda_handler`,
-set under Code → Runtime settings → Edit. **No layers.** No environment
-variables are required.
+Zip the eight modules at the **zip root**. Handler `handler.lambda_handler`,
+set under Code → Runtime settings → Edit. **Three layers:** `neon-db-driver`,
+`neon-access` and `market-classifier`. No environment variables are required —
+every tunable has a default in `config.py`.
 
-**Its own execution role**, needing only `logs:CreateLogStream` +
-`logs:PutLogEvents` on this function's own log group — no SSM, no KMS, no
-Lambda invoke, because it reads nothing and calls nobody. Never borrow another
-function's role: the console-generated policies here are scoped to a single log
-group ARN and a borrowed one produces **no logs at all**, which for a function
-whose only output is its log means it produces nothing whatsoever while
-appearing to succeed.
+**Its own execution role**, with two inline policies: `lambda-logs`
+(`logs:CreateLogStream` + `logs:PutLogEvents` on this function's own log group)
+and `algo-ssm-read` (`ssm:GetParameter` on `/algo/neon/connection` alone, plus
+`kms:Decrypt` conditioned on `kms:ViaService = ssm.<region>.amazonaws.com`). No
+Lambda invoke — nothing runs after this. Never borrow another function's role:
+the console-generated policies here are scoped to a single log group ARN and a
+borrowed one produces **no logs at all**, which for a function whose only
+output is its log means it produces nothing whatsoever while appearing to
+succeed.
 
 Subscribe its log group to `error-notifier`.
 

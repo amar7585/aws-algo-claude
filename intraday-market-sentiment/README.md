@@ -257,6 +257,13 @@ session**, not a settled one.
 | `BUILDUP_EPSILON_PCT` | `0.0` | **not set from measurement** — see below |
 | `API_PACING_SECONDS` | `4.0` | measured; tighter than the documented 5/s |
 | `HTTP_TIMEOUT_SECONDS` | `60` | |
+| `FUTURES_SYMBOL_TEMPLATE` | `NIFTY-{month}{year}-FUT` | the `NIFTY-` prefix is load-bearing |
+| `HISTORY_DAYS` | `10` | generous on purpose — `MIN_BARS_TO_CLASSIFY` is what is actually checked, because holidays make calendar days a poor proxy for sessions |
+| `MIN_BARS_TO_CLASSIFY` | `200` | below this the run **raises** rather than classifying on partial inputs — sma200 on the 5-minute frame needs 200 closed bars |
+| `EXPECTED_MOVE_K` | `1.0` | as in `daily-market-sentiment`, where the coverage was fitted |
+| `UPSERT_BATCH_SIZE` | `500` | lower than the other loaders' 5000: 24 bind parameters per `option_chain_snapshot` row caps a statement at 2,730 rows, and a snapshot writes 10 |
+| `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | asynchronous, so a slow playbook cannot fail this run |
+| `DHAN_CLIENT_ID` | — | **not normally set** — fallback for a token carrying no `dhanClientId` claim, see below |
 
 The client id is **not configured** — it comes from the access token's own
 `dhanClientId` claim, so it cannot drift out of step with a rotated token.
@@ -311,8 +318,8 @@ blast radius; a dedicated pair costs nothing and keeps them apart.
 | | |
 |---|---|
 | Handler | `handler.lambda_handler` — set under **Code → Runtime settings**, not Configuration → General |
-| Runtime | Python 3.14, zip package, 8 modules |
-| Layers | `neon-db-driver` + `neon-access` |
+| Runtime | Python 3.14, zip package, 10 modules |
+| Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
 Upload a zip; never paste into the console editor. A browser paste of a

@@ -13,13 +13,14 @@ refresh failure should raise its own alarm rather than fail a session.
 
 1. Skips a weekend. Only reachable by hand — the cron is `MON-FRI`.
 2. Asks `algo.trading_holiday` whether today is a closure.
-3. **On a holiday** — disables the `daily-market-sentiment` and
-   `intraday-data-loader` schedules, sends a Telegram notice, and stops. No
-   token is minted.
+3. **On a holiday** — disables all three session schedules
+   (`daily-market-sentiment-daily`, `intraday-data-loader-session`,
+   `intraday-data-loader-close`), sends a Telegram notice, and stops. No token
+   is minted.
 4. **Otherwise** — generates a TOTP code from the stored authenticator seed,
    calls `POST /app/generateAccessToken` with client id + PIN + that code,
    reads the expiry out of the returned JWT's `exp` claim, writes token and
-   expiry to `/algo/dhan/token`, and **then** enables those two schedules.
+   expiry to `/algo/dhan/token`, and **then** enables those three schedules.
 
 Any failure raises. There is no fallback, because there is nothing to fall back
 to — see below.
@@ -44,11 +45,22 @@ the system trading, which costs a few no-op invocations, instead of making it go
 quiet, which nothing here can detect. See
 [trading-calendar](../trading-calendar/README.md).
 
-### The two schedules, and the one that is never touched
+### The three schedules, and the one that is never touched
 
 `MANAGED_SCHEDULE_NAMES` must never list **this function's own schedule**. It is
 the heartbeat that makes the decision, so a run that switched it off could never
 switch it back on, and the system would stay dark until someone noticed by hand.
+
+It lists three, not two: `daily-market-sentiment-daily` plus **both** of the
+loader's rules, `intraday-data-loader-session` and `intraday-data-loader-close`.
+Missing the `-close` rule would leave the 15:00–15:35 runs armed on a holiday.
+
+**The code default used to name no real schedule** — it read
+`daily-market-sentiment,intraday-data-loader`, which are function names, not
+schedule names, and would have raised on `GetSchedule`. It was never exercised,
+because the environment variable is always set, and it failed loudly rather
+than quietly; it was corrected to the three schedule names on 2026-09-14 so the
+deployed configuration is reproducible from the code alone.
 
 Order matters: the token is stored *before* the schedules are enabled. The other
 way round arms a session against a token that was never refreshed, turning a
@@ -62,15 +74,19 @@ daily brief — which is the message it replaces that morning:
 ```
 Market holiday - Mon 14 Sep 2026
 
-Diwali Laxmi Pujan
+Ganesh Chaturthi
 
 No access token minted.
 Session schedules disabled:
-  daily-market-sentiment (updated)
-  intraday-data-loader (updated)
+  daily-market-sentiment-daily (updated)
+  intraday-data-loader-session (updated)
+  intraday-data-loader-close (updated)
 
 Next session: Tue 15 Sep 2026
 ```
+
+That is the notice as actually sent on 2026-09-14, the first holiday this gate
+saw — one line per managed schedule, so all three appear.
 
 Most rows have no name, and the notice says `unnamed holiday` rather than
 guessing — see [trading-calendar](../trading-calendar/README.md).
@@ -217,7 +233,7 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `NEON_CONNECTION_STRING` | no | — (override; SSM is the source of truth) |
 | `DHAN_GENERATE_TOKEN_URL` | no | `https://auth.dhan.co/app/generateAccessToken` |
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
-| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment,intraday-data-loader` |
+| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close` — the deployed value sets the same three explicitly |
 | `SCHEDULE_GROUP_NAME` | no | `default` |
 | `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
 
@@ -293,13 +309,27 @@ Figures from [Systems Manager
 pricing](https://aws.amazon.com/systems-manager/pricing/) and [KMS
 pricing](https://aws.amazon.com/kms/pricing/), checked 2026-09-10.
 
-## Reserved concurrency: 1
+## Reserved concurrency: not set, and cannot be
 
-Worth setting, though it matters less than it did when a renew path existed.
-Two concurrent runs would each burn a TOTP login and race to write the
-parameter, last write winning. Nothing corrupts, but it is wasted work against
-an endpoint we would rather not hammer, and reserved concurrency is one field
-that costs nothing.
+An earlier version of this README specified `1`. **The account cannot reserve
+concurrency at all.** AWS requires at least 100 *unreserved* concurrent
+executions to remain available, and this account is on the default limit of
+100 — so reserving even one leaves 99 and is refused with *"The unreserved
+account concurrency can't go below 100."* That is an account-wide limit, not
+something about this function: no Lambda here can reserve concurrency until
+the *Concurrent executions* quota (`L-B99A9384`) is raised. Measured
+2026-09-14.
+
+What it would have bought: two concurrent runs would each burn a TOTP login
+and race to write the parameter, last write winning. Nothing corrupts — the
+record is a single JSON blob, so there is no torn write — it is just wasted
+work against an endpoint we would rather not hammer.
+
+What actually keeps that from happening is the schedule. One `cron(0 8 ? *
+MON-FRI *)` run a day cannot overlap itself, so the only way to get two
+concurrent runs is to invoke by hand while the scheduled one is in flight. If
+you need to test during the 08:00 minute, wait for it to finish rather than
+reaching for this setting.
 
 ## Deployment shape
 
@@ -309,7 +339,11 @@ that costs nothing.
   change — both ARNs are pinned and must be repointed together when either is
   republished. `boto3` is still pre-installed in the runtime; everything outside
   the layers is stdlib.
-- The function package is still one file.
+- The function package is seven modules: `handler.py` (the order things happen
+  in), `config.py`, `params.py` (SSM), `dhan.py` (TOTP + auth), `db.py` (the
+  holiday reads), `notify.py` (Telegram) and `schedules.py` (EventBridge
+  Scheduler). It was one file until the holiday gate and the notice roughly
+  doubled it; the split matches the layout every other function here uses.
 
 **Upload a zip rather than pasting into the console editor.** A browser paste of
 this file silently truncated at line 44 of 350, producing
@@ -391,8 +425,9 @@ key by alias ARN.
 
 ### 4. Upload the code
 
-Zip `handler.py` on its own, then **Code tab → Upload from → .zip file**. The
-file must sit at the archive root, and its name must match the handler setting
+Zip the seven `.py` files, then **Code tab → Upload from → .zip file**. They
+must sit at the archive root, not inside a folder — Lambda imports them as
+top-level modules, and `handler.py`'s name must match the handler setting
 (`handler.py` for `handler.lambda_handler`).
 
 Don't paste into the inline editor — see [Deployment shape](#deployment-shape).
@@ -425,12 +460,7 @@ No VPC — the function needs the public internet to reach Dhan.
 | `DHAN_PIN` | your 6-digit PIN |
 | `DHAN_TOTP_SECRET` | base32 seed from step 0 |
 
-### 8. Reserved concurrency
-
-**Configuration → Concurrency** (labelled *Concurrency and recursion detection*
-in newer consoles) → **Edit** → **Reserve concurrency** → `1`.
-
-### 9. Test
+### 8. Test
 
 The SSM parameter does not need creating by hand — the first successful run
 creates it. If you do create it yourself, use type **SecureString**, KMS key
@@ -442,14 +472,14 @@ creates it. If you do create it yourself, use type **SecureString**, KMS key
 Expect `"status": "success"`, `"source": "totp"`, and `expires_in_hours` of 24.
 The response is safe to copy — it holds no token.
 
-### 10. Verify what was stored
+### 9. Verify what was stored
 
 **Systems Manager → Parameter Store → `/algo/dhan/token`.** The **Overview** tab
 shows *Last modified* and the type without revealing anything. Only use **Show
 decrypted value** if you need to inspect it — that puts a live credential on
 screen.
 
-### 11. Schedule
+### 10. Schedule
 
 **Amazon EventBridge → Scheduler → Schedules → Create schedule.**
 
@@ -484,7 +514,7 @@ Retries are capped at 2 rather than the default 185: a transient network failure
 is worth retrying, but a broken TOTP seed should surface as an alarm within the
 hour instead of retrying all day.
 
-### 12. Confirm the schedule fired
+### 11. Confirm the schedule fired
 
 After the next 08:00 IST slot, **Lambda → auth-dhan-broker → Monitor → View
 CloudWatch logs**.
@@ -494,16 +524,32 @@ logged — only its 12-character prefix.
 
 ## Local verification
 
-`handler.py` imports `boto3`, which the Lambda runtime supplies. Stub it the
-same way CLAUDE.md stubs `pg8000`, and fake the Dhan call, to exercise the logic
-without touching the network or AWS:
+The package imports `boto3` and `neon_access`, which the runtime and the
+neon-access layer supply. Stub both the way CLAUDE.md stubs `pg8000`, and put
+the package directory on `sys.path` so the modules can import each other:
 
 ```python
-import sys, types, importlib.util
-b = types.ModuleType("boto3"); b.client = lambda *a, **k: FakeSSM()
+import sys, types
+b = types.ModuleType("boto3"); b.client = lambda *a, **k: FakeClient()
 sys.modules["boto3"] = b
-spec = importlib.util.spec_from_file_location("handler", "auth-dhan-broker/handler.py")
-h = importlib.util.module_from_spec(spec); spec.loader.exec_module(h)
+n = types.ModuleType("neon_access")
+n.SSL_CONTEXT = None; n.connect = lambda *a, **k: FakeConn()
+n.get_parameter = lambda name: '{"bot_token": "t", "chat_id": "1"}'
+n.read_neon_connection_string = lambda: "postgresql://stub"
+n.today_ist = lambda: datetime.date(2026, 10, 21)
+sys.modules["neon_access"] = n
+
+sys.path.insert(0, "auth-dhan-broker")
+import handler, dhan, notify
+```
+
+`handler` holds its own references — it does `from dhan import generate_token`,
+not `import dhan` — so patch the network calls on `handler`, not on the module
+they came from:
+
+```python
+handler.generate_token = lambda *a, **k: FAKE_JWT
+handler.send_telegram = lambda text: sent.append(text)
 ```
 
 The TOTP implementation is checkable without any credentials, against the
@@ -512,10 +558,10 @@ RFC 6238 test vectors:
 ```python
 import base64
 secret = base64.b32encode(b"12345678901234567890").decode()
-assert h.totp_now(secret, at=59) == "287082"
-assert h.totp_now(secret, at=1111111109) == "081804"
-assert h.totp_now(secret, at=1234567890) == "005924"
-assert h.totp_now(secret, at=2000000000) == "279037"
+assert dhan.totp_now(secret, at=59) == "287082"
+assert dhan.totp_now(secret, at=1111111109) == "081804"
+assert dhan.totp_now(secret, at=1234567890) == "005924"
+assert dhan.totp_now(secret, at=2000000000) == "279037"
 ```
 
 Covered before deploy: those four vectors, JWT expiry extraction and its two
