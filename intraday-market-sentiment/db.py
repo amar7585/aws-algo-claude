@@ -33,7 +33,7 @@ SNAPSHOT_KEY = ("security_id", "instrument_type", "snapshot_ts")
 SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     "captured_at", "prev_snapshot_ts",
     "spot", "chain_spot", "spot_change_pct", "day_high", "day_low", "vwap",
-    "orb_high", "orb_low",
+    "orb_high", "orb_low", "last_bar_volume", "volume_vs_avg",
     "fut_security_id", "fut_symbol", "fut_price", "fut_oi", "basis", "basis_pct",
     "fut_price_change_pct", "fut_oi_change_pct", "buildup",
     "vix", "vix_open", "vix_day_high", "vix_day_low", "vix_change_pct",

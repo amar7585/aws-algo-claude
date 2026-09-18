@@ -20,6 +20,11 @@ venv/
 .env
 .env.*
 
+# backtesting/ is a local-only, non-AWS scratch area (see backtesting/README.md):
+# fetched market data and its local SQLite store never belong in the repo.
+backtesting/data/
+backtesting/*.db
+
 # Editor / OS
 .vscode/
 .idea/
