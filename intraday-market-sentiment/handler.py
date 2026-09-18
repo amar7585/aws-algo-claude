@@ -96,7 +96,7 @@ from dhan import (
 from classification import classify_snapshot, row_columns
 from dispatch import dispatch_snapshot
 from params import read_client_id, read_token_record
-from sentiment import buildup, newest_bar, pct_change, session_stats
+from sentiment import bar_volume_stats, buildup, newest_bar, pct_change, session_stats
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -233,6 +233,9 @@ def lambda_handler(event, context):
         # or the classification would describe a later instant than the row.
         index_history = [c for c in index_history if c["ts"] <= snapshot_ts]
         index_stats = session_stats(index_bars, snapshot_ts)
+        volume_stats = bar_volume_stats(
+            index_bars, run_epoch, CANDLE_INTERVAL_MINUTES * 60
+        )
         spot = index_stats["close"]
         logger.info(
             "snapshot %s (run %s), spot %.2f, %d bars of history from %s",
@@ -308,6 +311,8 @@ def lambda_handler(event, context):
             "vwap": index_stats["vwap"],
             "orb_high": index_stats["orb_high"],
             "orb_low": index_stats["orb_low"],
+            "last_bar_volume": volume_stats["last_bar_volume"],
+            "volume_vs_avg": volume_stats["volume_vs_avg"],
 
             "fut_security_id": future["security_id"],
             "fut_symbol": future["trading_symbol"],

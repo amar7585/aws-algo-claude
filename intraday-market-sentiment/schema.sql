@@ -88,6 +88,11 @@ CREATE TABLE IF NOT EXISTS algo.intraday_market_sentiment (
     vwap                   numeric,
     orb_high               numeric,            -- 09:15-09:30 high
     orb_low                numeric,            -- 09:15-09:30 low
+    last_bar_volume        bigint,             -- last FULLY CLOSED 5-min bar's
+                                                -- volume, not snapshot_ts's own
+                                                -- (near-empty - see sentiment.py)
+    volume_vs_avg          numeric,            -- last_bar_volume / avg of every
+                                                -- closed bar so far today
 
     -- ---- current-month future ---------------------------------------------
     fut_security_id        text    NOT NULL,

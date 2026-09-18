@@ -93,6 +93,35 @@ def session_stats(candles, upto_ts):
     }
 
 
+def bar_volume_stats(candles, now_epoch, interval_seconds):
+    """
+    The volume of the last FULLY CLOSED bar, against the average of every
+    closed bar so far today.
+
+    CLOSED IS THE SAME TEST AS EVERYWHERE ELSE IN THIS PLANE:
+    candle_ts + interval_seconds <= now. NOT "before snapshot_ts" - that rule
+    is wrong on exactly the day's last snapshot. At the 15:35 run, snapshot_ts
+    is 15:25 (see newest_bar) and that bar IS closed, because the market shut
+    at 15:30 - "strictly before 15:25" would skip it and grab 15:20 instead,
+    silently reporting a stale bar's volume as if it were the closing one. The
+    closed-bar test used here includes 15:25 in that case, correctly, without
+    a special-cased branch.
+
+    On the first run of a session (10:00) "today so far" is 09:15-09:55,
+    eight real closed bars - there is history to average against even though
+    no snapshot row exists yet for that stretch.
+    """
+    closed = [c for c in candles if c["ts"] + interval_seconds <= now_epoch]
+    if not closed:
+        return {"last_bar_volume": None, "volume_vs_avg": None}
+    last_closed = max(closed, key=lambda c: c["ts"])
+    avg = sum(c["volume"] for c in closed) / len(closed)
+    return {
+        "last_bar_volume": last_closed["volume"],
+        "volume_vs_avg": (last_closed["volume"] / avg) if avg else None,
+    }
+
+
 def pct_change(current, previous):
     """
     Percentage change, or None when there is nothing to compare against.
