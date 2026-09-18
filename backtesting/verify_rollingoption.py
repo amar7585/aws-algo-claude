@@ -59,17 +59,22 @@ def post(url, payload, token):
 def main():
     token = load_token()
 
-    # Best-guess payload from secondhand documentation summaries — the whole
-    # point of this script is to find out how wrong it is.
+    # Corrected against the real Dhan docs (dhanhq.co/docs/v2/expired-options-data/)
+    # after the first attempt's best-guess payload came back DH-905. Real
+    # differences from the guess: exchangeSegment is NSE_FNO (not IDX_I),
+    # drvOptionType is CALL/PUT (not CE/PE), expiryFlag is WEEK/MONTH (not
+    # "current"), and requiredData is a required array that was missing
+    # entirely.
     payload = {
         "securityId": NIFTY_SECURITY_ID,
-        "exchangeSegment": NIFTY_SEG,
+        "exchangeSegment": "NSE_FNO",
         "instrument": "OPTIDX",
-        "expiryFlag": "current",
-        "expiryCode": 0,
+        "expiryFlag": "MONTH",
+        "expiryCode": 1,
         "strike": "ATM",
-        "drvOptionType": "CE",
-        "interval": 1,
+        "drvOptionType": "CALL",
+        "requiredData": ["open", "high", "low", "close", "iv", "volume", "strike", "oi", "spot"],
+        "interval": "1",
         "fromDate": "2026-08-01",
         "toDate": "2026-08-30",
     }
