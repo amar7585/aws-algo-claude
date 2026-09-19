@@ -121,9 +121,10 @@ the cost of a wake-up on the first connection of each run.
 | `candle_5min` | same shape as `candle_daily` | 8,775 | intraday-data-loader |
 | `candle_15min` | same | 2,925 | intraday-data-loader |
 | `candle_1hr` | same | 819 | intraday-data-loader |
-| `intraday_fno_data` | measurement — basis, futures OI, VIX, straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs, and the SMA/RSI scalars | 92 | intraday-market-sentiment |
+| `intraday_fno_data` | measurement — basis, futures OI, VIX, straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs, the SMA/RSI scalars, and NIFTY 50 / NIFTY 500 advance-decline breadth | 92 | intraday-market-sentiment |
 | `intraday_sentiments` | judgement — regime, structure, bias, buildup, and the swing/volatility reads; joins `intraday_fno_data` on `snapshot_ts` | 92 | market-classifier |
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 920 | intraday-market-sentiment |
+| `index_constituents` | `index_name, security_id, instrument_type, exchange_segment, symbol, updated_at` — the NIFTY 50 / NIFTY 500 rosters for breadth, maintained by hand | 548 (NIFTY50 50, NIFTY500 498) | seeded by hand |
 
 **The strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars

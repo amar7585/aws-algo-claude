@@ -54,6 +54,13 @@ SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     # the swing/volatility reads - is written to algo.intraday_sentiments by the
     # market-classifier function, not here.
     "sma9", "sma50", "sma100", "sma200", "rsi",
+    # Market breadth (MEASURED): advance/decline for the NIFTY 50 (nifty_*) and
+    # the NIFTY 500 (mkt_*), counted from one /marketfeed/ohlc fetch. Null as a
+    # block when breadth is disabled; see breadth.py. Kept in step with
+    # breadth.BREADTH_COLUMNS and the schema.
+    "nifty_advances", "nifty_declines", "nifty_unchanged", "nifty_adv_dec_ratio",
+    "mkt_advances", "mkt_declines", "mkt_unchanged", "mkt_adv_dec_ratio",
+    "mkt_sampled",
     "created_at",
 )
 
@@ -167,6 +174,33 @@ def resolve_by_symbol(conn, trading_symbol, instrument_type):
         trading_symbol, instrument["security_id"], instrument["exchange_segment"],
     )
     return instrument
+
+
+def read_constituents(conn, index_names):
+    """
+    The members of each named index, for the breadth read.
+
+    Returns {index_name: [(exchange_segment, security_id), ...]}, with an empty
+    list for an index carrying no rows. security_id is returned as text (it is
+    text in instrument identity, and /marketfeed/ohlc keys quotes by security id
+    as a string), and exchange_segment is the raw Dhan code the request groups
+    by - so the caller needs no join.
+    """
+    if not index_names:
+        return {}
+    cursor = conn.cursor()
+    placeholders = ", ".join(["%s"] * len(index_names))
+    cursor.execute(
+        f"SELECT index_name, exchange_segment, security_id "
+        f"FROM algo.index_constituents WHERE index_name IN ({placeholders})",
+        [str(n) for n in index_names],
+    )
+    rosters = {str(name): [] for name in index_names}
+    for name, segment, security_id in cursor.fetchall():
+        rosters.setdefault(str(name), []).append((segment, str(security_id)))
+    for name, members in rosters.items():
+        logger.info("index_constituents: %s has %d member(s)", name, len(members))
+    return rosters
 
 
 def previous_snapshot(conn, instrument, snapshot_ts):

@@ -172,6 +172,39 @@ CREATE TABLE IF NOT EXISTS algo.intraday_fno_data (
     sma200                 numeric NOT NULL,   -- NOT NULL: see the handler's raise
     rsi                    numeric NOT NULL,
 
+    -- ---- market breadth (advance/decline) ----------------------------------
+    -- MEASURED, not judged. Two universes off ONE /marketfeed/ohlc fetch: the
+    -- NIFTY 50 (nifty_*) is a subset of the NIFTY 500 (mkt_*), so both are
+    -- counted from the same payload with no extra call. A stock is advancing
+    -- when its last_price > the previous day's close, declining when <,
+    -- unchanged when ==. Stocks with a missing or zero price are excluded, so
+    -- the three counts sum to the members that carried a usable quote.
+    --
+    -- adv_dec_ratio IS NULL WHEN declines = 0. advances/0 is undefined and
+    -- reads like an off-the-scale bull count, so it is left null; the raw
+    -- counts are always stored, so the ratio is recoverable. Same discipline as
+    -- the OI deltas above.
+    --
+    -- NULLABLE. Breadth always runs, but the NIFTY 50 falls back to a built-in
+    -- roster when algo.index_constituents is empty, while the NIFTY 500 has no
+    -- fallback - so null mkt_* means the 500 roster was unseeded, and null
+    -- nifty_* would mean even the fallback was empty. A broken FETCH raises
+    -- rather than writing nulls; see breadth.py.
+    --
+    -- mkt_sampled is how many NIFTY 500 members were queried this run (the rows
+    -- read from index_constituents), so coverage = (mkt_advances + mkt_declines
+    -- + mkt_unchanged) / mkt_sampled is visible on the row and an under-seeded
+    -- roster cannot hide. NIFTY 50 coverage is its own three counts against 50.
+    nifty_advances         integer,
+    nifty_declines         integer,
+    nifty_unchanged        integer,
+    nifty_adv_dec_ratio    numeric,            -- advances/declines, null if declines=0
+    mkt_advances           integer,
+    mkt_declines           integer,
+    mkt_unchanged          integer,
+    mkt_adv_dec_ratio      numeric,
+    mkt_sampled            integer,            -- NIFTY 500 members queried
+
     created_at             bigint  NOT NULL,
 
     PRIMARY KEY (security_id, instrument_type, snapshot_ts),
@@ -231,6 +264,42 @@ CREATE TABLE IF NOT EXISTS algo.option_chain_snapshot (
     FOREIGN KEY (security_id, instrument_type)
         REFERENCES algo.instrument_master (security_id, instrument_type),
     CONSTRAINT option_chain_snapshot_side CHECK (option_type IN ('CE', 'PE'))
+);
+
+-- ---------------------------------------------------------------------------
+-- index_constituents : which instruments belong to a named index.
+--
+-- Dhan exposes no index-membership endpoint and the scrip master carries no
+-- membership flag, so the NIFTY 50 and NIFTY 500 rosters are maintained HERE.
+-- The breadth read joins nothing at run time: it selects the members for an
+-- index straight from this table, already carrying the exchange_segment the
+-- /marketfeed/ohlc request groups by.
+--
+-- SEEDED, NOT FETCHED. Rows are inserted once from the live published rosters,
+-- each symbol resolved to its (security_id, instrument_type) via
+-- instrument_master and VERIFIED before insert - dated, per the repo's
+-- "measured, not assumed" rule. NSE rebalances both indices semi-annually
+-- (March/September); update the rows then. See the migration for a seed
+-- template.
+--
+-- NIFTY 50 is a subset of NIFTY 500, but membership is stored per index (a
+-- stock in both has a row under each index_name) so each roster is exact and
+-- independent. exchange_segment holds the raw Dhan code (NSE_EQ), never a
+-- human-readable string. updated_at is when the membership set was last
+-- confirmed; every time value is epoch seconds (bigint), per CLAUDE.md.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS algo.index_constituents (
+    index_name         text    NOT NULL,       -- 'NIFTY50' | 'NIFTY500'
+    security_id        text    NOT NULL,
+    instrument_type    text    NOT NULL,
+    exchange_segment   text    NOT NULL,        -- raw Dhan segment code, e.g. NSE_EQ
+    symbol             text    NOT NULL,        -- human-auditable ticker
+    updated_at         bigint  NOT NULL,        -- when membership was last confirmed
+    created_at         bigint  NOT NULL,
+
+    PRIMARY KEY (index_name, security_id, instrument_type),
+    FOREIGN KEY (security_id, instrument_type)
+        REFERENCES algo.instrument_master (security_id, instrument_type)
 );
 
 COMMIT;

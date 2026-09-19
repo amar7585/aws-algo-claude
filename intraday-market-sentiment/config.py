@@ -28,6 +28,13 @@ EXPIRYLIST_URL = os.environ.get(
 
 TOKEN_PARAMETER_NAME = os.environ.get("TOKEN_PARAMETER_NAME", "/algo/dhan/token")
 
+# The batch quote endpoint used for market breadth. It returns last_price and
+# ohlc.close (the PREVIOUS day's close) for up to 1000 instruments per request
+# at 1 req/sec - see breadth.py. Held whole, like the two option-chain URLs.
+MARKETFEED_OHLC_URL = os.environ.get(
+    "DHAN_MARKETFEED_OHLC_URL", "https://api.dhan.co/v2/marketfeed/ohlc"
+)
+
 # --------------------------------------------------------------------------
 # Instruments
 #
@@ -182,6 +189,57 @@ CLASSIFIER_INVOCATION_TYPE = os.environ.get("CLASSIFIER_INVOCATION_TYPE", "Event
 # --------------------------------------------------------------------------
 # buildup and its BUILDUP_EPSILON_PCT tunable moved to market-classifier, which
 # now derives the label from the futures deltas this function measures.
+
+# --------------------------------------------------------------------------
+# Market breadth (advance/decline)
+#
+# Two universes off ONE /marketfeed/ohlc fetch: the NIFTY 50 is a subset of the
+# NIFTY 500, so both are counted from the same payload. The rosters are read
+# from algo.index_constituents (Dhan has no membership endpoint); see breadth.py
+# and the schema.
+#
+# ALWAYS ON - there is no enable flag. When the NIFTY 50 roster is absent from
+# the database (an unseeded or wiped table) breadth falls back to STATIC_NIFTY50
+# below, so it still produces the index breadth rather than nothing. The NIFTY
+# 500 has no static fallback - 500 ids are not sensibly carried in code - so
+# with no DB roster its mkt_* columns are left null and a warning is logged. A
+# broken FETCH (an HTTP error, or a roster that returns no usable quote at all)
+# still RAISES: "roster not seeded" degrades, "the fetch broke" fails loudly.
+# Amar's call, 2026-09-19.
+#
+# BREADTH_INDICES maps a column prefix to an index_name. It is a constant, not a
+# tunable: the columns nifty_* and mkt_* ARE the schema, so the mapping cannot
+# move without a migration. NIFTY 500 last so mkt_sampled reads its roster.
+BREADTH_BATCH_SIZE = int(os.environ.get("BREADTH_BATCH_SIZE", "1000"))
+BREADTH_INDICES = (("nifty", "NIFTY50"), ("mkt", "NIFTY500"))
+# The universe whose roster size mkt_sampled records - the market breadth one.
+BREADTH_SAMPLED_INDEX = "NIFTY500"
+
+# Built-in NIFTY 50 fallback, used ONLY when algo.index_constituents carries no
+# NIFTY50 roster - the DB roster is authoritative whenever present. (security_id,
+# symbol) pairs, all on NSE_EQ. This is the one place index membership is written
+# down rather than derived, because Dhan exposes none; maintain it at the
+# semi-annual (March/September) rebalance. security_ids taken from
+# instrument_master, measured 2026-09-19.
+STATIC_NIFTY50 = (
+    ("25", "ADANIENT"), ("15083", "ADANIPORTS"), ("157", "APOLLOHOSP"),
+    ("236", "ASIANPAINT"), ("5900", "AXISBANK"), ("16669", "BAJAJ-AUTO"),
+    ("16675", "BAJAJFINSV"), ("317", "BAJFINANCE"), ("383", "BEL"),
+    ("10604", "BHARTIARTL"), ("694", "CIPLA"), ("20374", "COALINDIA"),
+    ("881", "DRREDDY"), ("910", "EICHERMOT"), ("5097", "ETERNAL"),
+    ("1232", "GRASIM"), ("7229", "HCLTECH"), ("1333", "HDFCBANK"),
+    ("467", "HDFCLIFE"), ("1363", "HINDALCO"), ("1394", "HINDUNILVR"),
+    ("4963", "ICICIBANK"), ("11195", "INDIGO"), ("1594", "INFY"),
+    ("1660", "ITC"), ("18143", "JIOFIN"), ("11723", "JSWSTEEL"),
+    ("1922", "KOTAKBANK"), ("11483", "LT"), ("2031", "M&M"),
+    ("10999", "MARUTI"), ("22377", "MAXHEALTH"), ("17963", "NESTLEIND"),
+    ("11630", "NTPC"), ("2475", "ONGC"), ("14977", "POWERGRID"),
+    ("2885", "RELIANCE"), ("21808", "SBILIFE"), ("3045", "SBIN"),
+    ("4306", "SHRIRAMFIN"), ("3351", "SUNPHARMA"), ("3432", "TATACONSUM"),
+    ("3499", "TATASTEEL"), ("11536", "TCS"), ("13538", "TECHM"),
+    ("3506", "TITAN"), ("3456", "TMPV"), ("1964", "TRENT"),
+    ("11532", "ULTRACEMCO"), ("3787", "WIPRO"),
+)
 
 # Rate limits are tighter than Dhan's documented 5/s: six unpaced calls earned
 # DH-904 and stayed throttled. 4s spacing runs clean.

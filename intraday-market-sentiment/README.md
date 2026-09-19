@@ -2,9 +2,10 @@
 
 AWS Lambda function that **measures** the market every fifteen minutes through
 the session — futures basis and open-interest, INDIA VIX, the option-chain read
-(straddle, PCR, OI walls, max pain, IV skew) for two expiries at once, and the
-SMA/RSI indicators — and hands it to `market-classifier`. The **judgement** it
-used to store (regime, structure, bias, buildup) is no longer here: it moved to
+(straddle, PCR, OI walls, max pain, IV skew) for two expiries at once, the
+SMA/RSI indicators, and the advance/decline **breadth** of the NIFTY 50 and
+NIFTY 500 — and hands it to `market-classifier`. The **judgement** it used to
+store (regime, structure, bias, buildup) is no longer here: it moved to
 `market-classifier` and `algo.intraday_sentiments`.
 
 | | |
@@ -12,8 +13,8 @@ used to store (regime, structure, bias, buildup) is no longer here: it moved to
 | Schedule | **none** — invoked by `intraday-data-loader` once its candles are committed, 25×/day |
 | Invocations | **25** per trading day |
 | Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` |
-| Reads | `algo.instrument_master`, and its own previous row |
-| Instruments | NIFTY (`13`/`INDEX`), INDIA VIX (`21`/`INDEX`), the current-month future |
+| Reads | `algo.instrument_master`, `algo.index_constituents`, and its own previous row |
+| Instruments | NIFTY (`13`/`INDEX`), INDIA VIX (`21`/`INDEX`), the current-month future, and the NIFTY 500 roster for breadth |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
 
 It does not push to Telegram. Failures surface through
@@ -158,6 +159,55 @@ This classifies; it does not forecast. `daily-market-sentiment` already records
 that its own score is not predictive of forward return — treat this the same
 way.
 
+## Market breadth — advance/decline
+
+How many stocks in an index are up on the day against how many are down. An
+index can climb on a few heavyweights while most of its members fall; the index
+level alone cannot tell those apart, and breadth is what does.
+
+**Two universes, one fetch.** The NIFTY 50 is a subset of the NIFTY 500, so the
+whole 500-name roster is quoted once through `POST /v2/marketfeed/ohlc` (one
+request, under the 1000-instrument-per-call limit) and counted twice — over the
+500 (`mkt_*`) and over just the 50 (`nifty_*`). The NIFTY 50 breadth therefore
+costs no extra API call.
+
+**Advancing is versus the previous close.** A stock advances when its live
+`last_price` is above the previous day's close (`ohlc.close`), declines when
+below, unchanged when exactly equal — the classic definition. A stock with a
+missing or non-positive quote (suspended, not yet traded) is dropped, not
+counted as unchanged, so the three counts sum to the members that carried a
+usable quote. `adv_dec_ratio = advances / declines`, left **NULL when declines
+is 0** — advances/0 is undefined and would read as an off-the-scale bull count;
+the raw counts are always stored, so the ratio is recoverable. Same discipline
+as the OI deltas.
+
+`mkt_sampled` is how many NIFTY 500 members were queried this run, so coverage
+= `(mkt_advances + mkt_declines + mkt_unchanged) / mkt_sampled` is visible on
+the row and an under-seeded roster cannot hide. NIFTY 50 coverage is its own
+three counts against 50.
+
+**The rosters live in `algo.index_constituents`, maintained by hand.** Dhan
+exposes no index-membership endpoint and the scrip master carries no membership
+flag, so the 50 and 500 are seeded once from the published lists — each symbol
+resolved to its `(security_id, instrument_type)` through `instrument_master` and
+verified before insert — and updated on the semi-annual (March/September)
+rebalance. See [`schema.sql`](schema.sql) and the migration.
+
+**Always on, with a fallback.** Breadth runs every invocation — there is no
+enable flag. When the NIFTY 50 roster is missing from the database it falls back
+to a built-in list (`config.STATIC_NIFTY50`), so the index breadth is produced
+even against an unseeded table; the NIFTY 500 has no static list, so with no DB
+roster its `mkt_*` columns are left NULL and a warning logged. What still
+**raises** is a *broken fetch* — an HTTP error, or a non-empty roster that
+returns no usable quote at all — because that is "breadth broke", not "breadth
+not seeded". The static NIFTY 50 is the one place index membership is written in
+code; maintain it at the semi-annual rebalance alongside `index_constituents`.
+
+**Not scored yet.** Like the chain aggregates, breadth is measured and stored
+but deliberately not fed to the classifier: any threshold today would be
+invented. It waits on captured sessions, the same as the rest of the deferred
+calibration.
+
 ## Measured facts
 
 Against the live API on 2026-09-12. Each is load-bearing.
@@ -250,6 +300,8 @@ session**, not a settled one.
 | `DHAN_CHARTS_BASE` | `https://api.dhan.co/v2/charts/` | |
 | `DHAN_OPTIONCHAIN_URL` | `https://api.dhan.co/v2/optionchain` | flat, see above |
 | `DHAN_EXPIRYLIST_URL` | `https://api.dhan.co/v2/optionchain/expirylist` | nested |
+| `DHAN_MARKETFEED_OHLC_URL` | `https://api.dhan.co/v2/marketfeed/ohlc` | batch quotes for breadth, ≤1000/call |
+| `BREADTH_BATCH_SIZE` | `1000` | Dhan's per-request instrument cap |
 | `TOKEN_PARAMETER_NAME` | `/algo/dhan/token` | written by `auth-dhan-broker` |
 | `NIFTY_SECURITY_ID` / `_INSTRUMENT_TYPE` | `13` / `INDEX` | always passed together |
 | `VIX_SECURITY_ID` / `_INSTRUMENT_TYPE` | `21` / `INDEX` | |
@@ -320,7 +372,7 @@ blast radius; a dedicated pair costs nothing and keeps them apart.
 | | |
 |---|---|
 | Handler | `handler.lambda_handler` — set under **Code → Runtime settings**, not Configuration → General |
-| Runtime | Python 3.14, zip package, 10 modules |
+| Runtime | Python 3.14, zip package, 11 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
@@ -330,7 +382,12 @@ as an unterminated-string error.
 
 Apply [`schema.sql`](schema.sql) before the first run — **confirm the Neon
 project id first**, since a second project carries an `algo` schema with the
-same table names and incompatible columns.
+same table names and incompatible columns. On an already-deployed database,
+apply the additive breadth migration
+(`migrations/2026-09-19-breadth-advance-decline.sql`) instead; it adds the nine
+breadth columns and `algo.index_constituents`. Breadth runs as soon as the code
+deploys: with the rosters seeded it counts the DB membership, and with the
+NIFTY 50 roster empty it uses the built-in `STATIC_NIFTY50` fallback.
 
 ## Local verification
 

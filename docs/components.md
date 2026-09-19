@@ -218,16 +218,18 @@ function never touches the database.
 ### intraday-market-sentiment
 
 Writes one row describing the market every fifteen minutes — futures basis and
-open-interest buildup, INDIA VIX, and the option-chain read (straddle, PCR, OI
-walls, max pain, IV skew) for the nearest **and** monthly expiries at once —
-plus the ten raw option legs behind it.
+open-interest buildup, INDIA VIX, the option-chain read (straddle, PCR, OI
+walls, max pain, IV skew) for the nearest **and** monthly expiries at once, and
+the advance/decline breadth of the NIFTY 50 and NIFTY 500 — plus the ten raw
+option legs behind it.
 
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 10 modules |
+| Runtime | Python 3.14, zip package, 11 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Schedule | **none** — invoked by `intraday-data-loader` after it commits, 25×/day |
+| Reads | `algo.instrument_master`, `algo.index_constituents` (breadth rosters), its own previous row, `algo.daily_market_sentiment` |
 | Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` (the classification now lives on `algo.intraday_sentiments`, written by `market-classifier`) |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
@@ -256,6 +258,14 @@ Two strike widths, not interchangeable: aggregates over ATM ±20, raw legs
 stored for ATM ±2 (10 rows a snapshot). Both expiries sit on one row as
 `near_*` / `mth_*` column pairs, and the monthly is the first monthly
 *strictly after* the nearest so the two can never name the same contract.
+
+**Breadth** (advance/decline) is measured off one `marketfeed/ohlc` fetch of
+the NIFTY 500 roster — the NIFTY 50 is a subset, so both are counted from the
+same payload with no extra call. The rosters live in `algo.index_constituents`,
+maintained by hand because Dhan exposes no index-membership endpoint; the NIFTY
+50 also has a built-in fallback list used when its DB roster is empty. Breadth
+always runs, and a broken fetch raises rather than degrading to NULL. Like the
+chain aggregates, breadth is stored but not yet fed to the classifier.
 
 Its README carries the measured facts: the chain is at the flat
 `/v2/optionchain` while `expirylist` is nested, futures open interest returns

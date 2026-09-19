@@ -38,6 +38,7 @@ Modules:
     dhan.py       charts + expiry list + option chain, and the measured facts
     expiry.py     which two expiries a snapshot describes
     chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
+    breadth.py    advance/decline for the NIFTY 50 and NIFTY 500 (one fetch)
     sentiment.py  session stats and the newest-bar rule
     measurement.py  the SMA/RSI the classifier scores from (needs the history
                   only this function fetches)
@@ -61,6 +62,7 @@ from neon_access import (
     read_neon_connection_string,
 )
 
+import breadth as breadth_lib
 import chain as chain_lib
 import expiry as expiry_lib
 from config import (
@@ -83,6 +85,7 @@ from config import (
 from db import (
     daily_sentiment,
     previous_snapshot,
+    read_constituents,
     resolve_by_symbol,
     resolve_instrument,
     write_snapshot,
@@ -357,6 +360,14 @@ def lambda_handler(event, context):
         # IV-skew threshold today would be invented. See the layer README.
         row.update(indicator_columns(index_history))
 
+        # ---- market breadth (advance/decline) -----------------------------
+        # One /marketfeed/ohlc fetch over the NIFTY 500 roster, counted for the
+        # NIFTY 50 (a subset) and the 500. Always runs; the NIFTY 50 falls back
+        # to a built-in list when its DB roster is empty, and a broken fetch
+        # raises rather than degrading to null. Measured, not scored - like the
+        # chain aggregates, it is deliberately not fed to the classifier yet.
+        row.update(breadth_lib.measure(client, conn, read_constituents))
+
         for prefix, summary, expiry_ts, expiry_key in (
             ("near", near, near_expiry_ts, "near_expiry_ts"),
             ("mth", mth, mth_expiry_ts, "mth_expiry_ts"),
@@ -435,6 +446,15 @@ def lambda_handler(event, context):
             "sma200": row["sma200"],
             "rsi": row["rsi"],
             "legs_written": legs_written,
+            "breadth": (
+                None if row["mkt_advances"] is None
+                else {
+                    "nifty_adv_dec": f"{row['nifty_advances']}/{row['nifty_declines']}",
+                    "mkt_adv_dec": f"{row['mkt_advances']}/{row['mkt_declines']}",
+                    "mkt_ratio": row["mkt_adv_dec_ratio"],
+                    "mkt_sampled": row["mkt_sampled"],
+                }
+            ),
             "daily_read": (
                 None if not daily
                 else {

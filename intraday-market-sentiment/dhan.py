@@ -47,6 +47,13 @@ getting one wrong fails quietly, not loudly.
   monthlies. Measured 2026-09-12: 2026-09-15, 09-22, 09-29, 10-06, 10-13,
   10-27, 11-23, 12-29. Note 10-20 is absent - the weekly grid has holes, so a
   monthly can only be found by grouping, never by counting weeks.
+
+* /marketfeed/ohlc IS KEYED BY SECURITY ID AS A STRING, under the exchange
+  segment. The response is {"data": {"NSE_EQ": {"11536": {"last_price": ...,
+  "ohlc": {"open","close","high","low"}}}}, "status": ...}. `ohlc.close` is the
+  PREVIOUS trading day's close, not the live price - the live price is the
+  separate `last_price`. Up to 1000 instruments per request; only the segments
+  sent come back. Used for advance/decline breadth - see breadth.py.
 """
 
 import json
@@ -62,6 +69,7 @@ from config import (
     CHARTS_BASE,
     EXPIRYLIST_URL,
     HTTP_TIMEOUT_SECONDS,
+    MARKETFEED_OHLC_URL,
     OPTIONCHAIN_URL,
     SESSION_END,
     SESSION_START,
@@ -182,6 +190,27 @@ class DhanClient:
             )
         if not data["oc"]:
             raise RuntimeError(f"option chain for {expiry} carries no strikes")
+        return data
+
+    def market_ohlc(self, instruments_by_segment):
+        """
+        Batch OHLC quotes for market breadth. See the module docstring.
+
+        `instruments_by_segment` is {segment: [security_id, ...]} with at most
+        1000 ids across all segments - the caller batches to that limit. Returns
+        the `data` block, {segment: {security_id_str: {"last_price", "ohlc"}}}.
+
+        Raises on an unexpected envelope rather than returning an empty dict: a
+        breadth count over nothing would read as "every stock unchanged", which
+        is exactly the silent-partial failure this repo refuses.
+        """
+        payload = self._post(MARKETFEED_OHLC_URL, instruments_by_segment)
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"marketfeed/ohlc is not the measured "
+                f'{{"data","status"}} shape: {json.dumps(payload)[:300]}'
+            )
         return data
 
 
