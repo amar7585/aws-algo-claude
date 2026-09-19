@@ -110,7 +110,7 @@ written against and raises on anything else, so a change is loud on both sides.
   `confidence`, `sma9/50/100/200`, `rsi`, `swing_*`).
 - `candles`, `live` and `daily_atr14` are gone. Playbooks fetch their own.
 - `sma20` no longer exists anywhere; the frame carries `sma9`.
-- `daily` may be `None`, and carries `stale` when this morning's 09:50 run did
+- `daily` may be `None`, and carries `stale` when this morning's 09:35 run did
   not land.
 
 **Measured size: 842 bytes** for a real snapshot plus a real daily row —
@@ -120,7 +120,7 @@ raises a boto3 error that names bytes and not the reason.
 
 ## `daily` can be absent, and that is not this function's problem
 
-`daily-market-sentiment` runs at 09:50 and can fail. A playbook that needs the
+`daily-market-sentiment` runs at 09:35 and can fail. A playbook that needs the
 previous day's levels should say so on its own gate rather than have the router
 refuse to route. What this function does is make the state visible: a missing
 daily row and a **stale** one are both logged here as well as by the reader.

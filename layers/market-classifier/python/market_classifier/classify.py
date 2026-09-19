@@ -163,49 +163,53 @@ def _volatility(vix, vix_baseline, day_range, expected_move, frame,
     }
 
 
-def classify(candles, frame, structure_candles=None, vix=None,
-             vix_baseline=None, day_range=None, expected_move=None,
-             vwap=None, gap_pct=None, session_elapsed=1.0):
+def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
+             day_range=None, expected_move=None, vwap=None, gap_pct=None,
+             session_elapsed=1.0, bars_considered=None, structure_bars=None):
     """
-    Classify the newest bar of `candles`.
+    Classify one already-measured bar. SCORES FROM SCALARS, TOUCHES NO ARRAY.
 
-    candles            full history, oldest first, already decorated by
-                       indicators.decorate - long enough for sma200.
-    frame              "5min" or "daily". Names the per-frame threshold
-                       overrides and appears in the result; it does not change
-                       any rule.
-    structure_candles  the bars the swing read runs over - today's session
-                       from 09:15 intraday, the recent daily bars daily.
-                       Defaults to `candles`, which is right only when the two
-                       windows are the same.
-    vwap               session VWAP, intraday only. See the note on the term.
-    gap_pct            today's open against the previous close, carried
-                       through to the result unscored.
-    session_elapsed    fraction of the trading session already elapsed,
-                       0 < f <= 1. The range-expansion test scales the
-                       expected move by sqrt(f) so the test means the
-                       same thing at 10:00 as at 15:15. Daily passes 1.0.
+    bar               the scored bar's own values: close, sma9/50/100/200, rsi
+                      (and ts, for the log). On the 5-minute frame these are the
+                      columns intraday-market-sentiment measured and stored, so
+                      the classifier scores straight from the row; on the daily
+                      frame they are candles[-1] after decorate(). The caller
+                      owns the history, decorate() and the sma200 depth - this
+                      function only reads the newest bar's numbers.
+    structure         the swing read, ALREADY COMPUTED by the caller via
+                      structure_lib.read() over its own window (today's session
+                      intraday, the recent daily bars daily). This used to be
+                      computed in here; hoisting it out is what lets the
+                      classifier score from stored scalars without re-fetching
+                      bars, while daily runs the identical read. One rule set is
+                      preserved because both callers use this same classify().
+    frame             "5min" or "daily". Names the per-frame threshold overrides
+                      and appears in the result; it does not change any rule.
+    vwap              session VWAP, intraday only. See the note on the term.
+    gap_pct           today's open against the previous close, carried through
+                      to the result unscored.
+    session_elapsed   fraction of the trading session already elapsed,
+                      0 < f <= 1. The range-expansion test scales the expected
+                      move by sqrt(f) so the test means the same thing at 09:45
+                      as at 15:15. Daily passes 1.0.
+    bars_considered   diagnostic counts for the log and result - the history
+    structure_bars    depth and the structure window - since this function no
+                      longer holds the arrays to measure them itself.
 
-    Raises when the newest bar is missing any indicator the rules read.
+    Raises when the bar is missing any indicator the rules read.
     """
-    if not candles:
-        raise RuntimeError(f"{frame}: no candles to classify")
-
-    bar = candles[-1]
     missing = [field for field in REQUIRED if bar.get(field) is None]
     if missing:
         raise RuntimeError(
-            f"{frame}: the newest bar ({bar['ts']}) is missing "
-            f"{', '.join(missing)} over {len(candles)} bars - refusing to "
-            f"classify on a partial indicator set. sma200 needs 200 bars; "
-            f"check the history handed in is deep enough."
+            f"{frame}: the scored bar ({bar.get('ts')}) is missing "
+            f"{', '.join(missing)} - refusing to classify on a partial "
+            f"indicator set. sma200 needs 200 bars of history; check the "
+            f"measurement that produced this bar reached back far enough."
         )
 
     close = float(bar["close"])
     rsi = float(bar["rsi"])
-    struct = structure_lib.read(
-        structure_candles if structure_candles is not None else candles, frame
-    )
+    struct = structure
 
     # ---- the score --------------------------------------------------------
     # Four terms, +-4, and a fifth worth +-1 on the intraday frame only.
@@ -261,10 +265,6 @@ def classify(candles, frame, structure_candles=None, vix=None,
     confidence *= thresholds.get(_CONFIDENCE_FACTORS[regime], frame)
     confidence = round(min(confidence, 100.0), 2)
 
-    structure_bars = len(
-        structure_candles if structure_candles is not None else candles
-    )
-
     result = {
         "frame": frame,
         "candle_ts": bar["ts"],
@@ -290,7 +290,7 @@ def classify(candles, frame, structure_candles=None, vix=None,
         "swing_low": struct["swing_low"],
         "structure_determined": struct["determined"],
         "structure_reason": struct["reason"],
-        "bars_considered": len(candles),
+        "bars_considered": bars_considered,
         "structure_bars": structure_bars,
         "vix": vol["vix"],
         "vix_move_pct": vol["vix_move_pct"],
@@ -312,7 +312,7 @@ def classify(candles, frame, structure_candles=None, vix=None,
         f"{vwap_term:+d}" if vwap is not None else "n/a",
         rsi, vol["volatility"], vol["expanding"],
         ",".join(vol["tests_run"]) or "no test",
-        structure_bars,
+        structure_bars if structure_bars is not None else 0,
         "" if struct["determined"] else " - undetermined: " + str(struct["reason"]),
     )
     return result

@@ -5,7 +5,7 @@ Writes one row to algo.intraday_market_sentiment every fifteen minutes through
 the session, plus the ten raw option legs behind it to algo.option_chain_snapshot.
 
 NOT ON A CRON. intraday-data-loader is the only scheduled function in this
-plane; it commits its candles at 10:00, 10:15 ... 15:30 plus a 15:35 closing
+plane; it commits its candles at 09:45, 10:00 ... 15:30 plus a 15:35 closing
 sweep, then invokes this function. The chain is
 loader -> this -> strategy-manager -> playbooks, one schedule driving all of it.
 
@@ -38,10 +38,11 @@ Modules:
     dhan.py       charts + expiry list + option chain, and the measured facts
     expiry.py     which two expiries a snapshot describes
     chain.py      one chain -> ATM, straddle, PCR, OI walls, max pain, IV
-    sentiment.py  session stats, the newest-bar rule and the buildup label
-    classification.py  what to hand the market-classifier layer, and why
+    sentiment.py  session stats and the newest-bar rule
+    measurement.py  the SMA/RSI the classifier scores from (needs the history
+                  only this function fetches)
     db.py         Neon access, the baseline read, the two-table write
-    dispatch.py   handing the finished snapshot to strategy-manager
+    dispatch.py   handing the measurement snapshot to market-classifier
 
 Epoch/IST handling, the Neon connection and the shared connection-string read
 come from the neon-access layer.
@@ -93,10 +94,10 @@ from dhan import (
     session_candles,
     to_candles,
 )
-from classification import classify_snapshot, row_columns
-from dispatch import dispatch_snapshot
+from measurement import indicator_columns
+from dispatch import dispatch_to_classifier
 from params import read_client_id, read_token_record
-from sentiment import bar_volume_stats, buildup, newest_bar, pct_change, session_stats
+from sentiment import bar_volume_stats, newest_bar, pct_change, session_stats
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -326,7 +327,7 @@ def lambda_handler(event, context):
             "fut_oi_change_pct": pct_change(
                 future_bar["open_interest"], baseline["fut_oi"] if baseline else None
             ),
-            "buildup": None,  # filled below, once both deltas exist
+            # buildup is derived by market-classifier from the two deltas above.
 
             "vix": vix_bar["close"] if vix_bar else None,
             "vix_open": vix_stats["open"] if vix_stats else None,
@@ -341,34 +342,20 @@ def lambda_handler(event, context):
             "mth_expiry_ts": mth_expiry_ts,
             "created_at": now_epoch(),
         }
-        row["buildup"] = buildup(
-            row["fut_price_change_pct"], row["fut_oi_change_pct"]
-        )
-
-        # ---- the classification -------------------------------------------
+        # ---- the indicators the classifier will score from ----------------
         #
-        # Last, because it reads the VIX and the previous row's VIX, and both
-        # had to be resolved first. The rules are the market-classifier
-        # layer's and are shared with daily-market-sentiment; only the inputs
-        # are assembled here. It RAISES on too little history rather than
-        # writing a row whose regime came from a missing sma200.
+        # MEASUREMENT ONLY. The classification moved to market-classifier; this
+        # function measures the SMAs and RSI - which need the ~200-bar history
+        # only it fetches - and hands the rest (today's bars for the structure
+        # read, the VIX baseline, the run clock) to the classifier to score. It
+        # RAISES on too little history, keeping intraday_fno_data.sma200 NOT
+        # NULL. buildup is derived downstream from the two futures deltas above.
         #
-        # NO OPTION DATA FEEDS THIS YET. The chain aggregates above sit on the
-        # same row and are deliberately not scored - option history can only
+        # NO OPTION DATA IS SCORED YET. The chain aggregates on the row are
+        # deliberately not fed to the classifier - option history can only
         # accumulate forward (Dhan serves no historical chain), so any PCR or
-        # IV-skew threshold today would be invented, and rows written before
-        # it was calibrated would carry a bias meaning something different
-        # from rows written after. See the layer README, "Revisit once
-        # sessions have accumulated".
-        classification = classify_snapshot(
-            index_history,
-            index_bars,
-            index_stats,
-            now,
-            row["vix"],
-            baseline["vix"] if baseline else None,
-        )
-        row.update(row_columns(classification))
+        # IV-skew threshold today would be invented. See the layer README.
+        row.update(indicator_columns(index_history))
 
         for prefix, summary, expiry_ts, expiry_key in (
             ("near", near, near_expiry_ts, "near_expiry_ts"),
@@ -415,20 +402,24 @@ def lambda_handler(event, context):
 
         legs_written = write_snapshot(conn, row, legs)
 
-        # The row exists now, so the strategies can be handed it. Written
-        # first and dispatched second on purpose: a failed invoke raises with
-        # the row already committed, and the upsert makes a retry rewrite the
-        # identical row rather than duplicate it.
-        dispatched = dispatch_snapshot(row, index, daily)
+        # The measurement row exists now, so market-classifier can be handed it.
+        # Written first and dispatched second on purpose: a failed invoke raises
+        # with the row already committed, and the upsert makes a retry rewrite
+        # the identical row rather than duplicate it. The classifier gets the row
+        # plus today's bars (for the structure read), the VIX baseline and the
+        # run clock (for session_elapsed) - everything the scoring needs.
+        dispatched = dispatch_to_classifier(
+            row, index, index_bars,
+            vix_baseline=baseline["vix"] if baseline else None,
+            now=now, daily=daily,
+        )
 
         elapsed = time.monotonic() - started
         logger.info(
-            "done in %.1fs: snapshot %s, %d legs, buildup %s, "
-            "bias %s structure %s regime %s (%+d/%d, confidence %.1f)",
+            "done in %.1fs: snapshot %s, spot %.2f, basis %+.2f, %d legs, "
+            "sma200 %.2f rsi %.1f - dispatched to %s",
             elapsed, ist_datetime(snapshot_ts).strftime("%H:%M"),
-            legs_written, row["buildup"],
-            row["bias"], row["structure"], row["regime"],
-            row["score"], row["max_score"], row["confidence"],
+            spot, basis, legs_written, row["sma200"], row["rsi"], dispatched,
         )
         return {
             "status": "success",
@@ -437,17 +428,12 @@ def lambda_handler(event, context):
             "captured": now.strftime("%H:%M"),
             "spot": spot,
             "basis": round(basis, 2),
-            "buildup": row["buildup"],
             "near_expiry": nearest_date.isoformat(),
             "monthly_expiry": monthly_date.isoformat(),
             "near_straddle": near["straddle"],
             "near_pcr_oi": near["pcr_oi"],
-            "bias": row["bias"],
-            "structure": row["structure"],
-            "regime": row["regime"],
-            "volatility": row["volatility"],
-            "score": f"{row['score']:+d}/{row['max_score']}",
-            "confidence": row["confidence"],
+            "sma200": row["sma200"],
+            "rsi": row["rsi"],
             "legs_written": legs_written,
             "daily_read": (
                 None if not daily

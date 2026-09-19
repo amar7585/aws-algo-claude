@@ -26,7 +26,7 @@ from config import UPSERT_BATCH_SIZE
 
 logger = logging.getLogger()
 
-SNAPSHOT_TABLE = "algo.intraday_market_sentiment"
+SNAPSHOT_TABLE = "algo.intraday_fno_data"
 CHAIN_TABLE = "algo.option_chain_snapshot"
 
 SNAPSHOT_KEY = ("security_id", "instrument_type", "snapshot_ts")
@@ -35,7 +35,8 @@ SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     "spot", "chain_spot", "spot_change_pct", "day_high", "day_low", "vwap",
     "orb_high", "orb_low", "last_bar_volume", "volume_vs_avg",
     "fut_security_id", "fut_symbol", "fut_price", "fut_oi", "basis", "basis_pct",
-    "fut_price_change_pct", "fut_oi_change_pct", "buildup",
+    "fut_price_change_pct", "fut_oi_change_pct",
+    # buildup MOVED to algo.intraday_sentiments (the classifier derives it).
     "vix", "vix_open", "vix_day_high", "vix_day_low", "vix_change_pct",
     "near_expiry_ts", "near_atm_strike", "near_ce_ltp", "near_pe_ltp",
     "near_straddle", "near_straddle_pct", "near_pcr_oi", "near_pcr_volume",
@@ -47,14 +48,12 @@ SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     "mth_ce_oi_total", "mth_pe_oi_total", "mth_ce_oi_change_pct",
     "mth_pe_oi_change_pct", "mth_max_oi_call", "mth_max_oi_put",
     "mth_max_pain", "mth_ce_iv", "mth_pe_iv", "mth_iv_skew",
-    # The classification - market-classifier layer, 5-minute frame. Stored
-    # rather than recomputed downstream so the row explains its own regime,
-    # and so strategy-manager can stay a router that reads rather than a
-    # second place the rules live.
-    "bias", "structure", "regime", "volatility", "score", "max_score",
-    "confidence", "sma9", "sma50", "sma100", "sma200", "rsi",
-    "swing_direction", "swing_high", "swing_low", "structure_determined",
-    "range_used", "session_elapsed", "volatility_expanding",
+    # Indicators (MEASURED): the SMAs and RSI the classifier scores from,
+    # computed here because only this function fetches the ~200-bar history
+    # sma200 needs. The classification they feed - regime, structure, bias and
+    # the swing/volatility reads - is written to algo.intraday_sentiments by the
+    # market-classifier function, not here.
+    "sma9", "sma50", "sma100", "sma200", "rsi",
     "created_at",
 )
 
@@ -223,7 +222,7 @@ def daily_sentiment(conn, instrument, session_midnight):
     THE LOOKUP IS NOT trade_date = TODAY, AND THAT IS THE WHOLE POINT. A daily
     row's trade_date is the session it DESCRIBES, which is the newest completed
     daily candle - yesterday - because Dhan's daily endpoint lags a session.
-    The row daily-market-sentiment writes this morning at 09:50 is stamped
+    The row daily-market-sentiment writes this morning at 09:35 is stamped
     YESTERDAY. Verified against the live table: the only stored row carries
     trade_date 2026-09-10 and was written during the 2026-09-11 session.
 
@@ -231,7 +230,7 @@ def daily_sentiment(conn, instrument, session_midnight):
     stamped today - which never exists.
 
     FRESHNESS IS REPORTED, NOT ASSUMED. Taking "the newest row before today"
-    alone would silently return last Tuesday's read if this morning's 09:50 run
+    alone would silently return last Tuesday's read if this morning's 09:35 run
     failed, and hand a playbook a stale pd_high as today's level - a wrong
     level rather than a missing one, which is worse. created_at says when the
     row was actually written, so the caller can tell today's read from a stale
@@ -264,7 +263,7 @@ def daily_sentiment(conn, instrument, session_midnight):
     if row["stale"]:
         logger.warning(
             "daily read for trade_date %s was written at %s, before today - "
-            "this morning's 09:50 run did not land",
+            "this morning's 09:35 run did not land",
             row["trade_date"], row["created_at"],
         )
     return row

@@ -14,13 +14,19 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- intraday_market_sentiment : one row per snapshot, 25 a session.
+-- intraday_fno_data : one MEASUREMENT row per snapshot, 25 a session.
+--
+-- MEASUREMENT ONLY. This holds what was measured - price, indicators, OI,
+-- straddle, VIX and the *_change_pct deltas. The JUDGEMENT built from it
+-- (regime, structure, bias, buildup and the swing/volatility reads) lives in
+-- algo.intraday_sentiments, written by the market-classifier function this one
+-- invokes. One job per function: this measures, the classifier decides.
 --
 -- GRAIN. snapshot_ts is the timestamp of the NEWEST BAR DHAN RETURNED at the
 -- moment of the run - the one still forming, not the last closed one.
 --
 -- intraday-data-loader is the only thing on a cron in this plane. It fires at
--- 10:00, 10:15 ... 15:30 plus a 15:35 closing sweep, commits its candles, and
+-- 09:45, 10:00 ... 15:30 plus a 15:35 closing sweep, commits its candles, and
 -- invokes this function. At a 10:00 run the bucket stamped 10:00 has just
 -- opened, so snapshot_ts is 10:00 and `spot` is the live price. Two things
 -- follow:
@@ -72,7 +78,7 @@ BEGIN;
 -- be arithmetic on unrelated numbers. The handler leaves them NULL across an
 -- expiry roll rather than computing something meaningless.
 -- ---------------------------------------------------------------------------
-CREATE TABLE IF NOT EXISTS algo.intraday_market_sentiment (
+CREATE TABLE IF NOT EXISTS algo.intraday_fno_data (
     security_id            text    NOT NULL,   -- the underlying index
     instrument_type        text    NOT NULL,
     snapshot_ts            bigint  NOT NULL,   -- last CLOSED 5-min bar
@@ -103,7 +109,9 @@ CREATE TABLE IF NOT EXISTS algo.intraday_market_sentiment (
     basis_pct              numeric NOT NULL,
     fut_price_change_pct   numeric,
     fut_oi_change_pct      numeric,
-    buildup                text,               -- see sentiment.py
+    -- buildup MOVED to algo.intraday_sentiments: it is a judgement label the
+    -- classifier derives from fut_price_change_pct + fut_oi_change_pct, not a
+    -- measurement. The two deltas it is built from stay here.
 
     -- ---- india vix ---------------------------------------------------------
     vix                    numeric,
@@ -152,51 +160,17 @@ CREATE TABLE IF NOT EXISTS algo.intraday_market_sentiment (
     mth_pe_iv              numeric,
     mth_iv_skew            numeric,
 
-    -- ---- the classification ------------------------------------------------
-    -- Produced by the market-classifier layer on the 5-minute frame, with the
-    -- SAME rules daily-market-sentiment runs on daily candles. Stored rather
-    -- than recomputed downstream, so this row explains its own regime and
-    -- strategy-manager can be a router that reads instead of a second place
-    -- the rules live.
-    --
-    -- NONE OF THE OPTION COLUMNS ABOVE FEED IT YET. Dhan serves no historical
-    -- option chain, so PCR / IV-skew / straddle thresholds cannot be measured
-    -- until rows accumulate here; scoring them on invented numbers would make
-    -- `bias` mean one thing before recalibration and another after. When the
-    -- rows exist the agreed shape is a separate options overlay, not extra
-    -- terms folded into `score`.
-    --
-    -- score IS NOT COMPARABLE ACROSS FRAMES WITHOUT max_score. The 5-minute
-    -- frame carries a VWAP term the daily frame cannot (there is no session
-    -- VWAP on a daily candle), so max_score is 5 here and 4 there. It is
-    -- stored so a reader normalises rather than assumes.
-    bias                   text    NOT NULL,   -- bullish | bearish | range-bound
-    structure              text    NOT NULL,   -- trending | sideways | transitional
-    regime                 text    NOT NULL,   -- trending | sideways | volatile-expansion
-    volatility             text,               -- low | normal | high; null without VIX
-    score                  integer NOT NULL,
-    max_score              integer NOT NULL,
-    confidence             numeric NOT NULL,
-
-    -- the indicators the score was computed from, so the row is self-explaining
+    -- ---- indicators (MEASURED, not judged) ---------------------------------
+    -- The SMAs and RSI the classifier scores from. Computed HERE because only
+    -- this function fetches the ~200-bar cross-session history sma200 needs;
+    -- the classifier reads these scalars off the row rather than re-fetching
+    -- bars. The classification they feed - regime, structure, bias and the
+    -- swing/volatility reads - is written to algo.intraday_sentiments, not here.
     sma9                   numeric NOT NULL,
     sma50                  numeric NOT NULL,
     sma100                 numeric NOT NULL,
     sma200                 numeric NOT NULL,   -- NOT NULL: see the handler's raise
     rsi                    numeric NOT NULL,
-
-    -- the swing read behind `structure`
-    swing_direction        text    NOT NULL,   -- up | down | none
-    swing_high             numeric,            -- null until two swings confirm
-    swing_low              numeric,
-    structure_determined   boolean NOT NULL,   -- false = too few bars to say
-
-    -- the volatility read behind `regime`
-    -- range_used is the day's range over the expected move SCALED BY
-    -- sqrt(session_elapsed), so 1.5 means the same thing at 10:00 as at 15:15.
-    range_used             numeric,
-    session_elapsed        numeric,            -- fraction of the session, 0-1
-    volatility_expanding   boolean NOT NULL,
 
     created_at             bigint  NOT NULL,
 

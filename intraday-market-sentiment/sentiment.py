@@ -1,28 +1,19 @@
 """
-The read itself: what the candles say, and the buildup label.
+The session read: what the candles say.
 
 Pure functions over candle lists and numbers. No Dhan, no Postgres - the whole
-module runs against a saved payload.
-
-THIS FUNCTION CLASSIFIES, IT DOES NOT FORECAST. `buildup` names what price and
-open interest just did together; it says nothing about what happens next, and
-daily-market-sentiment's README already records that its own score is not
-predictive of forward return. Treat this the same way.
+module runs against a saved payload. The buildup label it used to compute moved
+to market-classifier, which derives it from the two futures deltas this
+snapshot measures (fut_price_change_pct, fut_oi_change_pct).
 """
 
 import logging
 
 from neon_access import ist_datetime
 
-from config import BUILDUP_EPSILON_PCT, ORB_END, SESSION_START
+from config import ORB_END, SESSION_START
 
 logger = logging.getLogger()
-
-LONG_BUILDUP = "LONG_BUILDUP"
-SHORT_BUILDUP = "SHORT_BUILDUP"
-LONG_UNWINDING = "LONG_UNWINDING"
-SHORT_COVERING = "SHORT_COVERING"
-FLAT = "FLAT"
 
 
 def newest_bar(candles, label):
@@ -135,30 +126,3 @@ def pct_change(current, previous):
     return (float(current) - float(previous)) / abs(float(previous)) * 100
 
 
-def buildup(price_change_pct, oi_change_pct, epsilon=None):
-    """
-    The four-way read of price against open interest.
-
-        price up,   OI up    long buildup      new longs, conviction
-        price down, OI up    short buildup     new shorts, conviction
-        price up,   OI down  short covering    shorts closing, not new buying
-        price down, OI down  long unwinding    longs closing, not new selling
-
-    The distinction that matters is the second column: a rally on rising OI is
-    money coming in, a rally on falling OI is money leaving. They look
-    identical on a price chart.
-
-    `epsilon` is the move below which a change counts as no change, in
-    percent, and defaults to BUILDUP_EPSILON_PCT - 0.0, meaning pure sign.
-    Left at 0 the label flips on the smallest tick; it is a tunable rather
-    than a constant so a threshold can be set from measurement later without
-    touching this logic.
-    """
-    if price_change_pct is None or oi_change_pct is None:
-        return None
-    epsilon = BUILDUP_EPSILON_PCT if epsilon is None else epsilon
-    if abs(price_change_pct) <= epsilon or abs(oi_change_pct) <= epsilon:
-        return FLAT
-    if price_change_pct > 0:
-        return LONG_BUILDUP if oi_change_pct > 0 else SHORT_COVERING
-    return SHORT_BUILDUP if oi_change_pct > 0 else LONG_UNWINDING

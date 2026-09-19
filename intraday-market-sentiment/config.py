@@ -72,10 +72,15 @@ ORB_END = datetime.time(9, 30)
 
 # THIS FUNCTION HAS NO SCHEDULE. intraday-data-loader is the only thing on a
 # cron in the intraday plane; it invokes this function once its candles are
-# committed, so the run times below are the loader's - 10:00, 10:15 ... 15:30,
+# committed, so the run times below are the loader's - 09:45, 10:00 ... 15:30,
 # plus the 15:35 closing sweep. FIRST_RUN and LAST_RUN are a second line of
 # defence against a manual invocation, not the mechanism.
-FIRST_RUN = datetime.time(10, 0)
+#
+# FIRST_RUN MUST TRACK THE LOADER'S FIRST CRON. The loader fires at 09:45
+# (schedule intraday-data-loader-open) and invokes this function; a FIRST_RUN
+# later than that would reject the invoke as "outside session" and the whole
+# snapshot -> classifier -> ... chain would silently skip that tick.
+FIRST_RUN = datetime.time(9, 45)
 LAST_RUN = datetime.time(15, 35)
 
 # The interval whose bars the snapshot reads.
@@ -153,37 +158,30 @@ AGGREGATE_STRIKES_PER_SIDE = int(os.environ.get("AGGREGATE_STRIKES_PER_SIDE", "2
 RAW_STRIKES_PER_SIDE = int(os.environ.get("RAW_STRIKES_PER_SIDE", "2"))
 
 # --------------------------------------------------------------------------
-# The strategy chain
+# The classifier chain
 #
-# Once the row is written this function invokes strategy-manager with it,
-# because the manager's input IS this snapshot and the completion of the
-# write is the only honest trigger for it - see dispatch.py.
+# Once the measurement row is written this function invokes market-classifier
+# with it, because the classifier's input IS this snapshot and the completion
+# of the write is the only honest trigger for it - see dispatch.py. The
+# classifier scores the row, writes algo.intraday_sentiments and invokes
+# pattern-detector, which gates strategy-manager.
 #
 # UNSET MEANS OFF, and that is the point. With no name configured nothing is
 # dispatched and a log line says so, which lets this ship with no behavioural
 # change: the chain is switched on by setting this one variable after the
-# manager exists and this function has proved itself on a live session.
+# classifier exists and this function has proved itself on a live session.
 #
 # Setting it also needs one IAM change - this function's execution role must
-# allow lambda:InvokeFunction on the manager's ARN, and NOT on a wildcard.
+# allow lambda:InvokeFunction on the classifier's ARN, and NOT on a wildcard.
 # --------------------------------------------------------------------------
-STRATEGY_MANAGER_FUNCTION_NAME = os.environ.get("STRATEGY_MANAGER_FUNCTION_NAME", "")
-STRATEGY_MANAGER_INVOCATION_TYPE = os.environ.get(
-    "STRATEGY_MANAGER_INVOCATION_TYPE", "Event"
-)
+CLASSIFIER_FUNCTION_NAME = os.environ.get("CLASSIFIER_FUNCTION_NAME", "")
+CLASSIFIER_INVOCATION_TYPE = os.environ.get("CLASSIFIER_INVOCATION_TYPE", "Event")
 
 # --------------------------------------------------------------------------
 # Tunables
 # --------------------------------------------------------------------------
-# The move below which the buildup label treats a change as no change, in
-# percent. 0.0 means pure sign: any tick either way counts, and the label can
-# flip on noise in a quiet fifteen minutes.
-#
-# NOT SET FROM MEASUREMENT. A sensible floor needs the distribution of
-# 15-minute price and OI moves across real sessions, which this function has
-# to run for a while to produce. It is a tunable rather than a constant so
-# that can be set later without touching sentiment.py.
-BUILDUP_EPSILON_PCT = float(os.environ.get("BUILDUP_EPSILON_PCT", "0.0"))
+# buildup and its BUILDUP_EPSILON_PCT tunable moved to market-classifier, which
+# now derives the label from the futures deltas this function measures.
 
 # Rate limits are tighter than Dhan's documented 5/s: six unpaced calls earned
 # DH-904 and stayed throttled. 4s spacing runs clean.

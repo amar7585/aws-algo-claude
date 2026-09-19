@@ -29,18 +29,18 @@ WHAT THE DAILY FRAME STILL OWNS. Three things the classifier cannot know:
   * the expected move, which is VIX-implied here and drives the volatility
     columns the row stores.
   * that the row describes YESTERDAY. Dhan's daily endpoint lags a session, so
-    the newest stored daily candle at 09:50 is the previous session's.
+    the newest stored daily candle at 09:35 is the previous session's.
 
 DEPARTURE FROM LEGACY, KEPT. Legacy dropped the last row (`df.iloc[:-1]`)
 because it ran intraday against a forming candle. Dhan's daily endpoint lags,
-so at 09:50 the newest stored row is already closed and the drop would shift
+so at 09:35 the newest stored row is already closed and the drop would shift
 every level a day stale. It is deliberately absent.
 """
 
 import logging
 import math
 
-from market_classifier import classify, decorate
+from market_classifier import classify, decorate, read_structure
 from market_classifier import thresholds as classifier_thresholds
 from neon_access import now_epoch
 
@@ -113,17 +113,21 @@ def build_daily_sentiment(instrument, candles, vix_candles, session_open,
     vix_baseline = vix_candles[-2]["close"] if len(vix_candles or ()) >= 2 else None
 
     # Legacy read `price` off today's forming daily candle, which does not
-    # exist at 09:50. Today's open comes from the intraday call instead.
+    # exist at 09:35. Today's open comes from the intraday call instead.
     price = round(float(session_open), 2) if session_open is not None else None
     expected_move = vix_expected_move(price, vix_close)
     upper = round(price + expected_move, 2) if expected_move is not None else None
     lower = round(price - expected_move, 2) if expected_move is not None else None
 
     lookback = classifier_thresholds.get("STRUCTURE_LOOKBACK_DAILY", FRAME)
+    # The swing read is hoisted out of classify() now - the caller owns its
+    # own structure window. daily reads it off the recent daily bars; the
+    # intraday classifier reads it off today's session. Same read, both frames.
+    structure = read_structure(candles[-lookback:], FRAME)
     result = classify(
-        candles,
         frame=FRAME,
-        structure_candles=candles[-lookback:],
+        bar=last,
+        structure=structure,
         vix=vix_close,
         vix_baseline=vix_baseline,
         # Yesterday's own range against yesterday's expected move. The session
@@ -134,6 +138,8 @@ def build_daily_sentiment(instrument, candles, vix_candles, session_open,
         vwap=None,
         gap_pct=gap_pct(session_open, last["close"]),
         session_elapsed=1.0,
+        bars_considered=len(candles),
+        structure_bars=len(candles[-lookback:]),
     )
 
     return {

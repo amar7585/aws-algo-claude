@@ -229,7 +229,7 @@ departures below all still hold.
 
 1. **The `df.iloc[:-1]` drop is gone.** Legacy dropped the newest row because it
    ran intraday and that row was today's forming candle. The daily endpoint lags
-   a session, so at 09:50 the newest stored row is already closed; dropping it
+   a session, so at 09:35 the newest stored row is already closed; dropping it
    would compute every level from the day *before* yesterday.
 2. **VIX is real.** Legacy did `vix = last_closed.get("vix", 12.0)` and nothing
    in that path ever populated a `vix` column, so it was **always 12.0**. That

@@ -74,7 +74,7 @@ first problem and hide the rest, so a session that failed on VIX would look
 like it might otherwise have traded when the range was also spent.
 
 **A check whose input is missing fails as unknown rather than passing.** The
-10:00 run may have no `daily_market_sentiment` row yet — that function runs at 09:50
+10:00 run may have no `daily_market_sentiment` row yet — that function runs at 09:35
 — so `pd_high`/`pd_low` are absent and the range gate has nothing to compare
 against. A missing input must not read as a satisfied condition.
 
@@ -171,7 +171,7 @@ swept high.
    not match the chart these levels were marked on; the playbook rules it out
    by name, and it is the same definition `intraday-market-sentiment` uses for
    `orb_high`/`orb_low`. The two are cross-checked and a mismatch is logged.
-2. **Previous day high/low** — from the daily read, absent before 09:50.
+2. **Previous day high/low** — from the daily read, absent before 09:35.
 3. **First-hour high/low** — 09:15–10:15.
 4. **Session high/low made after the opening range** — after, because the
    opening range's own extremes are already pools 1; a session extreme that is

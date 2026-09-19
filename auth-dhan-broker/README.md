@@ -137,7 +137,7 @@ The code reads the definition with `GetSchedule` and returns it whole with only
 The response carries **metadata only** — status, expiry, elapsed — never the
 token. Consumers read the token from the parameter. Returning it would only
 have served an on-demand invoke from `daily-market-sentiment`, and that path
-cannot fire in practice: the 08:00 refresh precedes that function's 09:50 run
+cannot fire in practice: the 08:00 refresh precedes that function's 09:35 run
 by nearly two hours and the token lives 24 hours. All a returned token achieved
 was putting a live credential on the console Test screen.
 

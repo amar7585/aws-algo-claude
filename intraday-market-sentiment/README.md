@@ -31,7 +31,7 @@ records.
 
 ## The five-minute offset is the point
 
-Runs follow the loader at 10:00, 10:15 … 15:30 plus the 15:35 sweep — the loader's
+Runs follow the loader at 09:45, 10:00 … 15:30 plus the 15:35 sweep — the loader's
 boundary. At each of those moments a 5-minute bucket has *just closed*, so the
 bar the snapshot describes is final.
 

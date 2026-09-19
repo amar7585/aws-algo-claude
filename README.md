@@ -14,7 +14,7 @@ deterministic to read.
 | [instrument-master-loader](instrument-master-loader/README.md) | **running** — 15,463 instruments, monthly |
 | [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 08:00; also the holiday gate that arms the day's schedules |
 | [trading-calendar](trading-calendar/README.md) | **live** — `algo.trading_holiday`, all 16 NSE holidays for 2026 |
-| [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:50 |
+| [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:35 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
@@ -138,7 +138,7 @@ Two planes on different clocks, deliberately uncoupled:
   Dhan access token via TOTP, writes it to SSM, and **enables** those schedules.
   So no session function authenticates itself, nothing is refreshed by hand, and
   nothing is invoked on a holiday at all.
-- **Each weekday at 09:50** — `daily-market-sentiment` fetches daily candles for
+- **Each weekday at 09:35** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
   Telegram.
 - **Every 15 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —

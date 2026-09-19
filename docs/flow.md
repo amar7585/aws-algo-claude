@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph SESSION["09:15-15:30"]
-        DAILY["daily-market-sentiment<br/><i>cron, 09:50</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
+        DAILY["daily-market-sentiment<br/><i>cron, 09:35</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
         DAILY --> TG1{{"Telegram"}}
 
         CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>10:00-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
@@ -63,7 +63,7 @@ Read in clock order, a weekday looks like this:
 |---|---|---|---|
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
 | 08:00 | `auth-dhan-broker` | cron | `/algo/dhan/token` |
-| 09:50 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
+| 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
 | 10:00–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 24 runs | `intraday-market-sentiment` | **invoke** | `intraday_market_sentiment`, `option_chain_snapshot` |
 | immediately after | `strategy-manager` | **invoke** | nothing |
@@ -72,7 +72,7 @@ Read in clock order, a weekday looks like this:
 
 **Five schedules in total, and two of them are intraday.**
 `instrument-master-loader` monthly, `auth-dhan-broker` at 08:00,
-`daily-market-sentiment` at 09:50, and `intraday-data-loader`'s pair — a
+`daily-market-sentiment` at 09:35, and `intraday-data-loader`'s pair — a
 quarter-hourly `-session` rule to 14:45 and a `-close` rule for 15:00 to 15:35.
 Everything else in the session is chained: the loader commits and invokes the
 sentiment function, which writes its row and invokes the manager, which routes.
@@ -196,7 +196,7 @@ with nothing reporting it — the same class of silent wrongness as a 0-row load
 invoke that cannot fire in practice, and it put a live credential on the
 console Test screen.
 
-## Daily read — each weekday at 09:50
+## Daily read — each weekday at 09:35
 
 ```mermaid
 flowchart TD
@@ -238,7 +238,7 @@ session open silently drops the 09:15 candle — which *is* the opening range.
 The explicit stamp check turns that into a loud failure.
 
 **The read describes yesterday.** Dhan's daily endpoint lags a session, so at
-09:50 the newest stored daily candle is the previous session's. Today's open
+09:35 the newest stored daily candle is the previous session's. Today's open
 comes from the intraday call instead.
 
 **This function does not run at all on a holiday.** Its schedule is switched
@@ -381,7 +381,7 @@ row is stamped with the session it *describes*, which is yesterday, because
 Dhan's daily endpoint lags. A row stamped today never exists. The previous
 version of the manager looked it up with today's midnight and therefore always
 got `None` — every playbook gating on the daily read was gating on nothing.
-`stale` now says whether this morning's 09:50 run actually landed.
+`stale` now says whether this morning's 09:35 run actually landed.
 
 **The manager reads, computes and writes nothing.** The classification moved
 *up* into the layer and is stored by the function that computes it; the data

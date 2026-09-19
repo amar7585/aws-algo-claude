@@ -74,7 +74,7 @@ def read_event(event):
     Validate the sentiment function's payload and return its parts.
 
     The daily read is allowed to be absent. daily-market-sentiment runs at
-    09:50 and can fail, and a playbook that needs the previous day's levels
+    09:35 and can fail, and a playbook that needs the previous day's levels
     should say so itself rather than have the router refuse to route. What is
     NOT allowed is a daily row that is silently stale - the sentiment function
     marks that with `stale`, and it is logged here so the decision is visible
@@ -114,7 +114,7 @@ def read_event(event):
     elif daily.get("stale"):
         logger.warning(
             "the daily read is STALE - trade_date %s, written %s, before "
-            "today. This morning's 09:50 run did not land.",
+            "today. This morning's 09:35 run did not land.",
             daily.get("trade_date"), daily.get("created_at"),
         )
     return snapshot, instrument, daily

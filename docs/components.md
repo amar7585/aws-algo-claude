@@ -9,7 +9,7 @@
 | `instrument-master-loader` | Lambda function | monthly | **built, running** | [README](../instrument-master-loader/README.md) |
 | `auth-dhan-broker` | Lambda function | daily, weekdays 08:00 — also the holiday gate | **built, running** | [README](../auth-dhan-broker/README.md) |
 | `trading-calendar` | reference data, no Lambda | seeded by hand, yearly | **seeded** | [README](../trading-calendar/README.md) |
-| `daily-market-sentiment` | Lambda function | daily, weekdays 09:50 | **built, running** | [README](../daily-market-sentiment/README.md) |
+| `daily-market-sentiment` | Lambda function | daily, weekdays 09:35 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
 | `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron**, as two rules | **built, running** | [README](../intraday-data-loader/README.md) |
@@ -31,7 +31,7 @@ single intraday cron on `intraday-data-loader` - two Scheduler rules, one
 function - that chains the rest.
 
 **Five schedules, and two of them are intraday.** Monthly for the instrument
-master, 08:00 for the token, 09:50 for the daily read, and the loader's own
+master, 08:00 for the token, 09:35 for the daily read, and the loader's own
 pair: `intraday-data-loader-session` every 15 minutes from 10:00 to 14:45, then
 `intraday-data-loader-close` at 15:00/15:15/15:30/15:35. The split exists
 because one cron spanning 10–15 would keep firing past the close; spelling out
@@ -148,7 +148,7 @@ Three Dhan calls, ~12 s.
 
 It reads the Dhan token from `/algo/dhan/token` rather than holding broker
 credentials of its own. It does **not** invoke `auth-dhan-broker` on demand —
-that path cannot fire in practice, since the 08:00 refresh precedes the 09:50
+that path cannot fire in practice, since the 08:00 refresh precedes the 09:35
 run by nearly two hours and a token lives 24 hours.
 
 Its README carries the measured facts that make it work: `fromDate` is
