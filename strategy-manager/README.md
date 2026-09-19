@@ -10,7 +10,7 @@ them. It evaluates no playbook itself and emits no signal.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` — only `neon-access` is used, for the IST/epoch helpers; it opens no connection |
-| Schedule | **none** — invoked by `intraday-market-sentiment`, 24×/day |
+| Schedule | **none** — invoked by `pattern-detector`, on a confirmed turn only |
 | Reads | **nothing** |
 | Writes | **nothing** |
 | Secrets | none |
@@ -22,12 +22,12 @@ it decides on arrives in the payload. That is a deliberate narrowing — the
 previous version classified the 15-minute frame itself, read three candle
 tables and called Dhan for a live price. Two things moved out:
 
-**The classification moved *up*.** It lives in the
-[`market-classifier` layer](../layers/market-classifier/README.md) and is run
-by `intraday-market-sentiment`, which **stores** the result as columns on
-`algo.intraday_market_sentiment`. Before, the rules lived in two places — a
-daily port here-ish and an intraday port there — and the regime a strategy
-acted on was never persisted at all; it existed only in a log line.
+**The classification moved *up*.** The rules live in the
+[`market-classifier` layer](../layers/market-classifier/README.md); the
+`market-classifier` **function** runs them and **stores** the result on
+`algo.intraday_sentiments`. Before, the rules lived in two places — a daily port
+here-ish and an intraday port there — and the regime a strategy acted on was
+never persisted at all; it existed only in a log line.
 
 **The data fetch moved *down*.** Each playbook reads the bars it needs. This
 function was fetching a fixed window on their behalf and guessing at the size.
@@ -42,17 +42,19 @@ that setup must not act on.
 ```
 EventBridge (every 15 min)
   → intraday-data-loader        commits candles
-  → intraday-market-sentiment   writes the snapshot + its classification,
-                                reads the daily row, invokes with both
+  → intraday-market-sentiment   measures → intraday_fno_data, reads the daily row
+  → market-classifier           scores → intraday_sentiments (regime|bias|buildup)
+  → pattern-detector            confirmed turn? — on a turn only, invokes ↓
   → strategy-manager            routes on regime|bias
   → the playbooks               fetch their own bars, gate again, report
 ```
 
-**Why invoked and not scheduled.** Its input *is* the snapshot, and the
-snapshot exists only once the sentiment function has written it. A cron here
-would have to guess how long that takes, read the row back out of Postgres,
-and decide what to do when it is not there yet — three problems that disappear
-when the completion of the write is itself the trigger.
+**Why invoked and not scheduled.** Its input *is* the snapshot, and it is
+invoked by `pattern-detector` only when a turn is confirmed — so the manager
+runs on a turn, not on every snapshot. A cron here would have to guess timing,
+read the rows back out of Postgres, and decide what to do when they are not
+there yet — problems that disappear when the completion of the write (and the
+detector's turn) is itself the trigger.
 
 **Every invoke is `Event`.** This function returning is not a claim that any
 playbook succeeded. Each has its own log group and `error-notifier` reports

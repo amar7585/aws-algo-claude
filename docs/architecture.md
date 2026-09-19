@@ -38,9 +38,11 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
 | Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
 | Daily candles + daily read | daily, weekdays 09:35 | EventBridge Scheduler cron | **built** |
-| Intraday candles | every 15 min, 10:00–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
-| Intraday market read | on each loader run, 24×/day | invoke from `intraday-data-loader` | **built** |
-| Strategy routing | on each snapshot, 24×/day | invoke from `intraday-market-sentiment` | **built** |
+| Intraday candles | every 15 min, 09:45–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
+| Intraday market measurement | on each loader run, 25×/day | invoke from `intraday-data-loader` | **built** |
+| Intraday classification | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
+| Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** |
+| Strategy routing | on a confirmed turn | invoke from `pattern-detector` | **built** |
 | Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
@@ -119,8 +121,9 @@ the cost of a wake-up on the first connection of each run.
 | `candle_5min` | same shape as `candle_daily` | 8,775 | intraday-data-loader |
 | `candle_15min` | same | 2,925 | intraday-data-loader |
 | `candle_1hr` | same | 819 | intraday-data-loader |
-| `intraday_market_sentiment` | 64 columns — basis, futures OI buildup, VIX, and straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs | 0 | intraday-market-sentiment |
-| `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 0 | intraday-market-sentiment |
+| `intraday_fno_data` | measurement — basis, futures OI, VIX, straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs, and the SMA/RSI scalars | 92 | intraday-market-sentiment |
+| `intraday_sentiments` | judgement — regime, structure, bias, buildup, and the swing/volatility reads; joins `intraday_fno_data` on `snapshot_ts` | 92 | market-classifier |
+| `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 920 | intraday-market-sentiment |
 
 **The strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars

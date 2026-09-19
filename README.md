@@ -18,10 +18,12 @@ deterministic to read.
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
-| [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 15 min 10:00–15:35. **The only intraday cron**: it invokes the sentiment function, which invokes the manager |
+| [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 15 min 09:45–15:35. **The only intraday cron**: it invokes the sentiment function, which chains to the classifier, detector and manager |
 | [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
-| [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — basis/OI buildup, VIX, two option chains, **and the stored classification**. Invoked by the loader, 24×/day |
-| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off the snapshot and invokes the playbooks that combination allows |
+| [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — **measures** basis/OI, VIX, two option chains and SMA/RSI → `intraday_fno_data`. Invoked by the loader, 25×/day |
+| [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/bias/buildup on `intraday_sentiments`, invokes the detector |
+| [pattern-detector](pattern-detector/README.md) | **deployed** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm); gates the manager, fires only on a confirmed turn |
+| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off `intraday_sentiments` and invokes the playbooks that combination allows, on a turn |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
 
 ## Documentation
@@ -141,22 +143,25 @@ Two planes on different clocks, deliberately uncoupled:
 - **Each weekday at 09:35** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
   Telegram.
-- **Every 15 minutes from 10:00 to 15:30, plus a 15:35 closing sweep** —
+- **Every 15 minutes from 09:45 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
-  for NIFTY and the current-month future. 24 invocations a trading day, and
+  for NIFTY and the current-month future. 25 invocations a trading day, and
   **the only cron in the intraday plane**: it invokes the sentiment function,
-  which invokes the manager, which invokes the playbooks.
-- **After each loader run, 24×/day** — `intraday-market-sentiment` writes
-  one row describing the market: futures basis and OI buildup, INDIA VIX, and
-  the option-chain read for the nearest and monthly expiries at once. It shares
-  no tables with the loader — it fetches its own candles and chains, so a
-  stalled loader cannot feed it stale inputs. 24 invocations a trading day.
-- **On each snapshot** — `intraday-market-sentiment` invokes
-  `strategy-manager` asynchronously with the row it just wrote. The
-  manager classifies the 15-minute regime, shortlists the playbooks valid
-  for it, and invokes those — today `strategy-range-liquidity-sweep` on a range
-  day, and nothing at all on a trending one. Neither function writes to
-  Postgres.
+  which chains to the classifier, the detector and the manager.
+- **After each loader run, 25×/day** — `intraday-market-sentiment` **measures**
+  the market into `intraday_fno_data`: futures basis and OI, INDIA VIX, the
+  option-chain read for the nearest and monthly expiries, and the SMA/RSI. It
+  shares no tables with the loader — it fetches its own candles and chains, so a
+  stalled loader cannot feed it stale inputs.
+- **Then `market-classifier`** scores that measurement with the shared layer
+  and writes the **judgement** — regime, structure, bias, buildup — to
+  `intraday_sentiments`, and invokes `pattern-detector`.
+- **Then `pattern-detector`** applies the two-clock turn rule (an abnormal-volume
+  reversal on the future, confirmed a tick later by futures buildup or option
+  OI). Only on a **confirmed turn** does it invoke `strategy-manager`, which
+  shortlists the playbooks valid for the `regime|bias` and invokes those —
+  `strategy-range-liquidity-sweep` on a range day, nothing on a trending one.
+  Nothing in the strategy plane writes to Postgres.
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

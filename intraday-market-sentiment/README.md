@@ -1,15 +1,17 @@
 # intraday-market-sentiment
 
-AWS Lambda function that writes one row describing the state of the market
-every fifteen minutes through the session — futures basis and open-interest
-buildup, INDIA VIX, and the option-chain read (straddle, PCR, OI walls, max
-pain, IV skew) for two expiries at once.
+AWS Lambda function that **measures** the market every fifteen minutes through
+the session — futures basis and open-interest, INDIA VIX, the option-chain read
+(straddle, PCR, OI walls, max pain, IV skew) for two expiries at once, and the
+SMA/RSI indicators — and hands it to `market-classifier`. The **judgement** it
+used to store (regime, structure, bias, buildup) is no longer here: it moved to
+`market-classifier` and `algo.intraday_sentiments`.
 
 | | |
 |---|---|
-| Schedule | **none** — invoked by `intraday-data-loader` once its candles are committed, 24×/day |
+| Schedule | **none** — invoked by `intraday-data-loader` once its candles are committed, 25×/day |
 | Invocations | **25** per trading day |
-| Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
+| Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` |
 | Reads | `algo.instrument_master`, and its own previous row |
 | Instruments | NIFTY (`13`/`INDEX`), INDIA VIX (`21`/`INDEX`), the current-month future |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
@@ -284,7 +286,7 @@ cron(0,15,30,45 10-14 ? * MON-FRI *)    10:00 … 14:45            20
 cron(0,15,30,35 15 ? * MON-FRI *)       15:00, 15:15, 15:30, 15:35  4
 ```
 
-24 runs a trading day. The handler keeps its outside-session guard anyway, as a
+25 runs a trading day. The handler keeps its outside-session guard anyway, as a
 second line of defence against a manual invocation — not as the mechanism.
 
 Its execution role needs `lambda:InvokeFunction` on **`strategy-manager`'s ARN**

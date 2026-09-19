@@ -18,41 +18,50 @@ flowchart TD
         DAILY["daily-market-sentiment<br/><i>cron, 09:35</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
         DAILY --> TG1{{"Telegram"}}
 
-        CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>10:00-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
+        CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>09:45-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
 
-        SENT["intraday-market-sentiment<br/><i>invoked, 24x/day</i>"] --> STBL[("intraday_market_sentiment<br/>option_chain_snapshot")]
+        SENT["intraday-market-sentiment<br/><i>invoked, 25x/day - MEASURES</i>"] --> STBL[("intraday_fno_data<br/>option_chain_snapshot")]
+        CLSF["market-classifier<br/><i>invoked - JUDGES</i>"] --> SENTBL[("intraday_sentiments")]
     end
 
     subgraph STRAT["The strategy plane - chained, not scheduled"]
+        PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule</i>"]
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on sideways|range-bound</i>"]
+        PD -->|"Event: only on a confirmed turn"| MGR
         MGR -->|"Event: both sentiments"| SWEEP
         SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
     end
 
     CANDLES -->|"Event: candles committed"| SENT
-    SENT -->|"Event: the snapshot it just wrote"| MGR
+    SENT -->|"Event: the fno row + today's bars"| CLSF
+    CLSF -->|"Event: fno + sentiment"| PD
 
     SSM -.token.-> DAILY
     SSM -.token.-> CANDLES
     SSM -.token.-> SENT
+    CTBL -.the future's 5-min bars.-> PD
     CTBL -.bars + daily series.-> SWEEP
     DTBL -.daily read.-> SENT
     IM -.identity.-> CANDLES
     IM -.identity.-> SENT
 
     CLS[["market-classifier layer<br/><i>one rule set, both frames</i>"]]
-    CLS -.-> DAILY
-    CLS -.-> SENT
+    CLS -.decorate.-> SENT
+    CLS -.classify.-> DAILY
+    CLS -.classify.-> CLSF
     style CLS fill:#4c1d95,color:#fff
 
     ERR["error-notifier<br/><i>log subscription</i>"] --> TG2{{"Telegram"}}
     LOG -.errors only.-> ERR
 
     style STBL fill:#14532d,color:#fff
+    style SENTBL fill:#14532d,color:#fff
     style CTBL fill:#14532d,color:#fff
     style DTBL fill:#14532d,color:#fff
     style IM fill:#14532d,color:#fff
+    style CLSF fill:#1e3a8a,color:#fff
+    style PD fill:#1e3a8a,color:#fff
     style MGR fill:#1e3a8a,color:#fff
     style SWEEP fill:#1e3a8a,color:#fff
 ```
@@ -64,18 +73,23 @@ Read in clock order, a weekday looks like this:
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
 | 08:00 | `auth-dhan-broker` | cron | `/algo/dhan/token` |
 | 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
-| 10:00–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
-| immediately after each of those 24 runs | `intraday-market-sentiment` | **invoke** | `intraday_market_sentiment`, `option_chain_snapshot` |
-| immediately after | `strategy-manager` | **invoke** | nothing |
-| immediately after, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
+| 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
+| immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
+| immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
+| immediately after | `pattern-detector` | **invoke** | nothing (log only) |
+| immediately after, on a confirmed turn | `strategy-manager` | **invoke** | nothing |
+| then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
-**Five schedules in total, and two of them are intraday.**
+**Six schedules in total, and three of them drive the same intraday cron.**
 `instrument-master-loader` monthly, `auth-dhan-broker` at 08:00,
-`daily-market-sentiment` at 09:35, and `intraday-data-loader`'s pair — a
-quarter-hourly `-session` rule to 14:45 and a `-close` rule for 15:00 to 15:35.
-Everything else in the session is chained: the loader commits and invokes the
-sentiment function, which writes its row and invokes the manager, which routes.
+`daily-market-sentiment` at 09:35, and `intraday-data-loader`'s three
+EventBridge rules — an `-open` rule at 09:45, a quarter-hourly `-session` rule
+for 10:00 to 14:45, and a `-close` rule for 15:00 to 15:35. Everything else in
+the session is chained: the loader commits and invokes the sentiment function,
+which measures and invokes the classifier, which writes the judgement and
+invokes the detector, which on a confirmed turn invokes the manager, which
+routes.
 
 **Why chained rather than four crons.** Each step's input *is* the previous
 step's output. A cron on the sentiment function would have to guess how long
@@ -83,15 +97,17 @@ the loader takes; a cron on the manager would have to read the snapshot back
 out of Postgres and decide what to do when it is not there yet. The completion
 of the write is the only honest trigger, so it is the trigger.
 
-**Nothing in the chain can fail its caller.** Every invoke is `Event`, so
-`intraday-market-sentiment` finishing is not a claim that the manager
-succeeded, and the manager finishing is not a claim that any playbook did. Each
-function has its own log group and `error-notifier` reports from all of them.
+**Nothing in the chain can fail its caller.** Every invoke is `Event`, so a
+function finishing is never a claim that the next stage succeeded —
+`intraday-market-sentiment` finishing does not mean the classifier ran, and the
+detector finishing does not mean any playbook did. Each function has its own log
+group and `error-notifier` reports from all of them.
 
-**The strategy plane writes nothing at all.** The regime the manager classifies
-travels in the invocation payload and the playbook records it in its own log
-beside whatever it found, so the decision is recoverable from the consumer
-rather than duplicated into a table by the producer.
+**The strategy plane writes nothing at all.** The regime lives on
+`intraday_sentiments`; from there it travels in the invocation payload and the
+playbook records it in its own log beside whatever it found, so the decision is
+recoverable from the consumer rather than duplicated into a table by the
+producer.
 
 ## Instrument master refresh — monthly
 
@@ -253,11 +269,11 @@ expected-move band. The schedule gate is what stops that, and the expired token
 is what makes a failure of that gate loud rather than silent. See
 [auth-dhan-broker](../auth-dhan-broker/README.md#there-is-deliberately-no-calendar-check-inside-the-session-functions).
 
-## Intraday candles — every 15 minutes, 10:00–15:35
+## Intraday candles — every 15 minutes, 09:45–15:35
 
 ```mermaid
 flowchart TD
-    START(["EventBridge Scheduler<br/>every 15 min 10:00–15:30<br/>+ 15:35 sweep, IST"]) --> WKND{"Saturday<br/>or Sunday?"}
+    START(["EventBridge Scheduler<br/>every 15 min 09:45–15:30<br/>+ 15:35 sweep, IST"]) --> WKND{"Saturday<br/>or Sunday?"}
     WKND -->|yes| SKIP(["skip"])
     WKND -->|no| DUE["intervals due =<br/><b>(now − 09:15) mod I == 0</b><br/>15:35 ⇒ all three"]
 
@@ -318,11 +334,12 @@ alarm into a polite skip and hide the broken toggle — see
 [auth-dhan-broker](../auth-dhan-broker/README.md#there-is-deliberately-no-calendar-check-inside-the-session-functions).
 The weekend check stays, as a second line of defence for a manual invoke.
 
-## Snapshot, routing and the playbook — on each of the 24 loader runs
+## Snapshot, classification, turn and the playbook — on each of the 25 loader runs
 
 No schedule anywhere in this chain. `intraday-data-loader` commits its candles
-and invokes `intraday-market-sentiment`; that writes its row and invokes
-`strategy-manager`; that routes.
+and invokes `intraday-market-sentiment`, which MEASURES and invokes
+`market-classifier`, which JUDGES and invokes `pattern-detector`, which — on a
+confirmed turn only — invokes `strategy-manager`, which routes.
 
 ```mermaid
 flowchart TD
@@ -332,17 +349,23 @@ flowchart TD
     FETCH --> NEWEST["<b>snapshot_ts = newest bar returned</b><br/><i>the FORMING one included</i>"]
     NEWEST --> CHAIN["expiries, future, VIX, both option chains"]
     CHAIN --> DREAD["read daily_market_sentiment<br/><b>newest row stamped BEFORE today</b>"]
-    DREAD --> CLS
+    DREAD --> MEAS["decorate: sma9/50/100/200, RSI<br/><i>MEASUREMENT only now</i>"]
+    MEAS -->|"< 200 bars, or an SMA absent"| RAISE(["raise"])
+    MEAS --> WRITE[("intraday_fno_data<br/>+ option_chain_snapshot")]
 
-    CLS["<b>market-classifier layer</b>, 5-min frame<br/>sma9/50/100/200, RSI, swing structure,<br/>VWAP term, time-scaled volatility"]
-    CLS -->|"< 200 bars, or an SMA absent"| RAISE(["raise"])
-    CLS --> WRITE[("intraday_market_sentiment<br/>+ option_chain_snapshot<br/><i>classification stored as columns</i>")]
+    WRITE --> CLSF["<b>market-classifier</b> - Event invoke<br/><i>row + today's bars + VIX baseline + run clock</i>"]
+    CLSF --> SCORE["<b>market-classifier layer</b>, 5-min frame<br/>structure read, SMA alignment, RSI,<br/>VWAP term, time-scaled volatility, buildup"]
+    SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, bias, buildup</i>")]
 
-    WRITE --> MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
+    WRITE2 --> PD["<b>pattern-detector</b> - Event invoke<br/><i>reads the future's candle_5min</i>"]
+    PD --> TURN{"abnormal-volume reversal<br/>+ buildup/OI confirm?"}
+    TURN -->|"no turn"| STAND(["stand down, log the reason"])
+    TURN -->|"confirmed turn"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
+
     MGR --> KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
     KEY -->|"no - drift"| RAISE
     KEY -->|"present, empty"| NONE(["no playbook is valid<br/>on this kind of day"])
-    KEY -->|"sideways|range-bound"| INV["<b>Event invoke</b>, context v2<br/><i>two rows and an instrument, ~840 bytes</i>"]
+    KEY -->|"sideways|range-bound"| INV["<b>Event invoke</b>, context v2<br/><i>merged fno+sentiment + the detection</i>"]
 
     INV --> SWEEP["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
     SWEEP --> OWN["reads its OWN bars from candle_5min<br/><i>as_of = snapshot_ts, so the forming<br/>bar is excluded</i>"]
@@ -354,11 +377,13 @@ flowchart TD
     style RAISE fill:#7f1d1d,color:#fff
     style NONE fill:#78350f,color:#fff
     style DOWN fill:#78350f,color:#fff
+    style STAND fill:#78350f,color:#fff
     style WRITE fill:#14532d,color:#fff
+    style WRITE2 fill:#14532d,color:#fff
     style OUT fill:#14532d,color:#fff
 ```
 
-Six things in that diagram are load-bearing:
+Seven things in that diagram are load-bearing:
 
 **`snapshot_ts` is the newest bar returned, forming one included.** At a 10:00
 run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
@@ -368,13 +393,15 @@ snapshot is stamped 15:25 with no special case. What is genuinely partial —
 that bar's own high, low and volume — is not read by anything.
 
 **One classification, two frames.** `daily-market-sentiment` and
-`intraday-market-sentiment` call the same `market-classifier` layer, so a daily
-row and an intraday row are on one scale. They were not before: the daily path
-ported `detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the
-intraday path a different legacy builder (±3, TREND/RANGE), and `regime` meant
-two different things depending on which table you read it from. `max_score` is
-stored because the frames are still not on one *total* — the 5-minute frame
-carries a VWAP term the daily frame cannot.
+`market-classifier` call the same `market-classifier` layer, so a daily row and
+an intraday row are on one scale. They were not before: the daily path ported
+`detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the intraday path
+a different legacy builder (±3, TREND/RANGE), and `regime` meant two different
+things depending on which table you read it from. `max_score` is stored because
+the frames are still not on one *total* — the 5-minute frame carries a VWAP term
+the daily frame cannot. The intraday classification now lives on
+`intraday_sentiments`, written by `market-classifier`; `intraday-market-sentiment`
+only measures (`intraday_fno_data`), and the two join on `snapshot_ts`.
 
 **The daily lookup is "newest row before today", not "today's row".** A daily
 row is stamped with the session it *describes*, which is yesterday, because
@@ -383,9 +410,17 @@ version of the manager looked it up with today's midnight and therefore always
 got `None` — every playbook gating on the daily read was gating on nothing.
 `stale` now says whether this morning's 09:35 run actually landed.
 
-**The manager reads, computes and writes nothing.** The classification moved
-*up* into the layer and is stored by the function that computes it; the data
+**The manager reads, computes and writes nothing.** The classification is
+computed by `market-classifier` and stored on `intraday_sentiments`; the data
 fetch moved *down* into the playbooks. What is left is the routing decision.
+
+**The manager runs only on a confirmed turn.** `pattern-detector` sits between
+the classifier and the manager and re-derives, from the future's `candle_5min`
+and the stored rows, whether an abnormal-volume reversal one interval back has
+been confirmed this snapshot by the futures buildup or option OI. Only then is
+the manager invoked — a quiet snapshot never reaches routing at all. Its
+thresholds are provisional (5 turns over 2 sessions); see
+[pattern-detector](../pattern-detector/README.md).
 
 **Routing is on `regime|bias`, and every cell is listed.** A key present and
 mapping to `[]` is a deliberate "no playbook today"; a key *missing* means the
@@ -415,10 +450,12 @@ flowchart LR
     F3["instrument-master-loader"] --> LG3[/"log group"/]
     F4["intraday-data-loader"] --> LG4[/"log group"/]
     F5["intraday-market-sentiment"] --> LG5[/"log group"/]
-    F6["strategy-manager"] --> LG6[/"log group"/]
-    F7["strategy-range-liquidity-sweep"] --> LG7[/"log group"/]
+    F6["market-classifier"] --> LG6[/"log group"/]
+    F7["pattern-detector"] --> LG7[/"log group"/]
+    F8["strategy-manager"] --> LG8[/"log group"/]
+    F9["strategy-range-liquidity-sweep"] --> LG9[/"log group"/]
 
-    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
     EN --> TG(["Telegram"])
     EN -.->|"never subscribe<br/>its own log group"| EN
 
@@ -434,12 +471,14 @@ noticed, and the two a catch block can never see. Both still reach the log.
 trigger itself, and loop. The handler refuses payloads from its own log group so
 the mistake is inert rather than expensive.
 
-**Subscribing every log group is not optional for the chained plane.** The two
-strategy functions are invoked asynchronously, so nothing upstream fails when
-they do: `intraday-market-sentiment` returning success says only that its row
-was written and the invoke was accepted. Their own log groups are the only
-place their failures appear. An unsubscribed `strategy-manager` would stop
-routing and no alarm would fire anywhere.
+**Subscribing every log group is not optional for the chained plane.** Every
+downstream function — `market-classifier`, `pattern-detector`, the manager and
+the playbooks — is invoked asynchronously, so nothing upstream fails when they
+do: `intraday-market-sentiment` returning success says only that its row was
+written and the invoke was accepted. Their own log groups are the only place
+their failures appear. An unsubscribed `market-classifier` would stop the whole
+chain below it and no alarm would fire anywhere. (All nine groups, including the
+two new functions', are subscribed.)
 
 This compounds with the execution-role trap. A borrowed role allows
 `logs:PutLogEvents` on one log group ARN only, so a function using it produces

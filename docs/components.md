@@ -12,11 +12,13 @@
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:35 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
-| `intraday-data-loader` | Lambda function | every 15 min, 10:00–15:35 — **the only intraday cron**, as two rules | **built, running** | [README](../intraday-data-loader/README.md) |
+| `intraday-data-loader` | Lambda function | every 15 min, 09:45–15:35 — **the only intraday cron**, as three rules | **built, running** | [README](../intraday-data-loader/README.md) |
 | `error-notifier` | Lambda function | on failure only | **built, running** | [README](../error-notifier/README.md) |
-| `market-classifier` | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
-| `intraday-market-sentiment` | Lambda function | invoked by the loader, 24×/day | **built, running** | [README](../intraday-market-sentiment/README.md) |
-| `strategy-manager` | Lambda function | on each snapshot, 24×/day — a pure router | **built, running** | [README](../strategy-manager/README.md) |
+| `market-classifier` (layer) | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
+| `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
+| `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
+| `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn gate | **built, running** | [README](../pattern-detector/README.md) |
+| `strategy-manager` | Lambda function | on a confirmed turn — a pure router | **built, running** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
@@ -165,7 +167,7 @@ and the current-month NIFTY future, through the session. It computes nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 6 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Schedule | every 15 min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — 24 invocations a day |
+| Schedule | every 15 min 09:45–15:30 + a 15:35 sweep, `Asia/Kolkata` — 25 invocations a day, as three EventBridge rules (`-open` 09:45, `-session` 10:00–14:45, `-close` 15:00–15:35) |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables at all |
 
 Which intervals a run fetches follows one rule — **fetch interval *I* when
@@ -225,8 +227,8 @@ plus the ten raw option legs behind it.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 10 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
-| Schedule | **none** — invoked by `intraday-data-loader` after it commits, 24×/day |
-| Writes | `algo.intraday_market_sentiment`, `algo.option_chain_snapshot` |
+| Schedule | **none** — invoked by `intraday-data-loader` after it commits, 25×/day |
+| Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` (the classification now lives on `algo.intraday_sentiments`, written by `market-classifier`) |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
 **It shares no tables with `intraday-data-loader`.** Everything comes from the

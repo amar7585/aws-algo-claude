@@ -245,7 +245,7 @@ missing the band by 0.002pp is the kind of near miss the playbook wants named
 rather than quietly waved through.
 
 **One gate input cannot yet be verified against real data.**
-`vix_change_pct` comes only from `intraday_market_sentiment`, which has no rows
+`vix_change_pct` comes only from `intraday_fno_data`, which has no rows
 until its first live session. The VIX check was verified with supplied values
 either side of the ±5% threshold; the real series arrives with the first
 session.

@@ -5,8 +5,8 @@ the current-month NIFTY future, through the trading session.
 
 | | |
 |---|---|
-| Schedule | every **15** min 10:00–15:30 + a 15:35 sweep, `Asia/Kolkata` — two rules, 24 runs a day. **The only cron in the intraday plane**: it invokes `intraday-market-sentiment`, which invokes `strategy-manager`. See [Deployment](#deployment-shape) |
-| Invocations | **24** per trading day |
+| Schedule | every **15** min 09:45–15:30 + a 15:35 sweep, `Asia/Kolkata` — three rules, 25 runs a day. **The only cron in the intraday plane**: it invokes `intraday-market-sentiment`, which chains to `market-classifier` → `pattern-detector` → `strategy-manager`. See [Deployment](#deployment-shape) |
+| Invocations | **25** per trading day |
 | Writes | `algo.candle_5min`, `algo.candle_15min`, `algo.candle_1hr` |
 | Reads | `algo.instrument_master` |
 | Instruments | NIFTY (`13`/`INDEX`) and the current-month future, resolved at run time |
@@ -38,8 +38,10 @@ derives from the bucket boundaries instead of restating them — if the two ever
 disagree, the schedule is wrong rather than merely stale. `assert_alignment()`
 turns that disagreement into a raised error instead of quietly misaligned rows.
 
-Per trading day that works out to 24 five-minute fetches, 24 fifteen-minute and
-7 hourly, per instrument — `intervals_due()` run against the deployed cron. The
+Per trading day that works out to 25 five-minute fetches, 25 fifteen-minute and
+7 hourly, per instrument — `intervals_due()` run against the deployed cron (the
+09:45 `-open` run is on the 5- and 15-min grid from 09:15 but not the hourly
+one). The
 hourly count only reaches 7 because of the sweep: its aligned trigger times run
 out at 15:15, and the 15:35 override supplies the last one.
 
@@ -127,7 +129,7 @@ The `NIFTY-` prefix is load-bearing: `NIFTYFPI-SEP2026-FUT` and
 `NIFTYNXT50-SEP2026-FUT` are different contracts that a looser pattern eats.
 
 The result is cached per IST date in a module global, so warm containers do not
-re-fetch the expiry list on all 24 runs.
+re-fetch the expiry list on all 25 runs.
 
 ## Measured facts about Dhan's v2 charts API
 

@@ -2,22 +2,26 @@
 
 ← [Back to root README](../../README.md) · [Architecture](../../docs/architecture.md)
 
-One classification, used by both sentiment functions.
+One classification, used by `daily-market-sentiment` and the `market-classifier`
+function.
 
 ```python
-from market_classifier import classify, decorate, session_vwap
+from market_classifier import classify, decorate, read_structure
 
 decorate(candles)                       # sma9/50/100/200, rsi, atr, vol_avg
-result = classify(candles, frame="5min",
-                  structure_candles=todays_bars,
+structure = read_structure(todays_bars, "5min")
+result = classify(frame="5min", bar=candles[-1], structure=structure,
                   vix=..., vix_baseline=..., day_range=...,
-                  expected_move=..., vwap=...)
+                  expected_move=..., vwap=..., session_elapsed=...)
 ```
 
-`daily-market-sentiment` calls it with daily candles (`frame="daily"`),
-`intraday-market-sentiment` with 5-minute candles (`frame="5min"`). Same rules,
-same score scale, so a daily row and an intraday row can be read against each
-other.
+`classify()` **scores from scalars + a precomputed structure read** — the
+caller owns `decorate()` and `read_structure()`, so the scorer needs only the
+newest bar's numbers and the swing result. That is what lets the
+`market-classifier` function score straight off a stored `intraday_fno_data`
+row without re-fetching bars, while `daily-market-sentiment` runs the identical
+`classify()` on daily candles (`frame="daily"`). Same rules, same score scale,
+so a daily row and an intraday row can be read against each other.
 
 Pure Python, stdlib only. No dependency of its own.
 
@@ -140,7 +144,7 @@ it needs 200. Re-run the measurement once there are a few hundred daily bars
 and a few weeks of 5-minute ones, then decide between 60/40, 70/30, and
 dropping the term.
 
-**2. The option-chain overlay — not built.** `intraday_market_sentiment` and
+**2. The option-chain overlay — not built.** `intraday_fno_data` and
 `option_chain_snapshot` were both **empty** when this layer was written, and
 Dhan serves only a *live* option chain with no historical endpoint, so option
 history can only accumulate forward from the first live run. Nothing
