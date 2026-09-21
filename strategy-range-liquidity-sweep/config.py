@@ -233,6 +233,23 @@ LATE_END = datetime.time(15, 0)
 # --------------------------------------------------------------------------
 MAX_ATTEMPTS_PER_SIDE = int(os.environ.get("MAX_ATTEMPTS_PER_SIDE", "2"))
 
+# --------------------------------------------------------------------------
+# Telegram
+#
+# A qualifying candidate is a real trade signal, and the signal is pushed to
+# Telegram so it reaches the phone the moment it is generated - "definitely send
+# on signal generation". It fires ONLY on a LIVE candidate whose trigger bar is
+# FRESH (closed within the last snapshot interval), so a signal that persists
+# across several 15-minute runs is announced once, not on every re-derivation.
+# Rejections and stand-downs stay in the log; the chat gets signals only.
+#
+# The same parameter the daily brief uses. This function already reads
+# /algo/neon/connection, so its role has an SSM-read policy - it needs that
+# policy widened to this one extra parameter plus kms:Decrypt, its own grant.
+# --------------------------------------------------------------------------
+TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
+HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
+
 # Two consecutive 5-minute closes beyond the level is acceptance - Case A, the
 # range broke, and that side is dead for the session along with the other one.
 ACCEPTANCE_CLOSES = int(os.environ.get("ACCEPTANCE_CLOSES", "2"))

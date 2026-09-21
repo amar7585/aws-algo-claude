@@ -40,6 +40,38 @@ OI_CONFIRM_PCT = float(os.environ.get("OI_CONFIRM_PCT", "3.0"))
 # A turn far from a wall is logged with its distance, not dropped.
 LEVEL_EPS_PCT = float(os.environ.get("LEVEL_EPS_PCT", "0.15"))
 
+# ---- continuation / breakout branch -----------------------------------------
+# A SECOND vocabulary beside the reversal turn: a KEY-LEVEL BREAKOUT that
+# continues (with or without a retest). PROVISIONAL AND UNDER-MEASURED - n=1
+# (the 2026-09-21 orb_breakout_retest). The STRUCTURE is committed; every number
+# below is a starting point, env-overridable, to calibrate as breakout trades
+# accumulate - the same discipline as the reversal branch shipped on 5 turns.
+#
+# Unlike a reversal, a continuation is defined BY a level, so the level is a
+# GATE here (no key level broken -> no candidate), not the annotation it is for
+# reversals. The named levels are the 15-min opening range (orb_high/orb_low, on
+# the fno row) and the previous day's extremes (pd_high/pd_low, on the daily
+# read - which can be absent, and then that pair is simply unavailable).
+#
+# A breakout that continues also confirms SAME-TICK, not one tick later: the
+# 2026-09-21 break read SHORT_COVERING with PCR rising 1.12->1.20 on the break
+# snapshot. So the +1-tick lag is a REVERSAL phenomenon and does not apply here.
+CONT_VOLUME_Z_MIN = float(os.environ.get("CONT_VOLUME_Z_MIN", "2.0"))  # abnormal-volume z on the break bar
+
+# The retest entry is a DIP back through the broken level (a close on its far
+# side) followed by a RECLAIM (a close back across it), timed to the reclaim
+# bar's close - not to any distance from the level, so there is no proximity
+# tunable here. A pure continuation that never dips back has no reclaim and no
+# retest entry (the no-retest case, whose entry is deferred).
+
+# ---- Telegram alerting ------------------------------------------------------
+# The detector pushes an alert to Telegram on the actionable events - a
+# confirmed reversal turn, a fresh key-level break, and a retest-hold entry -
+# so a setup that "can produce a trade signal" reaches the phone, not only the
+# log. The same parameter the daily brief and error-notifier use.
+TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
+HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
+
 # --------------------------------------------------------------------------
 # The strategy-manager gate
 #

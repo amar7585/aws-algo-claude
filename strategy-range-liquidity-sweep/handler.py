@@ -58,6 +58,7 @@ import gate as gate_lib
 import report
 import sweep as sweep_lib
 import trade as trade_lib
+from notify import send_telegram
 from config import (
     ATR_PERIOD,
     CANDLE_INTERVAL_MINUTES,
@@ -373,6 +374,31 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         logger.info(
             "No setup today so far. %d attempt(s) examined against %d pools.",
             len(rejections), len(pools),
+        )
+
+    # ---- the signal reaches the phone -------------------------------------
+    #
+    # A live candidate is a real trade signal. Push it to Telegram, but ONLY
+    # when its trigger bar is FRESH - closed within the last snapshot interval -
+    # so a signal that stays live across several 15-minute re-derivations is
+    # announced once, not on every run. Fail-loud: a refused send raises so
+    # Lambda records it, matching "definitely send on signal generation".
+    fresh_after = int(snapshot.get("prev_snapshot_ts") or (snapshot_ts - 900))
+    for record in live:
+        event = record["event"]
+        index = event.get("confirm_index", event["sweep_index"])
+        trigger_ts = int(bars[index]["ts"])
+        if not (fresh_after < trigger_ts <= snapshot_ts):
+            continue
+        candidate = record["candidate"]
+        send_telegram(
+            f"SWEEP SIGNAL {candidate['direction'].upper()} "
+            f"{event['pool']['name']} - "
+            f"{ist_datetime(snapshot_ts).strftime('%Y-%m-%d %H:%M')}\n"
+            f"sweep {event['sweep_time']}, entry {candidate['entry']} "
+            f"stop {candidate['stop']}\n"
+            f"T1 {candidate['t1']} T2 {candidate['t2']} "
+            f"RR {candidate['risk_reward']} ({candidate['grade']})"
         )
 
     return {
