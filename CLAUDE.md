@@ -94,6 +94,18 @@ orders and holds no strategy logic.
 Full context is in [README.md](README.md) and [docs/](docs/) — architecture,
 flow charts, component register. Read those before changing structure.
 
+## Daily session observation — read the runbook first
+
+**When Amar shares a session chart/screenshot and names a trade or pattern (e.g.
+"here is today's session", "this is today's screenshot", "log today's session"),
+open [docs/session-observation-runbook.md](docs/session-observation-runbook.md) and
+follow it end to end before doing anything else.** It is the standing manual workflow
+for the observation-only phase: validate what Amar spotted against captured data +
+futures OI (the "two-clock" read), then hand-log it to `algo.session_observations`.
+Do not improvise the analysis or the row — the runbook fixes the tables, the method,
+the pattern vocabulary, and which fields need Amar's sign-off. Lineage lives in the
+memory note `pattern-detector-futures-oi-design`.
+
 ## Hard rules
 
 These are load-bearing. Breaking one is silently wrong rather than loudly broken.
