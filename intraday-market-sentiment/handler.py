@@ -160,6 +160,30 @@ def future_symbol(nearest_expiry):
     )
 
 
+def future_baseline(baseline, fut_security_id):
+    """
+    The baseline for the futures deltas, or None when it describes a different
+    contract.
+
+    The futures counterpart of oi_change() below. On the first snapshot after a
+    monthly expiry the previous row's fut_price and fut_oi belong to the expired
+    contract. Measured 2026-09-30, the first snapshot on NIFTY-OCT2026-FUT read
+    OCT against SEP-at-expiry as +146% OI and +0.60% price - the roll and the
+    new month's carry, not a move - and market-classifier labelled it
+    LONG_BUILDUP. Null deltas make buildup null instead (inputs.buildup).
+    """
+    if not baseline:
+        return None
+    if str(baseline.get("fut_security_id")) != str(fut_security_id):
+        logger.info(
+            "future rolled (%s -> %s) - fut_price_change_pct and "
+            "fut_oi_change_pct left null",
+            baseline.get("fut_security_id"), fut_security_id,
+        )
+        return None
+    return baseline
+
+
 def oi_change(current_total, baseline, baseline_key, expiry_ts, baseline_expiry_key):
     """
     An OI delta, or None when the baseline describes a different contract.
@@ -296,6 +320,9 @@ def lambda_handler(event, context):
         # daily row describes the previous session, so a row stamped today
         # never exists. See db.daily_sentiment.
         daily = daily_sentiment(conn, index, ist_midnight_epoch(today))
+        # The futures deltas are guarded against a monthly roll the same way
+        # the option OI deltas below are guarded against an expiry roll.
+        fut_base = future_baseline(baseline, future["security_id"])
 
         basis = future_bar["close"] - spot
         row = {
@@ -325,10 +352,10 @@ def lambda_handler(event, context):
             "basis": basis,
             "basis_pct": basis / spot * 100 if spot else None,
             "fut_price_change_pct": pct_change(
-                future_bar["close"], baseline["fut_price"] if baseline else None
+                future_bar["close"], fut_base["fut_price"] if fut_base else None
             ),
             "fut_oi_change_pct": pct_change(
-                future_bar["open_interest"], baseline["fut_oi"] if baseline else None
+                future_bar["open_interest"], fut_base["fut_oi"] if fut_base else None
             ),
             # buildup is derived by market-classifier from the two deltas above.
 

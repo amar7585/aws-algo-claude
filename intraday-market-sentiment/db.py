@@ -77,11 +77,11 @@ CHAIN_COLUMNS = CHAIN_KEY + (
 )
 
 # The columns the previous-snapshot baseline is read back through. Every
-# *_change_pct on a row is computed against these, and the two expiry
-# timestamps are here so the caller can tell whether an OI total from that row
-# describes the same contract as this one.
+# *_change_pct on a row is computed against these. The two expiry timestamps
+# and fut_security_id are here so the caller can tell whether an OI total, or
+# a futures price and OI, from that row describes the same contract as this one.
 BASELINE_COLUMNS = (
-    "snapshot_ts", "spot", "fut_price", "fut_oi", "vix",
+    "snapshot_ts", "spot", "fut_security_id", "fut_price", "fut_oi", "vix",
     "near_expiry_ts", "near_ce_oi_total", "near_pe_oi_total",
     "mth_expiry_ts", "mth_ce_oi_total", "mth_pe_oi_total",
 )

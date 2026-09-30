@@ -106,9 +106,21 @@ gap. But the last stored bar may be partial, and resuming from its own timestamp
 would never re-fetch it, leaving it partial forever. So the window starts **one
 whole interval earlier**, which re-fetches exactly that bar and nothing more.
 
-Cold start is 90 days, which is also Dhan's per-call ceiling — one call, no
-chunking. A stale resume is clamped to the same 90 days. Going deeper would need
-the fetch chunked into ≤90-day windows; that is deliberately not built.
+Cold start for the index is 90 days, which is also Dhan's per-call ceiling —
+one call, no chunking. A stale resume is clamped to the same 90 days. Going
+deeper would need the fetch chunked into ≤90-day windows; that is deliberately
+not built.
+
+Cold start for the **future is 3 days** (`FUTURES_COLD_START_DAYS`), and it is
+not a one-off: every monthly roll brings a new `security_id` with no stored
+bars, so the first run after each expiry cold-starts the new contract. 90 days
+back reaches its thin far-month period, and Dhan's bars there are not always on
+the 09:15 grid. Measured 2026-09-30, the first session on `NIFTY-OCT2026-FUT`:
+the 90-day window held a 5-minute bar stamped `2026-08-12 09:16`,
+`assert_alignment` raised on every run, and because the chain is dispatched only
+after the future commits, nothing downstream ran from 09:45 to 12:00. The 3-day
+window fetched 187 5-minute bars, none off the grid. The only reader of the
+stored future bars is `pattern-detector`, which needs 40.
 
 ## Resolving the current-month future
 
@@ -123,7 +135,9 @@ Nothing about the contract is hardcoded — its `security_id` changes every mont
 It rolls itself: once September's monthly expiry has passed, the nearest expiry
 is already in October. Verified against the live list (measured 2026-09-11:
 nearest `2026-09-15`, September monthly `2026-09-29`, then `2026-10-06`) —
-2026-09-29 resolves to SEP, 2026-09-30 to OCT, 2026-10-28 to NOV.
+2026-09-29 resolves to SEP, 2026-09-30 to OCT, 2026-10-28 to NOV. Confirmed live
+on 2026-09-30: `NIFTY-OCT2026-FUT -> 48704`. The new contract's first run is a
+cold start; see [Resuming](#resuming) for why that is kept to 3 days.
 
 The `NIFTY-` prefix is load-bearing: `NIFTYFPI-SEP2026-FUT` and
 `NIFTYNXT50-SEP2026-FUT` are different contracts that a looser pattern eats.
@@ -189,7 +203,8 @@ so it shadows it for boto3 too.
 | `FUTURES_SYMBOL_TEMPLATE` | `NIFTY-{month}{year}-FUT` | the `NIFTY-` prefix is load-bearing — see [Resolving the current-month future](#resolving-the-current-month-future) |
 | `INTRADAY_SENTIMENT_FUNCTION_NAME` | — (empty) | **the switch for the whole intraday chain.** Unset means the dispatch does nothing and says so; setting it also needs `lambda:InvokeFunction` on that ARN in this function's role |
 | `INTRADAY_SENTIMENT_INVOCATION_TYPE` | `Event` | asynchronous, so a slow consumer cannot fail this run |
-| `COLD_START_DAYS` | `90` | also Dhan's per-call ceiling |
+| `COLD_START_DAYS` | `90` | the index only; also Dhan's per-call ceiling |
+| `FUTURES_COLD_START_DAYS` | `3` | the future only — runs once per monthly roll; see [Resuming](#resuming) for why it is shallow |
 | `API_PACING_SECONDS` | `4.0` | measured; tighter than the documented 5/s |
 | `HTTP_TIMEOUT_SECONDS` | `60` | |
 | `UPSERT_BATCH_SIZE` | `5000` | 8 params/row against Postgres's 65,535 cap |
@@ -296,11 +311,12 @@ a long handler has silently truncated before.
 Schedules, both `Asia/Kolkata` with the flexible window off:
 
 ```
+cron(45 9 ? * MON-FRI *)                          09:45          1 run
 cron(0,15,30,45 10-14 ? * MON-FRI *)              10:00–14:45   20 runs
 cron(0,15,30,35 15 ? * MON-FRI *)                 15:00–15:35    4 runs
 ```
 
-24 between them, the last being the closing sweep. The obvious single
+25 between them, the last being the closing sweep. The obvious single
 `cron(0,15,30,45 10-15 ? * MON-FRI *)` is **wrong**: it keeps firing to 15:45,
 past the close, and still misses 15:35. Splitting at the hour boundary is what
 makes the last run land exactly on 15:35. Hours 10–14 are complete quarter

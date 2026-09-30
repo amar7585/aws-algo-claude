@@ -280,7 +280,7 @@ flowchart TD
     DUE --> TOK["read /algo/dhan/token<br/>raise if expired"]
     TOK --> NIFTY["resolve NIFTY<br/><b>on (security_id, instrument_type)</b>"]
 
-    NIFTY --> WIN["window = MAX(candle_ts) − one interval<br/><b>re-fetches the partial bar</b><br/>else 90-day cold start"]
+    NIFTY --> WIN["window = MAX(candle_ts) − one interval<br/><b>re-fetches the partial bar</b><br/>else cold start:<br/>index 90 days, future 3 days"]
     WIN --> FETCH["fetch interval candles"]
     FETCH --> FILTER["drop out-of-session bars<br/>09:15 ≤ t &lt; 15:30"]
     FILTER --> ALIGN{"every bar on a<br/>bucket boundary<br/>from 09:15?"}

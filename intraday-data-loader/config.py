@@ -119,11 +119,23 @@ INTRADAY_SENTIMENT_INVOCATION_TYPE = os.environ.get(
 # --------------------------------------------------------------------------
 # Tunables
 # --------------------------------------------------------------------------
-# Cold-start depth. Dhan caps an intraday window at 90 days per call, so 90 is
-# both the depth and the ceiling - one call, no chunking. Going deeper means
-# chunking forward in <=90-day windows, which is deliberately not built.
+# Cold-start depth for the INDEX. Dhan caps an intraday window at 90 days per
+# call, so 90 is both the depth and the ceiling - one call, no chunking. Going
+# deeper means chunking forward in <=90-day windows, which is deliberately not
+# built.
 COLD_START_DAYS = int(os.environ.get("COLD_START_DAYS", "90"))
 MAX_WINDOW_DAYS = 90
+
+# Cold-start depth for the FUTURE, deliberately shallow. Every monthly roll
+# cold-starts the new contract - its security_id is new, so it has no stored
+# bars - and 90 days back reaches its thin far-month period, where Dhan returns
+# bars off the 09:15 grid. Measured 2026-09-30, the first session on
+# NIFTY-OCT2026-FUT: the 90-day window held a 5-minute bar stamped 2026-08-12
+# 09:16, assert_alignment raised on every run, and since the chain is dispatched
+# only after the future commits, nothing downstream ran from 09:45 to 12:00.
+# 3 days fetched 187 5-minute bars, none off the grid. pattern-detector, the
+# only reader of the stored future bars, needs 40 (FUT_BARS_LOOKBACK).
+FUTURES_COLD_START_DAYS = int(os.environ.get("FUTURES_COLD_START_DAYS", "3"))
 
 # Rate limits are tighter than Dhan's documented 5/s: six unpaced calls earned
 # DH-904 and stayed throttled. 4s spacing runs clean.

@@ -32,10 +32,11 @@ doing the daily fetch and the daily read in one function on one schedule, and a
 single intraday cron on `intraday-data-loader` - two Scheduler rules, one
 function - that chains the rest.
 
-**Five schedules, and two of them are intraday.** Monthly for the instrument
+**Six schedules, and three of them are intraday.** Monthly for the instrument
 master, 08:00 for the token, 09:35 for the daily read, and the loader's own
-pair: `intraday-data-loader-session` every 15 minutes from 10:00 to 14:45, then
-`intraday-data-loader-close` at 15:00/15:15/15:30/15:35. The split exists
+trio: `intraday-data-loader-open` at 09:45, `intraday-data-loader-session`
+every 15 minutes from 10:00 to 14:45, then `intraday-data-loader-close` at
+15:00/15:15/15:30/15:35. The split exists
 because one cron spanning 10–15 would keep firing past the close; spelling out
 the last hour is what lands the final run exactly on 15:35. The loader
 invokes `intraday-market-sentiment`, which invokes
@@ -179,7 +180,10 @@ The current-month future is never hardcoded: the nearest option expiry's month
 names the contract, which rolls itself at each expiry. It belongs here rather
 than in the daily function because its daily series is a rolled continuous one
 that changes meaning at each expiry, while its intraday series is
-contract-specific and safe to store per `security_id`.
+contract-specific and safe to store per `security_id`. Each roll therefore
+cold-starts the new contract, and that backfill is deliberately only 3 days
+deep (`FUTURES_COLD_START_DAYS`): the 90-day one reached thin far-month bars
+off the 09:15 grid and stopped the whole chain on 2026-09-30.
 
 **Partial candles are stored on purpose** — Dhan returns the in-progress bucket
 and the primary-key upsert corrects it on a later pass. A consumer tells the two

@@ -99,6 +99,14 @@ contract that is no longer being reported here. A percentage between the two is
 arithmetic on unrelated numbers that reads exactly like a real collapse in open
 interest, so it is left `NULL` instead.
 
+The futures deltas get the same guard. If the previous row's `fut_security_id`
+differs from this row's, `fut_price_change_pct` and `fut_oi_change_pct` are
+left `NULL`, and `market-classifier` then leaves `buildup` `NULL` too. Measured
+2026-09-30, the first snapshot after the September expiry compared
+`NIFTY-OCT2026-FUT` with the expired September contract: +146% OI (17.6M against
+7.15M at expiry) and +0.60% price (the new month's carry), which the classifier
+labelled `LONG_BUILDUP`. That row was nulled by hand; the guard now does it.
+
 ## The two expiries
 
 Both live on **one row** — `near_*` and `mth_*` — so one row is one complete
@@ -334,6 +342,7 @@ were deleted on 2026-09-13. `intraday-data-loader` invokes this function once
 its candles are committed, so the loader's cron is the whole plane's cron:
 
 ```
+cron(45 9 ? * MON-FRI *)                09:45                        1
 cron(0,15,30,45 10-14 ? * MON-FRI *)    10:00 … 14:45            20
 cron(0,15,30,35 15 ? * MON-FRI *)       15:00, 15:15, 15:30, 15:35  4
 ```

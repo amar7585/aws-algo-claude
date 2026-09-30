@@ -4,12 +4,12 @@ Intraday Data Loader - AWS Lambda function
 Keeps algo.candle_5min, algo.candle_15min and algo.candle_1hr current for
 NIFTY and the current-month NIFTY future.
 
-THE ONLY CRON IN THE INTRADAY PLANE. Runs every 15 minutes from 10:00 to
-15:30 IST on weekdays, plus one closing sweep at 15:35 - 24 invocations a
+THE ONLY CRON IN THE INTRADAY PLANE. Runs every 15 minutes from 09:45 to
+15:30 IST on weekdays, plus one closing sweep at 15:35 - 25 invocations a
 trading day. When its candles are committed it invokes
-intraday-market-sentiment, which invokes strategy-manager, which invokes the
-playbooks: one schedule drives the whole chain rather than each function
-guessing how long the step before it takes. See dispatch.py.
+intraday-market-sentiment, which chains to market-classifier, pattern-detector
+and then strategy-manager: one schedule drives the whole chain rather than each
+function guessing how long the step before it takes. See dispatch.py.
 
 EVERY-15 DOES NOT THIN THE SERIES. The fetch window is a RANGE from the newest
 stored bar, not a single bar, so a run at 10:15 collects the 10:00, 10:05 and
@@ -57,6 +57,7 @@ from neon_access import IST, connect, ist_datetime, read_neon_connection_string
 from config import (
     CLOSING_SWEEP,
     COLD_START_DAYS,
+    FUTURES_COLD_START_DAYS,
     FUTURES_INSTRUMENT_TYPE,
     FUTURES_SYMBOL_TEMPLATE,
     FUTURES_UNDERLYING_SCRIP,
@@ -102,11 +103,14 @@ def intervals_due(run_time):
     return due or [min(INTERVAL_TABLES)]
 
 
-def fetch_window(last_ts, interval, now):
+def fetch_window(last_ts, interval, now, cold_start_days):
     """
     The window to ask Dhan for.
 
-    Two things decide the start, and both matter:
+    With nothing stored the window is a cold start, `cold_start_days` deep -
+    COLD_START_DAYS for the index, the much shallower FUTURES_COLD_START_DAYS
+    for the future (see config.py for why). Otherwise two things decide the
+    start, and both matter:
 
     * fromDate is EXCLUSIVE, so resuming from the newest stored candle_ts
       returns only genuinely new bars - no duplicate, no gap. But the newest
@@ -121,14 +125,14 @@ def fetch_window(last_ts, interval, now):
     """
     to_dt = now + datetime.timedelta(minutes=1)  # toDate is non-inclusive
     if last_ts is None:
-        from_dt = to_dt - datetime.timedelta(days=COLD_START_DAYS)
+        from_dt = to_dt - datetime.timedelta(days=cold_start_days)
     else:
         from_dt = ist_datetime(last_ts) - datetime.timedelta(minutes=interval)
     floor = to_dt - datetime.timedelta(days=MAX_WINDOW_DAYS)
     return max(from_dt, floor), to_dt
 
 
-def assert_alignment(candles, interval):
+def assert_alignment(candles, interval, label, from_dt, to_dt):
     """
     Every bar must start on a session-aligned bucket boundary.
 
@@ -137,6 +141,11 @@ def assert_alignment(candles, interval):
     derived from that, so if Dhan ever changed it the schedule would quietly
     fetch at the wrong moments and leave bars partial. This turns that into a
     loud failure.
+
+    It is not the only thing that trips it. Thin history does too: a far-month
+    future's 90-day backfill held a 09:16 bar on 2026-09-30 while the live grid
+    was intact - see FUTURES_COLD_START_DAYS. The message names the instrument
+    and the window so the two causes can be told apart from the log alone.
     """
     step = interval * 60
     origin = _minutes(SESSION_START) * 60
@@ -145,10 +154,12 @@ def assert_alignment(candles, interval):
         offset = (stamp.hour * 3600 + stamp.minute * 60 + stamp.second) - origin
         if offset % step:
             raise RuntimeError(
-                f"{interval}-minute bar stamped {stamp:%Y-%m-%d %H:%M:%S} is not "
-                f"on a bucket boundary measured from {SESSION_START:%H:%M} - "
-                f"Dhan's interval alignment has changed and the schedule no "
-                f"longer matches the data"
+                f"{label} {interval}-minute bar stamped {stamp:%Y-%m-%d %H:%M:%S} "
+                f"is not on a bucket boundary measured from {SESSION_START:%H:%M} "
+                f"(window {from_dt:%Y-%m-%d %H:%M} -> {to_dt:%Y-%m-%d %H:%M}) - "
+                f"either Dhan's interval alignment has changed, or the window "
+                f"reaches thin, illiquid history such as a far-month future "
+                f"before it became current"
             )
 
 
@@ -182,21 +193,21 @@ def current_future_symbol(client, today):
     return symbol
 
 
-def refresh(conn, client, instrument, interval, now):
+def refresh(conn, client, instrument, interval, now, cold_start_days):
     """Fetch and store one instrument at one interval."""
     table = INTERVAL_TABLES[interval]
     last_ts = latest_candle_ts(conn, instrument, table)
-    from_dt, to_dt = fetch_window(last_ts, interval, now)
+    from_dt, to_dt = fetch_window(last_ts, interval, now, cold_start_days)
     mode = (
         f"resume from {from_dt:%Y-%m-%d %H:%M}"
         if last_ts
-        else f"cold start {COLD_START_DAYS}d"
+        else f"cold start {cold_start_days}d"
     )
 
     candles = session_candles(
         to_candles(client.intraday_candles(instrument, interval, from_dt, to_dt))
     )
-    assert_alignment(candles, interval)
+    assert_alignment(candles, interval, instrument["trading_symbol"], from_dt, to_dt)
     written = upsert_candles(conn, instrument, table, candles)
     logger.info(
         "%s %sm: %s -> %d candles, %d written",
@@ -238,7 +249,7 @@ def lambda_handler(event, context):
         nifty = resolve_instrument(conn, NIFTY_SECURITY_ID, NIFTY_INSTRUMENT_TYPE)
         for interval in intervals:
             written[f"{nifty['trading_symbol']}/{interval}m"] = refresh(
-                conn, client, nifty, interval, now
+                conn, client, nifty, interval, now, COLD_START_DAYS
             )
 
         # Only the expiry call needs the client id, and the index candles are
@@ -248,9 +259,11 @@ def lambda_handler(event, context):
         future = resolve_by_symbol(
             conn, current_future_symbol(client, today), FUTURES_INSTRUMENT_TYPE
         )
+        # A new contract after each monthly roll has no stored bars, so its
+        # first run here is a cold start - kept shallow; see config.py.
         for interval in intervals:
             written[f"{future['trading_symbol']}/{interval}m"] = refresh(
-                conn, client, future, interval, now
+                conn, client, future, interval, now, FUTURES_COLD_START_DAYS
             )
 
         elapsed = time.monotonic() - started
