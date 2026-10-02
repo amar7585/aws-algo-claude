@@ -13,14 +13,14 @@ refresh failure should raise its own alarm rather than fail a session.
 
 1. Skips a weekend. Only reachable by hand — the cron is `MON-FRI`.
 2. Asks `algo.trading_holiday` whether today is a closure.
-3. **On a holiday** — disables all three session schedules
+3. **On a holiday** — disables all four session schedules
    (`daily-market-sentiment-daily`, `intraday-data-loader-session`,
-   `intraday-data-loader-close`), sends a Telegram notice, and stops. No token
-   is minted.
+   `intraday-data-loader-close`, `intraday-data-loader-open`), sends a Telegram
+   notice, and stops. No token is minted.
 4. **Otherwise** — generates a TOTP code from the stored authenticator seed,
    calls `POST /app/generateAccessToken` with client id + PIN + that code,
    reads the expiry out of the returned JWT's `exp` claim, writes token and
-   expiry to `/algo/dhan/token`, and **then** enables those three schedules.
+   expiry to `/algo/dhan/token`, and **then** enables those four schedules.
 
 Any failure raises. There is no fallback, because there is nothing to fall back
 to — see below.
@@ -45,15 +45,28 @@ the system trading, which costs a few no-op invocations, instead of making it go
 quiet, which nothing here can detect. See
 [trading-calendar](../trading-calendar/README.md).
 
-### The three schedules, and the one that is never touched
+### The four schedules, and the one that is never touched
 
 `MANAGED_SCHEDULE_NAMES` must never list **this function's own schedule**. It is
 the heartbeat that makes the decision, so a run that switched it off could never
 switch it back on, and the system would stay dark until someone noticed by hand.
 
-It lists three, not two: `daily-market-sentiment-daily` plus **both** of the
-loader's rules, `intraday-data-loader-session` and `intraday-data-loader-close`.
-Missing the `-close` rule would leave the 15:00–15:35 runs armed on a holiday.
+It lists four: `daily-market-sentiment-daily` plus **all three** of the loader's
+rules, `intraday-data-loader-session`, `intraday-data-loader-close` and
+`intraday-data-loader-open`. Any one left out keeps firing on a holiday.
+
+**That is not hypothetical.** `-open` (09:45) was created by the 2026-09-18
+retime and never added here. On 2026-10-02 (Gandhi Jayanti) this function
+disabled the other three correctly and the 09:45 run fired anyway — failing on
+the expired token, three times with Lambda's async retries, writing nothing. It
+was added on 2026-10-02, last in the list, so that a permission gap on it would
+raise only after the other three had been switched.
+
+**Adding a schedule takes two edits, not one:** its name in
+`MANAGED_SCHEDULE_NAMES`, and its ARN in the `ToggleSessionSchedules` statement
+of the role's `holiday-gate-access` policy (see [IAM](#iam)). The policy names
+schedule ARNs individually, so a name added without its ARN fails the 08:00 run
+with `AccessDenied` — after the token is stored, but on a trading day.
 
 **The code default used to name no real schedule** — it read
 `daily-market-sentiment,intraday-data-loader`, which are function names, not
@@ -86,7 +99,8 @@ Next session: Tue 15 Sep 2026
 ```
 
 That is the notice as actually sent on 2026-09-14, the first holiday this gate
-saw — one line per managed schedule, so all three appear.
+saw — one line per managed schedule. Three then; since 2026-10-02 there are
+four, with `intraday-data-loader-open` last.
 
 Most rows have no name, and the notice says `unnamed holiday` rather than
 guessing — see [trading-calendar](../trading-calendar/README.md).
@@ -123,6 +137,10 @@ That makes a failed toggle **loud**. A calendar check inside the handlers would
 make it silent instead: the schedule would sit wrongly enabled, the handler
 would skip politely, and nothing would ever tell you the gate had stopped
 working. The second line of defence would hide the failure of the first.
+
+This is how the missing `-open` schedule surfaced on 2026-10-02: the expired
+token raised, `error-notifier` reported it, and the gap was found the same
+morning.
 
 ### `UpdateSchedule` replaces, it does not patch
 
@@ -233,7 +251,7 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `NEON_CONNECTION_STRING` | no | — (override; SSM is the source of truth) |
 | `DHAN_GENERATE_TOKEN_URL` | no | `https://auth.dhan.co/app/generateAccessToken` |
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
-| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close` — the deployed value sets the same three explicitly |
+| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close,intraday-data-loader-open` — the deployed value sets the same four explicitly; each also needs its ARN in the IAM policy |
 | `SCHEDULE_GROUP_NAME` | no | `default` |
 | `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
 
@@ -271,7 +289,8 @@ least loud.
 this function on the grounds that it only writes. Reading the holiday calendar
 means reading the Neon connection string, so both return.
 
-**Scope to the two schedule ARNs, and widen this function's own policy** — never
+**Scope to the managed schedule ARNs — all four, one per name in
+`MANAGED_SCHEDULE_NAMES` — and widen this function's own policy** — never
 attach a role built for another function. Both console-generated roles in this
 project are scoped to a single resource and fail *silently* when borrowed: a
 shared execution role produces a function that runs and writes but emits no logs

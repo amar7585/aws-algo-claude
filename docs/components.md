@@ -108,7 +108,7 @@ function has to authenticate itself and no token is refreshed by hand.
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
-| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close` — all three, by name, from `MANAGED_SCHEDULE_NAMES` |
+| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open` — all four, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy) |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
 Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
@@ -117,7 +117,7 @@ failure raises; there is no fallback path.
 **It also decides whether the trading day happens at all.** A holiday is a
 weekday, so the `MON-FRI` cron still fires on one: this is the only thing that
 runs before every session, which makes it the one symmetric decision point.
-On a holiday it disables all three session schedules, sends a Telegram notice and
+On a holiday it disables all four session schedules, sends a Telegram notice and
 mints nothing; otherwise it mints, stores, and enables them. The session
 functions are therefore never invoked on a holiday rather than invoked and
 skipping. The calendar is [`algo.trading_holiday`](../trading-calendar/README.md),

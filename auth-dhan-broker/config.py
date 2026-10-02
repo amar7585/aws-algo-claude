@@ -44,15 +44,24 @@ HOLIDAY_TABLE = "algo.trading_holiday"
 # "daily-market-sentiment,intraday-data-loader" until 2026-09-14 — function
 # names, which match no schedule and would have raised on GetSchedule. Never
 # exercised, because the environment variable is always set, but a default that
-# cannot work is not a default. THE LOADER HAS TWO RULES and both belong here:
-# leaving out `-close` would arm the 15:00–15:35 runs on a holiday.
+# cannot work is not a default. THE LOADER HAS THREE RULES and all belong here:
+# one left out keeps firing on a holiday. `-open` (09:45) was added by the
+# 2026-09-18 retime and missed here until 2026-10-02, when it fired on Gandhi
+# Jayanti against an expired token.
+#
+# ADDING A SCHEDULE TAKES TWO EDITS: this list (in practice the environment
+# variable) AND the ToggleSessionSchedules resource list in the role's
+# holiday-gate-access policy, which names schedule ARNs. A schedule listed here
+# but not there fails the run with AccessDenied. `-open` is LAST so that, should
+# that happen again, the error lands after the others are already switched.
 MANAGED_SCHEDULES = [
     name.strip()
     for name in os.environ.get(
         "MANAGED_SCHEDULE_NAMES",
         "daily-market-sentiment-daily,"
         "intraday-data-loader-session,"
-        "intraday-data-loader-close",
+        "intraday-data-loader-close,"
+        "intraday-data-loader-open",
     ).split(",")
     if name.strip()
 ]
