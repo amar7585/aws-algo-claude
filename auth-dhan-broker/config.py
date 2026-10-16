@@ -49,11 +49,15 @@ HOLIDAY_TABLE = "algo.trading_holiday"
 # 2026-09-18 retime and missed here until 2026-10-02, when it fired on Gandhi
 # Jayanti against an expired token.
 #
-# ADDING A SCHEDULE TAKES TWO EDITS: this list (in practice the environment
-# variable) AND the ToggleSessionSchedules resource list in the role's
-# holiday-gate-access policy, which names schedule ARNs. A schedule listed here
-# but not there fails the run with AccessDenied. `-open` is LAST so that, should
-# that happen again, the error lands after the others are already switched.
+# ADDING A SCHEDULE TAKES TWO EDITS - THREE IF IT HAS ITS OWN SCHEDULER ROLE:
+# this list (in practice the environment variable), the ToggleSessionSchedules
+# resource list in the role's holiday-gate-access policy (it names schedule
+# ARNs), and - for a schedule whose target role is new - that role's ARN in the
+# PassScheduleTargetRoles statement, because UpdateSchedule re-passes the
+# schedule's own role. A schedule listed here but missing either grant fails the
+# run with AccessDenied. New names go LAST so that, should that happen, the error
+# lands after the others are already switched. The intraday-fno-poller trio
+# (2026-10-16) needed all three edits: it has its own Scheduler role.
 MANAGED_SCHEDULES = [
     name.strip()
     for name in os.environ.get(
@@ -61,7 +65,10 @@ MANAGED_SCHEDULES = [
         "daily-market-sentiment-daily,"
         "intraday-data-loader-session,"
         "intraday-data-loader-close,"
-        "intraday-data-loader-open",
+        "intraday-data-loader-open,"
+        "intraday-fno-poller-session,"
+        "intraday-fno-poller-close,"
+        "intraday-fno-poller-open",
     ).split(",")
     if name.strip()
 ]

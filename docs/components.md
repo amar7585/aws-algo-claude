@@ -38,7 +38,11 @@ trio: `intraday-data-loader-open` at 09:45, `intraday-data-loader-session`
 every 15 minutes from 10:00 to 14:45, then `intraday-data-loader-close` at
 15:00/15:15/15:30/15:35. The split exists
 because one cron spanning 10–15 would keep firing past the close; spelling out
-the last hour is what lands the final run exactly on 15:35. The loader
+the last hour is what lands the final run exactly on 15:35. Since 2026-10-16
+there is a second, independent intraday trio, `intraday-fno-poller-open/
+-session/-close` — every five minutes, 09:36 to 15:31, one minute past each
+mark, 72 runs a day — which chains to nothing and is chained from nothing; see
+[intraday-fno-poller](../intraday-fno-poller/README.md). The loader
 invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
 previous step's output, so the completion of a write is the only honest trigger
@@ -108,7 +112,7 @@ function has to authenticate itself and no token is refreshed by hand.
 | Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
-| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open` — all four, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy) |
+| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open`, `intraday-fno-poller-session`, `intraday-fno-poller-close`, `intraday-fno-poller-open` — all seven, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy, and a schedule with its own target role needs that role in `iam:PassRole`) |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
 Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
@@ -117,7 +121,7 @@ failure raises; there is no fallback path.
 **It also decides whether the trading day happens at all.** A holiday is a
 weekday, so the `MON-FRI` cron still fires on one: this is the only thing that
 runs before every session, which makes it the one symmetric decision point.
-On a holiday it disables all four session schedules, sends a Telegram notice and
+On a holiday it disables all seven session schedules, sends a Telegram notice and
 mints nothing; otherwise it mints, stores, and enables them. The session
 functions are therefore never invoked on a holiday rather than invoked and
 skipping. The calendar is [`algo.trading_holiday`](../trading-calendar/README.md),
