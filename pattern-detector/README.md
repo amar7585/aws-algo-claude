@@ -4,19 +4,26 @@
 
 The **two-clock turn detector**, and the gate on `strategy-manager`. Invoked by
 `market-classifier` once the judgement row is written; it reads the future's
-recent 5-minute bars, applies an abnormal-volume-reversal (same-tick) +
-buildup/option-OI (+1-tick) rule, **logs** the result either way, and invokes
-`strategy-manager` **only when a turn is confirmed**.
+recent 5-minute bars and runs two branches on every snapshot:
+
+- **Reversal turn** — an abnormal-volume-reversal (same-tick) + buildup/option-OI
+  (+1-tick) rule. **Logs** the result either way, and invokes `strategy-manager`
+  **only when a turn is confirmed**.
+- **Continuation / breakout** — a fresh close through a named key level on
+  abnormal volume, and the retest-hold entry that follows. Alert-only: it never
+  invokes the manager.
+
+Both branches push to **Telegram** on an actionable, fresh event.
 
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules |
+| Runtime | Python 3.14, zip package, 6 modules |
 | Layers | `neon-db-driver` + `neon-access` (no classifier layer — it does not score) |
 | Schedule | **none** — invoked by `market-classifier`, once per snapshot (≤25×/day) |
-| Reads | `algo.candle_5min` (the future's bars); the fno + sentiment rows arrive in the payload |
-| Writes | **nothing** — its output is its log, until the rule is proven |
-| Secrets | `/algo/neon/connection` (to read candles) |
+| Reads | `algo.candle_5min` (the future's **and** the index's bars) and the prior snapshot's PCR from `algo.intraday_fno_data`; the fno + sentiment rows and the daily read arrive in the payload |
+| Writes | **no table** — its output is its log and Telegram, until the rule is proven |
+| Secrets | `/algo/neon/connection` (to read candles), `/algo/telegram/brief` (to alert) |
 
 ## Every threshold here is provisional
 
@@ -62,12 +69,57 @@ makes a re-run reach the same answer instead of merely repeating.
 FUTURES_INSTRUMENT_TYPE)` — never `security_id` alone (hard rule #4); the
 instrument type is the same constant the loader stored the future's bars under.
 
-## Log-only, for now
+## The continuation / breakout branch
 
-It writes no table. Its detections go to the log — its output — the way
-`strategy-range-liquidity-sweep`'s do. A table comes once the rule is proven on
-live sessions. It never writes the hand-curated `algo.session_observations`,
-whose `outcome`/`resolved_ts` are human and future-dependent.
+A second vocabulary beside the reversal turn. A reversal closes *against* the new
+extreme; a continuation closes *through* a named level, so the two never collide.
+**Provisional and under-measured — n=1** (the 2026-09-21 `orb_breakout_retest`).
+The structure is committed; every number is a starting point.
+
+- **The level is a gate.** The named levels are the 15-minute opening range
+  (`orb_high` / `orb_low`, on the fno row) and the previous day's extremes
+  (`pd_high` / `pd_low`, on the daily read — absent when the daily read is, and
+  then that pair is simply unavailable). No level broken, no candidate.
+- **Break** — a close through a level where the prior bar closed on the near
+  side, so it is a crossing that fires once, not any bar sitting beyond a level.
+  Read on the **index** bars (the levels are spot levels). The abnormal-volume tell
+  (`|z| ≥ CONT_VOLUME_Z_MIN`) is the **future's**, aligned by timestamp, because
+  the future carries the real traded volume.
+- **Retest entry** — after a break, price closes back on the far side of the
+  level (the dip), then a later bar closes back across it (the reclaim). The
+  reclaim bar is the entry. A continuation that never dips back has no retest
+  entry; that case is deliberately deferred.
+- **Confirmation is annotated, not gated.** Buildup, PCR direction against the
+  prior snapshot, and far-side option OI unwinding are attached to the alert as
+  `confirmed_by`. A break confirms **same-tick**, not +1: the +1-tick lag is a
+  reversal phenomenon.
+- **It does not invoke the manager.** Alerts only; the reversal turn remains the
+  sole manager gate.
+
+## Output: log, Telegram, no table
+
+It writes no table. Detections go to the log — its output — the way
+`strategy-range-liquidity-sweep`'s do — and the actionable ones are pushed to
+Telegram so a setup reaches the phone rather than waiting in CloudWatch.
+
+| Event | Telegram when |
+|---|---|
+| Confirmed reversal **turn** | the reversal candle closed within the last snapshot interval |
+| **Level break** | the break bar closed within the last snapshot interval |
+| **Retest entry** | the reclaim bar closed within the last snapshot interval |
+
+"Fresh" is what keeps this to one message per event: the detection is re-derived
+statelessly every 15 minutes, so gating the alert on the trigger bar's age is
+what announces it once instead of on every re-derivation. The manager dispatch
+for a confirmed reversal is **not** freshness-gated.
+
+Delivery is fail-loud: a refused Telegram call raises, so Lambda records the
+error and `error-notifier` reports it. It uses the same `/algo/telegram/brief`
+parameter as the daily brief and `error-notifier`.
+
+A table comes once the rule is proven on live sessions. It never writes the
+hand-curated `algo.session_observations`, whose `outcome`/`resolved_ts` are human
+and future-dependent.
 
 ## The chain
 
@@ -85,9 +137,11 @@ set, a turn is detected and logged and nothing is dispatched.
 ## IAM
 
 Its own execution role (`pattern-detector-role`), not a borrowed one:
-`ssm:GetParameter` on `/algo/neon/connection` (+ `kms:Decrypt` via SSM),
-`logs` on **its own** log group only, and `lambda:InvokeFunction` on
-`strategy-manager`'s ARN — not a wildcard. See CLAUDE.md on the silent
+`ssm:GetParameter` on `/algo/neon/connection` **and `/algo/telegram/brief`**
+(+ `kms:Decrypt` via SSM), `logs` on **its own** log group only, and
+`lambda:InvokeFunction` on `strategy-manager`'s ARN — not a wildcard. A role
+missing the Telegram parameter does not fail at import: it raises on the first
+alert, after the detection has already run. See CLAUDE.md on the silent
 borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 
 ## Configuration
@@ -103,3 +157,6 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 | `LEVEL_EPS_PCT` | `0.15` | proximity to a wall counted as "at the level" — annotated, not gated |
 | `FUT_BARS_LOOKBACK` | `40` | future 5-min bars read per run |
 | `FUTURES_INSTRUMENT_TYPE` | `FUTIDX` | the future's instrument_type in `candle_5min` |
+| `CONT_VOLUME_Z_MIN` | `2.0` | \|z\| on the future's break bar that counts as abnormal — **provisional, n=1** |
+| `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | `bot_token` + `chat_id`; shared with the daily brief and `error-notifier` |
+| `HTTP_TIMEOUT_SECONDS` | `8` | Telegram call timeout |

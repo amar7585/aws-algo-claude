@@ -5,7 +5,7 @@ pushes it to Telegram.
 
 | | |
 |---|---|
-| Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata`, flexible window off |
+| Schedule | `cron(35 9 ? * MON-FRI *)`, `Asia/Kolkata`, flexible window off |
 | Writes | `algo.candle_daily`, `algo.daily_market_sentiment` |
 | Reads | `algo.instrument_master` |
 | Dhan calls | 3 per run |

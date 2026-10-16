@@ -76,7 +76,7 @@ Read in clock order, a weekday looks like this:
 | 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
-| immediately after | `pattern-detector` | **invoke** | nothing (log only) |
+| immediately after | `pattern-detector` | **invoke** | no table (log + Telegram alerts) |
 | immediately after, on a confirmed turn | `strategy-manager` | **invoke** | nothing |
 | then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
@@ -216,7 +216,7 @@ console Test screen.
 
 ```mermaid
 flowchart TD
-    START(["EventBridge Scheduler<br/>cron(50 9 ? * MON-FRI *) IST"]) --> WKND{"Saturday<br/>or Sunday?"}
+    START(["EventBridge Scheduler<br/>cron(35 9 ? * MON-FRI *) IST"]) --> WKND{"Saturday<br/>or Sunday?"}
     WKND -->|yes| SKIP(["skip"])
     WKND -->|no| TOK["read /algo/dhan/token<br/>raise if expired"]
 

@@ -146,7 +146,7 @@ Three Dhan calls, ~12 s.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 7 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
-| Schedule | `cron(50 9 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Schedule | `cron(35 9 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
 
 It reads the Dhan token from `/algo/dhan/token` rather than holding broker
