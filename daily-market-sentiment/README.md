@@ -53,19 +53,29 @@ development, not a hypothetical.
 Verified against live data on **2026-09-10/11**. Each is load-bearing; getting
 one wrong fails quietly, not loudly. Full detail in `dhan.py`'s docstring.
 
-### `fromDate` is exclusive
+### `fromDate` keeps only what is stamped after it
 
 ```
 fromDate 09:15:00  ->  74 candles, first stamped 09:20
 fromDate 08:00:00  ->  75 candles, first stamped 09:15
 ```
 
-Passing the session open as `fromDate` **silently drops the 09:15 candle** —
-which *is* the opening range. All intraday fetches start at `00:00:00`, and the
-handler asserts the first 15-min candle is stamped 09:15 and raises otherwise.
+Those counts are what a past session returns. On the **current** day the bar
+at `fromDate` is not dropped but shortened: Dhan applies the rule to 1-minute
+data before bucketing, so the bucket at `fromDate` comes back missing its first
+minute (measured
+2026-10-19 — see
+[intraday-data-loader](../intraday-data-loader/README.md#the-window-start-bug),
+where a boundary `fromDate` corrupted a third of the stored bars). Either way,
+passing the session open as `fromDate` loses the opening print — the opening
+range. All intraday fetches therefore start at `00:00:00`, where nothing is
+stamped. The handler also asserts the first 15-min candle is stamped 09:15 and
+raises otherwise; that catches the dropped bar, **not** the shortened one, so
+the 00:00 start is what actually protects the opening range.
 
-The same property makes incremental resume clean: passing the last stored
-`candle_ts` back returns only genuinely new candles — no duplicate, no gap.
+On the daily endpoint the same rule makes incremental resume clean: passing the
+last stored `candle_ts` back returns only genuinely new candles — no duplicate,
+no gap.
 
 ### The daily endpoint lags a session
 

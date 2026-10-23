@@ -13,11 +13,26 @@ fails quietly, not loudly.
 
 * `timestamp` is true UTC epoch seconds, stamped at the START of the candle.
 
-* `fromDate` is EXCLUSIVE, `toDate` non-inclusive. Exclusivity is what makes
-  incremental resume clean - but it is also why this function steps BACK one
-  whole interval before resuming. The newest stored bar may be partial, and a
-  resume from its own timestamp would never re-fetch it, leaving it partial
-  forever. See fetch_window() in handler.py.
+* Dhan keeps only data stamped STRICTLY AFTER `fromDate`, and what that does
+  to the bar AT fromDate depends on the day. Measured 2026-10-19 by REST:
+
+      current day   the rule is applied to 1-minute data, then bucketed: the
+                    fromDate bucket IS returned, missing its first minute.
+                    From 09:55 the future's 09:55 bar came back 42,575
+                    against 53,365 - short by exactly the 09:55 minute's
+                    10,790 - with the 09:56 minute's open, the high/low of
+                    09:56-09:59, and the correct close. `toDate` is IGNORED:
+                    a 09:55-10:15 request returned every bar to the close.
+
+      past day      the fromDate bar is OMITTED (10-16 from 09:55: first bar
+                    10:00), and `toDate` is non-inclusive.
+
+  Either way a fromDate on a bucket boundary is unsafe, and from 1 minute
+  earlier (09:54:00) the bucket comes back whole. The earlier note here,
+  "fromDate is EXCLUSIVE", was measured on a past day and is true only there;
+  resuming one interval behind the newest bar on that belief overwrote a
+  correct bar with a short one on every run. That is why fetch_window() in
+  handler.py now starts at midnight, where nothing is stamped.
 
 * Intraday is capped at 90 days per call (HTTP 400 DH-905 past it).
 
@@ -126,9 +141,10 @@ class DhanClient:
         """
         Candles for one instrument at one interval over an explicit window.
 
-        The window is passed in rather than derived from a date because this
-        function resumes mid-session: see fetch_window() in handler.py for how
-        the start is chosen, and why it steps back one interval.
+        The window is passed in rather than derived from a date because it
+        can span days - the 09:45 run starts at the previous session's
+        midnight, a cold start up to 90 days back. See fetch_window() in
+        handler.py for how the start is chosen, and why it is a midnight.
         """
         return self._post(
             CHARTS_BASE + "intraday",

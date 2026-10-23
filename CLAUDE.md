@@ -223,6 +223,17 @@ while production dropped every row.
   5.5 hours too late, so a dead token reads as live and nothing alarms. Take
   expiry from the JWT `exp` claim, which is unambiguous epoch seconds. Measured
   2026-09-10; token lifetime is exactly 86,400 s.
+- **Dhan intraday keeps only data stamped strictly after `fromDate`, and what
+  that does depends on the day.** On a *past* day the bar at `fromDate` is
+  omitted and `toDate` is non-inclusive — which is why "fromDate is exclusive"
+  was believed. On the *current* day the rule is applied to 1-minute data before
+  bucketing, so the bucket at `fromDate` comes back **missing its first minute**
+  (short volume, wrong open/high/low, correct close), and `toDate` is ignored.
+  A loader window that started one interval behind the newest bar stored that
+  short bar over a correct one on every run, from 2026-09-15 until it was found
+  on 2026-10-19 — silently, because nothing raises. Start intraday windows at
+  00:00, where nothing is stamped; a `fromDate` one minute before the bucket
+  (09:54:00 for 09:55) also returns it whole. Measured by REST 2026-10-19.
 - **Neon autosuspends.** A monthly cron always hits a cold compute, and the
   wake-up lands inside `connect()` before any SQL runs. Expect noisy first-run
   timings; it is not a code regression.

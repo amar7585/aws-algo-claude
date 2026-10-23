@@ -11,10 +11,11 @@ intraday-market-sentiment, which chains to market-classifier, pattern-detector
 and then strategy-manager: one schedule drives the whole chain rather than each
 function guessing how long the step before it takes. See dispatch.py.
 
-EVERY-15 DOES NOT THIN THE SERIES. The fetch window is a RANGE from the newest
-stored bar, not a single bar, so a run at 10:15 collects the 10:00, 10:05 and
-10:10 buckets in one call. Which intervals a given run fetches is decided by
-the clock:
+EVERY-15 DOES NOT THIN THE SERIES. The fetch window runs from midnight of the
+newest stored day, not a single bar, so a run at 10:15 re-collects every bucket
+of the session so far - 10:00, 10:05 and 10:10 included - in one call. See
+fetch_window() for why it starts at midnight. Which intervals a given run
+fetches is decided by the clock:
 
     fetch interval I when (run time - 09:15) is a whole multiple of I minutes
 
@@ -103,31 +104,49 @@ def intervals_due(run_time):
     return due or [min(INTERVAL_TABLES)]
 
 
-def fetch_window(last_ts, interval, now, cold_start_days):
+def fetch_window(last_ts, now, cold_start_days):
     """
     The window to ask Dhan for.
 
     With nothing stored the window is a cold start, `cold_start_days` deep -
     COLD_START_DAYS for the index, the much shallower FUTURES_COLD_START_DAYS
-    for the future (see config.py for why). Otherwise two things decide the
-    start, and both matter:
+    for the future (see config.py for why). Otherwise the window starts at IST
+    MIDNIGHT OF THE DAY OF THE NEWEST STORED BAR, for three reasons:
 
-    * fromDate is EXCLUSIVE, so resuming from the newest stored candle_ts
-      returns only genuinely new bars - no duplicate, no gap. But the newest
-      stored bar MAY BE PARTIAL, and resuming from its own timestamp would
-      never re-fetch it, leaving it partial forever. So the start steps back
-      one whole interval, which re-fetches exactly that bar and no more.
+    * A fromDate on a bucket boundary corrupts that bucket. Dhan keeps only
+      data stamped STRICTLY AFTER fromDate, and on the current day it applies
+      that to the 1-minute bars before bucketing - so the bucket AT fromDate
+      comes back missing its first minute: volume short, open/high/low wrong,
+      close untouched. Measured 2026-10-19: from 09:55 the future's 09:55 bar
+      came back 42,575 against 53,365, short by exactly the 09:55 minute's
+      10,790. The old window started one interval behind the newest bar and
+      overwrote a correct bar with that every run - one 5-minute bar in three,
+      every 15-minute bar but 09:15 and 15:15, every hourly bar but 15:15 - in
+      every session from 2026-09-15 until this changed. Nothing is stamped
+      00:00, so a midnight start loses nothing. See dhan.py for the
+      measurements.
 
-    * Dhan caps an intraday window at 90 days per call and answers HTTP 400
-      DH-905 past it, so the start is clamped. That also bounds the cold
-      start, which is why COLD_START_DAYS cannot usefully exceed 90 without
-      chunking the fetch - deliberately not built.
+    * The newest stored bar MAY BE PARTIAL. Every run re-fetches the whole
+      day, so it is finalised by the next run like any other bar.
+
+    * Starting on the newest stored DAY rather than today is what heals a gap.
+      The 09:45 run starts at the previous session's midnight, so that session
+      is re-written once from a past-day fetch, and an outage of several days
+      is re-filled in one call.
+
+    A cold start begins mid-day on a past day. That is clean: on a past day
+    Dhan omits the bar at fromDate rather than shortening it.
+
+    Dhan caps an intraday window at 90 days per call and answers HTTP 400
+    DH-905 past it, so the start is clamped. That also bounds the cold start,
+    which is why COLD_START_DAYS cannot usefully exceed 90 without chunking the
+    fetch - deliberately not built.
     """
-    to_dt = now + datetime.timedelta(minutes=1)  # toDate is non-inclusive
+    to_dt = now + datetime.timedelta(minutes=1)  # past days: toDate non-inclusive
     if last_ts is None:
         from_dt = to_dt - datetime.timedelta(days=cold_start_days)
     else:
-        from_dt = ist_datetime(last_ts) - datetime.timedelta(minutes=interval)
+        from_dt = ist_datetime(last_ts).replace(hour=0, minute=0, second=0, microsecond=0)
     floor = to_dt - datetime.timedelta(days=MAX_WINDOW_DAYS)
     return max(from_dt, floor), to_dt
 
@@ -197,7 +216,7 @@ def refresh(conn, client, instrument, interval, now, cold_start_days):
     """Fetch and store one instrument at one interval."""
     table = INTERVAL_TABLES[interval]
     last_ts = latest_candle_ts(conn, instrument, table)
-    from_dt, to_dt = fetch_window(last_ts, interval, now, cold_start_days)
+    from_dt, to_dt = fetch_window(last_ts, now, cold_start_days)
     mode = (
         f"resume from {from_dt:%Y-%m-%d %H:%M}"
         if last_ts

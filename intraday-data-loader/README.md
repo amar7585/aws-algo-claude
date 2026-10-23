@@ -98,13 +98,26 @@ enough to call a breakout failed that has not happened yet.
 
 ## Resuming
 
-Each `(instrument, interval)` resumes from `MAX(candle_ts)` in its own table.
+Each `(instrument, interval)` resumes from **IST midnight of the day of its
+newest stored bar** — `MAX(candle_ts)` in its own table, cut back to its day. So
+every run re-fetches and re-writes the session so far, and the 09:45 run
+re-writes the previous session once as well. Two reasons:
 
-`fromDate` is **exclusive**, which normally makes resume clean — pass the last
-stored timestamp back and only genuinely new bars return, no duplicate and no
-gap. But the last stored bar may be partial, and resuming from its own timestamp
-would never re-fetch it, leaving it partial forever. So the window starts **one
-whole interval earlier**, which re-fetches exactly that bar and nothing more.
+- **A `fromDate` on a bucket boundary corrupts the bar it lands on.** Dhan keeps
+  only data stamped strictly after `fromDate`. On the current day it applies that
+  to 1-minute data before bucketing, so the bucket at `fromDate` comes back
+  missing its first minute — short volume, wrong open/high/low, correct close. On
+  a past day it omits that bar instead. Nothing is stamped 00:00, so a midnight
+  start loses nothing. Measured 2026-10-19; the numbers are in `dhan.py`, and the
+  damage the old window did is [below](#the-window-start-bug).
+- **The newest bar may be partial.** Re-fetching the whole day finalises it on
+  the next run, like any other bar. Starting on the newest stored *day* rather
+  than today also heals an outage: the window reaches back to the last day that
+  was stored.
+
+The cost is rows, not invocations: a run upserts the day so far — up to 75 + 25
++ 7 bars per instrument at the 15:35 sweep, where the old window wrote four or
+five per interval.
 
 Cold start for the index is 90 days, which is also Dhan's per-call ceiling —
 one call, no chunking. A stale resume is clamped to the same 90 days. Going
@@ -121,6 +134,56 @@ the 90-day window held a 5-minute bar stamped `2026-08-12 09:16`,
 after the future commits, nothing downstream ran from 09:45 to 12:00. The 3-day
 window fetched 187 5-minute bars, none off the grid. The only reader of the
 stored future bars is `pattern-detector`, which needs 40.
+
+A cold start begins mid-day on a past day, and that is clean: on a past day Dhan
+omits the bar at `fromDate` rather than shortening it.
+
+### The window-start bug
+
+Until the midnight window, each run started **one interval behind the newest
+stored bar**, on the belief that `fromDate` is exclusive — measured on a past
+day, where it is. On the current day that start landed on a bucket boundary,
+Dhan returned that bucket short, and the unconditional upsert overwrote a
+correct bar with it on every run. Found 2026-10-19 through `intraday-fno-poller`,
+and measured against it, against `intraday_fno_data.last_bar_volume`, and by
+REST: the shortfall equals the bucket's first minute to the unit.
+
+| Table | Damaged per session | Which bars |
+|---|---|---|
+| `candle_5min` | 24 of 75 | `:10/:25/:40/:55` from 09:40 to 14:55, plus 15:10 and 15:20 |
+| `candle_15min` | 23 of 25 | all but 09:15 and 15:15 |
+| `candle_1hr` | 6 of 7 | all but 15:15 — the 09:15 hour lost the opening minute |
+
+Volume, open, high and low are wrong on those bars; close never is. Measured
+2026-10-19 and 2026-10-21 against the poller: 5-minute volume short by 6–69 %,
+15-minute by 0.5–34 %, hourly by 0.1–4 %; the 09:15 hour's open up to ~110
+points off across the whole range.
+
+The damage ran from **2026-09-15** — every session — to 2026-10-22, plus
+15:00/15:15 on 2026-09-11 from evening test runs. The 90-day cold-start history
+up to 2026-09-10 is clean. The fix was deployed 2026-10-22 11:48 IST, and that
+day's 12:00 run re-wrote the session from midnight.
+
+**Refilled 2026-10-22** (NIFTY from 2026-09-11, `NIFTY-OCT2026-FUT` from 09-30, to
+10-21): 1,984 rows overwritten in place with Dhan's whole-day data, each through
+a guarded update that changed a row only if it held exactly the "first minute
+dropped" values. Nothing was deleted. Afterwards the stored 5-minute volumes
+matched `intraday_fno_data.last_bar_volume` on 494 of 496 bars (09-18 → 10-22)
+and `intraday-fno-poller` on 178 of 178 per instrument. NIFTY 2026-09-29 was then
+re-synced whole from Dhan's corrected data: its morning had been stored with a
+live Dhan glitch (09:15–09:25 volumes in the thousands) that Dhan later fixed.
+After that, `last_bar_volume` matched on 499 of 499, and every 15-minute and
+hourly bar equals its 5-minute bars (NIFTY 664/664 and 185/185, the future
+416/416), with these exceptions, none of them damage:
+
+- **`NIFTY-SEP2026-FUT` (`68407`), 09-15 → 09-29**: Dhan returns no bars for the
+  expired contract (measured 2026-10-19), so it cannot be refilled from this
+  endpoint. It is still damaged.
+- **The future's 15:15 hourly bar** includes Dhan's trades after 15:30, so it never
+  equals the sum of its in-session 5-minute bars. That is Dhan's definition; the
+  stored value matches Dhan.
+- **The future, 2026-10-12 09:15 hour**: its 5-minute bars sum to 455 (7 lots)
+  more than Dhan's hourly bar. That points to a later trade revision on Dhan's side.
 
 ## Resolving the current-month future
 

@@ -158,9 +158,10 @@ credentials of its own. It does **not** invoke `auth-dhan-broker` on demand —
 that path cannot fire in practice, since the 08:00 refresh precedes the 09:35
 run by nearly two hours and a token lives 24 hours.
 
-Its README carries the measured facts that make it work: `fromDate` is
-exclusive, the daily endpoint lags a session, `security_id` alone is not unique,
-and the sentiment score is **not** predictive of forward return.
+Its README carries the measured facts that make it work: `fromDate` keeps only
+what is stamped after it (so intraday fetches start at 00:00), the daily
+endpoint lags a session, `security_id` alone is not unique, and the sentiment
+score is **not** predictive of forward return.
 
 ### intraday-data-loader
 
@@ -193,6 +194,14 @@ off the 09:15 grid and stopped the whole chain on 2026-09-30.
 and the primary-key upsert corrects it on a later pass. A consumer tells the two
 apart with `candle_ts + interval_seconds <= now`; only the newest bar per table
 is ever partial. Its README carries the reasoning and the measured facts.
+
+**Every run fetches from 00:00 IST of the newest stored day** and re-writes the
+day so far. The earlier window, one interval behind the newest bar, landed on a
+bucket boundary, where Dhan returns the current day's bucket missing its first
+minute — and so stored short volume and wrong open/high/low on one 5-minute bar
+in three, almost every 15-minute bar and six hourly bars of seven, in every
+session from 2026-09-15 until the fix. Those stored bars are not repaired; see
+[its README](../intraday-data-loader/README.md#the-window-start-bug).
 
 ### error-notifier
 

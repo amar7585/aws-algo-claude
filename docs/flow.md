@@ -249,9 +249,11 @@ Three things in that diagram are load-bearing and each was learned the hard way:
 more than one `instrument_type`, and `13` is both NIFTY and ABB. The lookup
 raises unless exactly one row matches.
 
-**`fromDate 00:00`, not `09:15`.** `fromDate` is exclusive, so starting at the
-session open silently drops the 09:15 candle — which *is* the opening range.
-The explicit stamp check turns that into a loud failure.
+**`fromDate 00:00`, not `09:15`.** Dhan keeps only data stamped strictly after
+`fromDate`. Starting at the session open drops the 09:15 candle on a past day,
+and on the current day shortens it by its first minute — either way the opening
+range is wrong. The explicit stamp check catches the dropped bar but not the
+shortened one; the 00:00 start is what prevents both.
 
 **The read describes yesterday.** Dhan's daily endpoint lags a session, so at
 09:35 the newest stored daily candle is the previous session's. Today's open
@@ -280,7 +282,7 @@ flowchart TD
     DUE --> TOK["read /algo/dhan/token<br/>raise if expired"]
     TOK --> NIFTY["resolve NIFTY<br/><b>on (security_id, instrument_type)</b>"]
 
-    NIFTY --> WIN["window = MAX(candle_ts) − one interval<br/><b>re-fetches the partial bar</b><br/>else cold start:<br/>index 90 days, future 3 days"]
+    NIFTY --> WIN["window = 00:00 IST of MAX(candle_ts)'s day<br/><b>re-writes the whole day so far</b><br/>else cold start:<br/>index 90 days, future 3 days"]
     WIN --> FETCH["fetch interval candles"]
     FETCH --> FILTER["drop out-of-session bars<br/>09:15 ≤ t &lt; 15:30"]
     FILTER --> ALIGN{"every bar on a<br/>bucket boundary<br/>from 09:15?"}
@@ -309,9 +311,15 @@ is a whole multiple of *I* minutes, and the hourly trigger times fall out of
 that rather than being written down separately. `assert_alignment()` raises if
 the data ever stops matching.
 
-**The window steps back one interval.** `fromDate` is exclusive, so resuming
-from the newest stored `candle_ts` would never re-fetch that bar — and that bar
-may be partial. Stepping back one whole interval re-fetches exactly it.
+**The window starts at midnight of the newest stored day.** Dhan keeps only
+data stamped strictly after `fromDate`, and on the current day a `fromDate` on a
+bucket boundary returns that bucket missing its first minute — which the old
+window, one interval behind the newest bar, wrote over a correct bar on every
+run (measured 2026-10-19; see
+[intraday-data-loader](../intraday-data-loader/README.md#the-window-start-bug)).
+Nothing is stamped 00:00, so every run re-writes the day so far whole, the
+partial newest bar included, and the 09:45 run re-writes the previous session
+once.
 
 **The 15:35 sweep is not optional.** At 15:30 the 15:25 five-minute, 15:15
 fifteen-minute and 15:15 hourly bars have only just closed. Without a later run
