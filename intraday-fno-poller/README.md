@@ -7,9 +7,11 @@ and **stores** it: the futures price, open interest and volume (including the la
 closed bar's own OI change), the option-chain aggregates for the nearest and
 monthly expiries, and the raw ATM ±2 legs.
 
-**Status: built and locally verified; schema APPLIED 2026-10-16 (both tables live, columns
-verified against the code). Not yet deployed — no AWS resource exists.** See
-[Deployment](#deployment-shape).
+**Status: deployed 2026-10-16, live since 2026-10-19.** Every trading session since has
+been stored, the OCT→NOV futures roll on 2026-10-28 included. **Known issue, found
+2026-10-29, not yet fixed:** the 15:26 and 15:31 ticks both stamp `snapshot_ts` 15:25, so
+a session stores 71 rows, not 72. The 15:25 snapshot can also hold stale legs from the
+15:26 tick. See [Deployment](#deployment-shape).
 
 | | |
 |---|---|
@@ -206,10 +208,14 @@ a chain with no legs; rollback on a failed legs write; the weekend and outside-w
 guards; IV 0 → `NULL`; the expiry cache; and the cron arithmetic (72 runs, 300 s apart,
 none on a loader minute).
 
-> **Not yet verified against real Dhan data.** The payloads used are synthetic, built in
-> the measured shapes documented in `dhan.py` and `chain.py`. That proves the code's
-> arithmetic and guards, not that Dhan still sends those shapes. A real capture needs a
-> live token; do it at the smoke test before the schedules are enabled.
+> **Verified against real Dhan data since.** The 77 checks above use synthetic payloads.
+> A real-data replay on 2026-10-16 (`now` = 15:31) matched the 15-minute row and the
+> loader's candles exactly on spot, futures price and OI, contract, expiries, ATM, walls,
+> max pain and bar volume. Option OI came out ~4% lower, because Dhan's post-close chain
+> carries different OI from the live one, so a replay cannot check in-session option OI.
+> The first live session, 2026-10-19, did check it. At 09:45 and 10:00 the fast and slow
+> rows had identical ATM, walls and max pain. Monthly OI agreed within 0.35%, and nearest
+> (an expiry day) within 1.45%.
 
 ## Deployment shape
 
