@@ -20,7 +20,7 @@ deterministic to read.
 | [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 15 min 09:45–15:35. **The only intraday cron**: it invokes the sentiment function, which chains to the classifier, detector and manager |
 | [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
-| [intraday-fno-poller](intraday-fno-poller/README.md) | **built, not deployed** — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 72×/day. Phase 1: **nothing reads it yet** ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
+| [intraday-fno-poller](intraday-fno-poller/README.md) | **running** (live since 2026-10-19) — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 71×/day. Phase 1: **nothing reads it yet** ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — **measures** basis/OI, VIX, two option chains and SMA/RSI → `intraday_fno_data`. Invoked by the loader, 25×/day |
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/bias/buildup on `intraday_sentiments`, invokes the detector |
 | [pattern-detector](pattern-detector/README.md) | **deployed** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm); gates the manager, fires only on a confirmed turn |

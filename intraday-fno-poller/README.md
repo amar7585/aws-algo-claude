@@ -10,9 +10,11 @@ monthly expiries, and the raw ATM ±2 legs.
 **Status: deployed 2026-10-16, live since 2026-10-19.** Every trading session since has
 been stored, the OCT→NOV futures roll on 2026-10-28 included. **Found 2026-10-29:** the
 15:26 and 15:31 ticks both stamped `snapshot_ts` 15:25, so a session stored 71 rows, not
-72. The 15:25 snapshot could also hold stale legs from the 15:26 tick. **Fixed in code,
-not yet deployed:** the 15:26 run is dropped, and a run replaces its snapshot's legs whole.
-See [Schedule](#schedule) and [Deployment](#deployment-shape).
+72. The 15:25 snapshot could also hold stale legs from the 15:26 tick. **Fixed and
+deployed 2026-10-29 11:07 IST:** the 15:26 run is dropped, and a run replaces its
+snapshot's legs whole. The 12 stale legs already stored (10-19…10-26) were deleted, so
+every snapshot now holds exactly 10. See [Schedule](#schedule) and
+[Deployment](#deployment-shape).
 
 | | |
 |---|---|

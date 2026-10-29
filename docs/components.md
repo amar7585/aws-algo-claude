@@ -41,7 +41,8 @@ because one cron spanning 10–15 would keep firing past the close; spelling out
 the last hour is what lands the final run exactly on 15:35. Since 2026-10-16
 there is a second, independent intraday trio, `intraday-fno-poller-open/
 -session/-close` — every five minutes, 09:36 to 15:31, one minute past each
-mark, 72 runs a day — which chains to nothing and is chained from nothing; see
+mark except 15:26 (it would re-stamp the 15:25 bar), 71 runs a day — which
+chains to nothing and is chained from nothing; see
 [intraday-fno-poller](../intraday-fno-poller/README.md). The loader
 invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
