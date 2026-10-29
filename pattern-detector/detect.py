@@ -1,11 +1,12 @@
 """
 The two-clock turn detection. EVERY THRESHOLD IS PROVISIONAL (see config.py).
 
-SAME-TICK CLOCK: an ABNORMAL-VOLUME REVERSAL candle on the future - a bar whose
-volume is |z| >= VOLUME_Z_MIN against its recent baseline (two-sided: the
-anomaly can be a spike OR a collapse) and whose shape reverses - a marginal new
-low closing bullish is an up-turn, a marginal new high closing bearish a
-down-turn. This fired on 5/5 observed turns.
+SAME-TICK CLOCK: an ABNORMAL-VOLUME REVERSAL candle on the future - a CLOSED bar
+whose volume is a SPIKE, z >= VOLUME_Z_MIN against its recent baseline, and whose
+shape reverses - a marginal new low closing bullish is an up-turn, a marginal new
+high closing bearish a down-turn. Spikes only: the low side was dropped once
+measured (see config.VOLUME_Z_MIN). Replayed on the 5 hand-observed turns it
+flags 2 - both 2026-09-18 lows, both spikes; none of the 2026-09-17 turns.
 
 +1-TICK CLOCK: the turn is CONFIRMED one snapshot later by the futures buildup
 turning the right way OR the relevant option OI moving. "buildup OR option-OI"
@@ -19,13 +20,15 @@ max-OI-put / max-pain wall, but a turn away from a wall is logged with its
 distance rather than dropped, so the premise stays measurable.
 
 STATELESS: the candidate is re-derived from the stored future bars each run;
-no pending turn is remembered between invokes.
+no pending turn is remembered between invokes. Only CLOSED bars are passed in
+(db.read_bars), so a replay on stored bars reaches the decision live reached.
 """
 
 import logging
 import statistics
 
 from config import (
+    BAR_SECONDS,
     CANDIDATE_WINDOW_SECONDS,
     CONT_VOLUME_Z_MIN,
     LEVEL_EPS_PCT,
@@ -40,8 +43,18 @@ UP = "up"       # a low reversing up
 DOWN = "down"   # a high reversing down
 
 
+def bar_closed_within(bar_ts, closed_after, closed_by):
+    """
+    Did this bar CLOSE since the previous run - after closed_after (that run's
+    captured_at) and by closed_by (this run's)? This is what "fresh" means for
+    an alert: each bar becomes fresh exactly once, on the first run that can
+    read it closed, so a stateless re-derivation announces each event once.
+    """
+    return closed_after < bar_ts + BAR_SECONDS <= closed_by
+
+
 def _volume_z(target_volume, baseline_volumes):
-    """Two-sided z of one bar's volume against the preceding bars, or None."""
+    """Signed z of one bar's volume against the preceding bars, or None."""
     if len(baseline_volumes) < 2:
         return None
     sd = statistics.pstdev(baseline_volumes)
@@ -69,12 +82,13 @@ def _reversal_direction(bar, prior_bars):
 
 def find_candidate(fut_bars, snapshot_ts):
     """
-    The most anomalous reversal bar in the candidate window, or None.
+    The biggest-spike reversal bar in the candidate window, or None.
 
-    fut_bars is oldest-first, each {ts, open, high, low, close, volume}. The
-    window is the bars that closed within CANDIDATE_WINDOW_SECONDS before the
-    snapshot; each is scored on its own preceding baseline so a later bar's
-    z is not contaminated by the anomaly itself.
+    fut_bars is oldest-first, closed bars only, each {ts, open, high, low,
+    close, volume}. The window is the bars that started within
+    CANDIDATE_WINDOW_SECONDS before the snapshot; each is scored on its own
+    preceding baseline so a later bar's z is not contaminated by the anomaly
+    itself.
     """
     window_start = snapshot_ts - CANDIDATE_WINDOW_SECONDS
     best = None
@@ -83,12 +97,12 @@ def find_candidate(fut_bars, snapshot_ts):
             continue
         baseline = [b["volume"] for b in fut_bars[max(0, i - VOLUME_LOOKBACK):i]]
         z = _volume_z(bar["volume"], baseline)
-        if z is None or abs(z) < VOLUME_Z_MIN:
+        if z is None or z < VOLUME_Z_MIN:
             continue
         direction = _reversal_direction(bar, fut_bars[max(0, i - 3):i])
         if direction is None:
             continue
-        if best is None or abs(z) > abs(best["volume_z"]):
+        if best is None or z > best["volume_z"]:
             best = {
                 "candidate_ts": bar["ts"],
                 "direction": direction,
@@ -169,8 +183,10 @@ def detect(fno, sentiment, fut_bars):
 #
 # It emits ALERTS, not a manager dispatch: a fresh KEY-LEVEL BREAK (fires on the
 # break bar, retest or not) and a RETEST-HOLD ENTRY (fires on the resumption
-# bar). "Fresh" = the trigger bar closed within the last snapshot interval, so a
-# stateless re-derivation announces each event once rather than every 15 min.
+# bar). "Fresh" = the trigger bar closed since the previous run
+# (bar_closed_within), so a stateless re-derivation announces each event once
+# rather than every 15 min. Breaks and entries are read on closed bars only, so
+# an entry is never priced on a close that is seconds old.
 #
 # The level is a GATE (a continuation is defined by a level). The OI/PCR/buildup
 # is ANNOTATED on the alert as `confirmed_by`, not required - during observation
@@ -298,7 +314,7 @@ def _continuation_confirmations(direction, fno, sentiment, prev_pcr):
 
 def _future_volume_z(fut_bars, ts):
     """
-    Two-sided volume z of the FUTURE bar at ts, against its VOLUME_LOOKBACK
+    Signed volume z of the FUTURE bar at ts, against its VOLUME_LOOKBACK
     predecessors. The break is timed on the index, but the abnormal-volume tell
     is the future's - it carries the real traded volume - so the two series are
     aligned by timestamp. None when the future has no bar at that instant.
@@ -311,27 +327,27 @@ def _future_volume_z(fut_bars, ts):
 
 
 def detect_continuation(fno, sentiment, index_bars, fut_bars, daily,
-                        prev_snapshot_ts, prev_pcr):
+                        closed_after, closed_by, prev_pcr):
     """
     The list of FRESH continuation alerts on this snapshot - a `level_break` when
-    a key level is broken on abnormal volume, and a `retest_entry` when a break's
+    a key level is broken on a volume spike, and a `retest_entry` when a break's
     retest holds and resumes. Empty on most snapshots, by design: only events
-    whose trigger bar closed within the last snapshot interval are returned, so a
-    stateless re-run does not re-announce a break it already announced.
+    whose trigger bar closed since the previous run (closed_after, closed_by]
+    are returned, so a stateless re-run does not re-announce a break it already
+    announced.
 
     The BREAK and the RETEST are read on the INDEX bars, because the levels are
     spot levels; the abnormal-volume tell is the FUTURE's, aligned by timestamp,
     because the future carries the real traded volume and a basis that would
-    misplace a spot level if the break were measured on it directly.
+    misplace a spot level if the break were measured on it directly. Both series
+    hold closed bars only (db.read_bars).
     """
-    snapshot_ts = int(fno["snapshot_ts"])
-    fresh_after = int(prev_snapshot_ts) if prev_snapshot_ts else snapshot_ts - 900
     highs, lows = _key_levels(fno, daily)
     if not highs and not lows:
         return []
 
     def fresh(ts):
-        return fresh_after < ts <= snapshot_ts
+        return bar_closed_within(ts, closed_after, closed_by)
 
     alerts = []
     for i, bar in enumerate(index_bars):
@@ -340,7 +356,7 @@ def detect_continuation(fno, sentiment, index_bars, fut_bars, daily,
             continue
         direction, level_name, level = broken
         z = _future_volume_z(fut_bars, bar["ts"])
-        if z is None or abs(z) < CONT_VOLUME_Z_MIN:
+        if z is None or z < CONT_VOLUME_Z_MIN:
             continue
         confirmed_by = _continuation_confirmations(direction, fno, sentiment, prev_pcr)
         if fresh(bar["ts"]):

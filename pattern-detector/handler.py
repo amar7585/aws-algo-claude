@@ -3,7 +3,7 @@ Pattern Detector - AWS Lambda function
 
 The two-clock turn detector, and the gate on strategy-manager. Invoked by
 market-classifier once the judgement row is written; it reads the future's
-recent 5-min bars from candle_5min, applies the abnormal-volume-reversal
+recent CLOSED 5-min bars from candle_5min, applies the abnormal-volume-reversal
 (same-tick) + buildup/option-OI (+1-tick) rule, LOGS the result either way, and
 invokes strategy-manager ONLY when a turn is confirmed.
 
@@ -25,7 +25,7 @@ Algo, schema algo.
 
 Modules:
     config.py    provisional thresholds and the manager gate
-    db.py        the future's recent 5-min bars from candle_5min
+    db.py        the recent CLOSED 5-min bars from candle_5min
     detect.py    the two-clock turn rule
     dispatch.py  the strategy-manager gate
 """
@@ -35,8 +35,8 @@ import time
 
 from neon_access import connect, ist_datetime, read_neon_connection_string
 
-from db import read_bars, read_future_bars, read_prev_pcr
-from detect import detect, detect_continuation
+from db import read_bars, read_future_bars, read_prev_snapshot
+from detect import bar_closed_within, detect, detect_continuation
 from dispatch import dispatch_to_manager
 from notify import send_telegram
 
@@ -46,7 +46,10 @@ logger.setLevel(logging.INFO)
 # The keys the detector itself reads off each row. Everything else is carried
 # through. A payload without these means market-classifier sent an old shape;
 # raising here names the real problem rather than failing deep in the scan.
-REQUIRED_FNO = ("security_id", "instrument_type", "snapshot_ts", "fut_security_id", "spot")
+# captured_at is the snapshot's run clock: it decides which bars have closed.
+REQUIRED_FNO = (
+    "security_id", "instrument_type", "snapshot_ts", "captured_at", "fut_security_id", "spot",
+)
 REQUIRED_SENTIMENT = ("regime", "bias")
 
 
@@ -114,18 +117,23 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     fno, sentiment, instrument, daily = read_event(event or {})
     snapshot_ts = int(fno["snapshot_ts"])
     stamp = ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M")
+    # Bars count only once CLOSED by this snapshot's stored run clock, so the bar
+    # at snapshot_ts - still forming on every run but the last of the day - is
+    # never scored, and a re-run on stored bars reaches the same answer.
+    closed_by = int(fno["captured_at"])
 
     conn = connect(read_neon_connection_string())
     try:
-        fut_bars = read_future_bars(conn, fno["fut_security_id"], snapshot_ts)
+        fut_bars = read_future_bars(conn, fno["fut_security_id"], snapshot_ts, closed_by)
         # The index's own bars, for the continuation break/retest - the levels are
         # spot levels, so the crossing is read here, not on the future.
         index_bars = read_bars(
-            conn, fno["security_id"], fno["instrument_type"], snapshot_ts
+            conn, fno["security_id"], fno["instrument_type"], snapshot_ts, closed_by
         )
         # The prior snapshot's PCR, so a continuation alert can show direction
-        # (rising / falling) rather than only the current level.
-        prev_pcr = read_prev_pcr(
+        # (rising / falling), and its run clock, so freshness can be "closed
+        # since the previous run".
+        prev = read_prev_snapshot(
             conn, fno["security_id"], fno["instrument_type"],
             fno.get("prev_snapshot_ts"),
         )
@@ -135,16 +143,21 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         except Exception:
             pass
 
+    prev_pcr = prev["near_pcr_oi"] if prev else None
+    # "Fresh" = the trigger bar CLOSED since the previous run. The detection is
+    # re-derived every run, so gating the ALERT on freshness is what announces
+    # each event once instead of on every 15-minute re-derivation. With no
+    # previous row, one interval back is the fallback, as before.
+    closed_after = (
+        prev["captured_at"] if prev and prev["captured_at"] else closed_by - 900
+    )
+
     detection = detect(fno, sentiment, fut_bars)
     alerts = detect_continuation(
         fno, sentiment, index_bars, fut_bars, daily,
-        fno.get("prev_snapshot_ts"), prev_pcr,
+        closed_after, closed_by, prev_pcr,
     )
 
-    # "Fresh" = the trigger bar closed within the last snapshot interval. The
-    # detection is re-derived every run, so gating the ALERT on freshness is what
-    # announces each event once instead of on every 15-minute re-derivation.
-    fresh_after = int(fno.get("prev_snapshot_ts") or (snapshot_ts - 900))
     messages = []
     dispatched = None
 
@@ -159,7 +172,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
             detection["level_distance_pct"], detection["at_level"],
         )
         dispatched = dispatch_to_manager(fno, sentiment, instrument, detection, daily)
-        if fresh_after < int(detection["candidate_ts"]) <= snapshot_ts:
+        if bar_closed_within(int(detection["candidate_ts"]), closed_after, closed_by):
             messages.append(_reversal_message(stamp, detection))
     else:
         logger.info(
