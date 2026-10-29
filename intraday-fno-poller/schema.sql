@@ -19,7 +19,7 @@
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- fno_5m_snapshot : one row per five-minute tick, ~72 a session.
+-- fno_5m_snapshot : one row per five-minute tick, 71 a session.
 --
 -- THE FAST COMPANION OF algo.intraday_fno_data. That table is the 15-minute
 -- snapshot and is untouched; this one is the five-minute reading of the F&O
@@ -158,11 +158,14 @@ CREATE TABLE IF NOT EXISTS algo.fno_5m_snapshot (
 -- ---------------------------------------------------------------------------
 -- fno_5m_leg : the raw legs, NEAREST EXPIRY ONLY.
 --
--- 5 strikes centred on ATM (ATM, +-1, +-2) x CE and PE = 10 rows a tick, 720 a
--- session. The same columns and key as algo.option_chain_snapshot, but a
--- SEPARATE TABLE: both writers would otherwise upsert the same snapshot_ts key
--- at every 15-minute mark (last writer wins), and any reader assuming "10 legs
--- per snapshot" would suddenly see 30.
+-- 5 strikes centred on ATM (ATM, +-1, +-2) x CE and PE = 10 rows a tick, 710 a
+-- session. A run REPLACES its snapshot's legs whole (db.write_snapshot): an
+-- upsert alone would leave an earlier run's outer strikes behind when ATM moved.
+--
+-- The same columns and key as algo.option_chain_snapshot, but a SEPARATE
+-- TABLE: both writers would otherwise upsert the same snapshot_ts key at every
+-- 15-minute mark (last writer wins), and any reader assuming "10 legs per
+-- snapshot" would suddenly see 30.
 --
 -- This is the RAW leg as Dhan returned it - bid/ask included - so a tick can be
 -- replayed rather than merely summarised. What is NOT here is any derived

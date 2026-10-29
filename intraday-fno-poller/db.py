@@ -7,8 +7,9 @@ project carries an `algo` schema with the same table names and incompatible
 column types, so never resolve the connection string from anywhere but
 /algo/neon/connection.
 
-Writes algo.fno_5m_snapshot and algo.fno_5m_leg, in ONE transaction. Reads
-algo.instrument_master and its own previous row.
+Writes algo.fno_5m_snapshot and algo.fno_5m_leg, in ONE transaction, and
+deletes the legs it is about to replace. Reads algo.instrument_master and its
+own previous row.
 
 connect() lives in the neon-access layer. pg8000's DB-API layer uses `format`
 paramstyle (%s placeholders) and has no execute_values equivalent, so the
@@ -88,6 +89,13 @@ def _upsert_sql(table, columns, key):
 
 SNAPSHOT_UPSERT = _upsert_sql(SNAPSHOT_TABLE, SNAPSHOT_COLUMNS, SNAPSHOT_KEY)
 LEG_UPSERT = _upsert_sql(LEG_TABLE, LEG_COLUMNS, LEG_KEY)
+
+# Every leg of one snapshot, whatever its strike - the leg key's first three
+# columns are the snapshot key.
+LEG_DELETE = (
+    f"DELETE FROM {LEG_TABLE} WHERE "
+    + " AND ".join(f"{c} = %s" for c in SNAPSHOT_KEY)
+)
 
 
 def _instrument(row):
@@ -210,6 +218,15 @@ def write_snapshot(conn, row, legs):
     The upsert is what makes a re-run idempotent: snapshot_ts is the newest
     bar, not the run clock, so an invocation repeated a minute later
     overwrites its own row rather than adding a near-duplicate.
+
+    THE LEGS ARE REPLACED WHOLE, NOT UPSERTED OVER. The leg key includes the
+    strike, so an upsert alone overwrites only the strikes both runs cover:
+    when ATM moves between two runs that share a snapshot_ts, the first run's
+    outer legs stay behind under a row the second run wrote. Measured
+    2026-10-29: the 15:26 and 15:31 ticks both stamped 15:25, and five of seven
+    sessions kept 2-4 legs from 15:26 beside the 15:31 tick's ten. Deleting
+    the snapshot's legs first, inside this transaction, leaves exactly the legs
+    of the run that wrote the row - and a failure rolls the delete back too.
     """
     cursor = conn.cursor()
     try:
@@ -224,6 +241,7 @@ def write_snapshot(conn, row, legs):
             ),
             [row[c] for c in SNAPSHOT_COLUMNS],
         )
+        cursor.execute(LEG_DELETE, [row[c] for c in SNAPSHOT_KEY])
 
         written = 0
         for start in range(0, len(legs), UPSERT_BATCH_SIZE):
@@ -233,6 +251,9 @@ def write_snapshot(conn, row, legs):
                 absent = [c for c in LEG_COLUMNS if c not in leg]
                 if absent:
                     raise RuntimeError(f"a leg is missing {absent} - refusing to write")
+                if any(leg[c] != row[c] for c in SNAPSHOT_KEY):
+                    # The delete above cleared the ROW's snapshot only.
+                    raise RuntimeError("a leg's snapshot key differs from its row's")
                 params.extend(leg[c] for c in LEG_COLUMNS)
             placeholders = ", ".join(
                 ["(" + ", ".join(["%s"] * len(LEG_COLUMNS)) + ")"] * len(batch)

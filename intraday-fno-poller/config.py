@@ -66,13 +66,19 @@ MONTH_ABBREVIATIONS = (
 SESSION_START = datetime.time(9, 15)
 SESSION_END = datetime.time(15, 30)
 
-# THIS FUNCTION IS ON ITS OWN CRON, three EventBridge rules, 72 runs a day,
+# THIS FUNCTION IS ON ITS OWN CRON, three EventBridge rules, 71 runs a day,
 # offset ONE MINUTE past each five-minute mark so it does not start on the
 # same second as intraday-data-loader (09:45, 10:00 ... every quarter hour):
 #
 #   -open     cron(36,41,46,51,56 9 ? * MON-FRI *)        09:36 - 09:56
 #   -session  cron(1/5 10-14 ? * MON-FRI *)               10:01 - 14:56
-#   -close    cron(1,6,11,16,21,26,31 15 ? * MON-FRI *)   15:01 - 15:31
+#   -close    cron(1,6,11,16,21,31 15 ? * MON-FRI *)      15:01 - 15:31
+#
+# THERE IS NO 15:26 RUN. Every run after 15:25 sees 15:25 as its newest bar
+# (there is no 15:30 bar), so 15:26 and 15:31 would both stamp snapshot_ts
+# 15:25 and the later one would overwrite the earlier. 15:31 is the one kept:
+# its 15:25 bar is closed and final, and it is the same moment the 15-minute
+# row's 15:25 snapshot is taken (the 15:30 run). Measured 2026-10-29.
 #
 # FIRST_RUN and LAST_RUN are a second line of defence against a manual
 # invocation, not the mechanism. The window is deliberately a little wider than

@@ -6,8 +6,8 @@ algo.fno_5m_leg every FIVE minutes through the session: the futures price, open
 interest and volume (including the last closed bar's own OI change), the option
 chain aggregates for the nearest and monthly expiries, and the raw ATM +-2 legs.
 
-ON ITS OWN CRON. Three EventBridge rules, 72 runs a day, one minute past each
-five-minute mark (see config.py). It invokes nothing and is invoked by nothing:
+ON ITS OWN CRON. Three EventBridge rules, 71 runs a day, one minute past each
+five-minute mark except 15:26 (see config.py). It invokes nothing and is invoked by nothing:
 the 15-minute chain (loader -> intraday-market-sentiment -> market-classifier ->
 pattern-detector -> strategy-manager) is untouched, and NOTHING READS THIS
 FUNCTION'S TABLES YET. Phase 1 is storing - Dhan serves only a LIVE option

@@ -8,14 +8,15 @@ closed bar's own OI change), the option-chain aggregates for the nearest and
 monthly expiries, and the raw ATM ±2 legs.
 
 **Status: deployed 2026-10-16, live since 2026-10-19.** Every trading session since has
-been stored, the OCT→NOV futures roll on 2026-10-28 included. **Known issue, found
-2026-10-29, not yet fixed:** the 15:26 and 15:31 ticks both stamp `snapshot_ts` 15:25, so
-a session stores 71 rows, not 72. The 15:25 snapshot can also hold stale legs from the
-15:26 tick. See [Deployment](#deployment-shape).
+been stored, the OCT→NOV futures roll on 2026-10-28 included. **Found 2026-10-29:** the
+15:26 and 15:31 ticks both stamped `snapshot_ts` 15:25, so a session stored 71 rows, not
+72. The 15:25 snapshot could also hold stale legs from the 15:26 tick. **Fixed in code,
+not yet deployed:** the 15:26 run is dropped, and a run replaces its snapshot's legs whole.
+See [Schedule](#schedule) and [Deployment](#deployment-shape).
 
 | | |
 |---|---|
-| Schedule | three rules, `Asia/Kolkata`, **72 runs a day**, one minute past each five-minute mark — see [Schedule](#schedule) |
+| Schedule | three rules, `Asia/Kolkata`, **71 runs a day**, one minute past each five-minute mark except 15:26 — see [Schedule](#schedule) |
 | Writes | `algo.fno_5m_snapshot`, `algo.fno_5m_leg` — one transaction |
 | Reads | `algo.instrument_master`, and its own previous row |
 | Invokes / invoked by | **nothing.** No consumer reads its tables yet (phase 1) |
@@ -77,6 +78,10 @@ the same IST day**.
   sixteen hours is a trap, because every other row's covers five minutes.
 - A **missed tick widens** the window rather than nulling it; `prev_snapshot_ts` shows
   which window each delta covers.
+- **The 15:25 row's deltas cover ten minutes, not five.** There is no 15:26 run (see
+  [Schedule](#schedule)), so the 15:31 run's baseline is the 15:20 row, taken at 15:21.
+  The stamps read 15:20 → 15:25; `captured_at` on both rows shows the real window. The
+  15-minute row's 15:25 snapshot has the same shape (taken at 15:30, baseline 15:15).
 - **Across a contract roll the deltas are `NULL`, not computed.** A monthly futures roll
   nulls `fut_price_change_pct` and the `fut_oi_change*` columns; an option expiry roll
   nulls that expiry's OI changes. Measured 2026-09-30 on the slow row, the first snapshot
@@ -94,13 +99,24 @@ Three rules, all `Asia/Kolkata`, flexible window off:
 ```
 intraday-fno-poller-open      cron(36,41,46,51,56 9 ? * MON-FRI *)        5 runs   09:36-09:56
 intraday-fno-poller-session   cron(1/5 10-14 ? * MON-FRI *)             60 runs   10:01-14:56
-intraday-fno-poller-close     cron(1,6,11,16,21,26,31 15 ? * MON-FRI *)  7 runs   15:01-15:31
+intraday-fno-poller-close     cron(1,6,11,16,21,31 15 ? * MON-FRI *)     6 runs   15:01-15:31
 ```
 
-**72 runs.** One minute past each mark so it does not start on the same second as
+**71 runs.** One minute past each mark so it does not start on the same second as
 `intraday-data-loader`, which fires on the quarter hour. The last run (15:31) stamps the
 15:25 bar, the day's final one, so no 15:35 sweep is needed. A single `cron(1/5 10-15 …)`
 would run past the close.
+
+**There is no 15:26 run.** Every run after 15:25 sees 15:25 as its newest bar (there is no
+15:30 bar), so a 15:26 run and the 15:31 run would both stamp `snapshot_ts` 15:25. Until
+2026-10-29 both ran, and the 15:31 row overwrote the 15:26 row. Five of the first seven
+sessions also kept 2–4 of the 15:26 run's legs beside the 15:31 run's ten, at strikes the
+later ATM no longer covered. The 15:31 run is the one kept, for two reasons: its 15:25
+bar is closed and final, and it is taken at the same moment as the 15-minute row's 15:25
+snapshot (the 15:30 run).
+What is given up is the 15:26 live chain reading. The 15:20 bar's futures volume is still
+in `candle_5min`, and its OI change is `fut_bar_oi − fut_bar_oi_change` on the 15:25 row
+minus `fut_bar_oi` on the 15:20 row.
 
 > **A one-minute offset is thinner than a two-minute one.** The loader (~15–27 s) and then
 > `intraday-market-sentiment` (~22 s) run back to back from the quarter hour, so on every
@@ -136,8 +152,10 @@ other session functions. The weekend guard stays.
 5. Fetch the future's bars with `oi: true` — **raise** if `open_interest` is absent.
 6. Both chains, centred on the **same** spot.
 7. Read the previous tick (same IST day); guard the deltas against a contract roll.
-8. Write the row and the legs in **one transaction**, upsert by key. A re-run overwrites.
-   A missing column, a partial leg, or a chain that yields **no legs** raises.
+8. Write the row and the legs in **one transaction**. The row is upserted by key; the
+   snapshot's legs are **deleted and rewritten whole**, so a re-run after ATM moved leaves
+   no outer strikes behind. A missing column, a partial leg, or a chain that yields **no
+   legs** raises.
 
 Raises on any failure — never a `{"statusCode": 500}` shape. No invoke, so nothing
 downstream can be failed by it and it cannot be failed by anything downstream.
@@ -207,6 +225,16 @@ futures-roll and expiry-roll guards; a gap in the series; a future without `open
 a chain with no legs; rollback on a failed legs write; the weekend and outside-window
 guards; IV 0 → `NULL`; the expiry cache; and the cron arithmetic (72 runs, 300 s apart,
 none on a loader minute).
+
+The close-tick fix (2026-10-29) was checked the same way, through the real
+`lambda_handler`, with 20 checks against an in-memory fake that applies the SQL's upsert
+and delete semantics:
+- A 15:26 run plus a 15:31 run, with ATM moving two strikes in between, leaves exactly
+  the 15:31 run's 10 legs. The previous `db.py` leaves 14, as live did.
+- The statement order is row → delete → legs, with one commit. A failed leg write rolls
+  the delete back.
+- The new crons give 71 runs onto 71 distinct `snapshot_ts`. A whole session gives 71
+  rows and 710 legs, and the 15:25 row's baseline is 15:20.
 
 > **Verified against real Dhan data since.** The 77 checks above use synthetic payloads.
 > A real-data replay on 2026-10-16 (`now` = 15:31) matched the 15-minute row and the
