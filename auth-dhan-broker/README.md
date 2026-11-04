@@ -30,7 +30,7 @@ to — see below.
 ## Why the calendar decision lives here
 
 This is the only thing that runs before the session on **every** weekday, and a
-holiday *is* a weekday, so the `MON-FRI` cron still fires on one. That makes a
+holiday *is* a weekday, so that weekday's schedule still fires on one. That makes a
 single symmetric decision point: disable on a holiday, enable on a trading day.
 The session functions are never invoked on a holiday, rather than invoked and
 skipping.
@@ -79,7 +79,7 @@ raise only after the other three had been switched.
    re-passes the schedule's own target role, so without it every toggle of that
    schedule is `AccessDenied`.
 
-Any of them missing fails the 08:00 run with `AccessDenied` — after the token is
+Any of them missing fails the morning run with `AccessDenied` — after the token is
 stored, but on a trading day. Edit the policy **before** the variable, and add new
 names **last** so a gap raises only after the existing schedules are switched.
 The loader's `-open` needed only two because it reused the loader's existing
@@ -148,9 +148,9 @@ Do not add one. It would be worse than nothing.
 
 The schedule gate is not the only thing stopping a holiday run — **the missing
 token is**. No token is minted on a holiday, and the previous trading day's
-token expires at 08:00 that same morning (lifetime is exactly 86,400 s from
-08:00, measured), so it is already dead by the time any session function would
-run. `read_token_record()` raises on an expired token, and `error-notifier`
+token expires 24 hours after its mint — by ~08:41 that same morning for any
+scheduled mint (lifetime is exactly 86,400 s, measured) — so it is already dead
+by the time any session function would run. `read_token_record()` raises on an expired token, and `error-notifier`
 reports it, with repeats suppressed for 1800 s so a stuck schedule produces a
 handful of alerts rather than one per invocation.
 
@@ -176,8 +176,9 @@ The code reads the definition with `GetSchedule` and returns it whole with only
 The response carries **metadata only** — status, expiry, elapsed — never the
 token. Consumers read the token from the parameter. Returning it would only
 have served an on-demand invoke from `daily-market-sentiment`, and that path
-cannot fire in practice: the 08:00 refresh precedes that function's 09:35 run
-by nearly two hours and the token lives 24 hours. All a returned token achieved
+cannot fire in practice: the morning refresh (07:30–08:30, its last retry by
+~08:41) precedes that function's 09:35 run by at least 54 minutes and the token
+lives 24 hours. All a returned token achieved
 was putting a live credential on the console Test screen.
 
 ## Why there is no renew path
@@ -207,33 +208,44 @@ prose calls the endpoint a POST, but its own worked curl passes neither `-d`
 nor `-X POST`, which makes it a GET. Only after switching to GET did the real
 `"not allowed for this token type"` answer surface.
 
-## Schedule — once each weekday morning, five minutes later each day
+## Schedule — once each weekday morning, fifteen minutes later each day
 
-One schedule per weekday, timezone `Asia/Kolkata`:
+One schedule per weekday, timezone `Asia/Kolkata`. Each slot is followed by up
+to two in-run retries, five minutes apart:
 
-| Schedule | Cron | Slot |
+| Schedule | Cron | Attempts |
 |---|---|---|
-| `auth-dhan-broker-mon` | `cron(0 8 ? * MON *)` | 08:00 |
-| `auth-dhan-broker-tue` | `cron(5 8 ? * TUE *)` | 08:05 |
-| `auth-dhan-broker-wed` | `cron(10 8 ? * WED *)` | 08:10 |
-| `auth-dhan-broker-thu` | `cron(15 8 ? * THU *)` | 08:15 |
-| `auth-dhan-broker-fri` | `cron(20 8 ? * FRI *)` | 08:20 |
+| `auth-dhan-broker-mon` | `cron(30 7 ? * MON *)` | 07:30, 07:35, 07:40 |
+| `auth-dhan-broker-tue` | `cron(45 7 ? * TUE *)` | 07:45, 07:50, 07:55 |
+| `auth-dhan-broker-wed` | `cron(0 8 ? * WED *)` | 08:00, 08:05, 08:10 |
+| `auth-dhan-broker-thu` | `cron(15 8 ? * THU *)` | 08:15, 08:20, 08:25 |
+| `auth-dhan-broker-fri` | `cron(30 8 ? * FRI *)` | 08:30, 08:35, 08:40 |
 
 They replace `auth-dhan-broker-daily` (`cron(0 8 ? * MON-FRI *)`), which ends
 after Friday 2026-11-06; the five start on Monday 2026-11-09.
 
 A token lives exactly 24 hours (86,400 s, measured), so any slot covers the
 09:15–15:30 session with hours to spare. Weekends are skipped because nothing
-trades then; Monday mints a fresh token like any other weekday.
+trades then; Monday mints a fresh token like any other weekday. Friday's last
+retry, ~08:41, is the latest. Every attempt ends before the 09:00 pre-open —
+that bound is why the week starts at 07:30 rather than 08:00 (Amar, 2026-11-04)
+— and 54 minutes before `daily-market-sentiment` at 09:35, which is the window
+for a run by hand if all three fail.
 
 **Why the slot moves.** A token dies exactly 24 hours after it was minted, so a
 run at the same time every day arrives at the moment yesterday's token dies.
 If Dhan refuses to mint while the previous token is still live, a fixed 08:00
 run is a coin flip every day, and a day that needed a retry pushes the next
-day's live token past the next day's run. Stepping the slot five minutes a day
-keeps each run after yesterday's token has died, and Monday, two days after
-Friday's token died, starts the week over at 08:00. This is Amar's decision of
-2026-11-04.
+day's live token past the next day's run. Each day's slot is therefore five
+minutes after the previous day's last retry. The latest a run can mint is its
++10 retry, about slot +11 minutes once the Scheduler's ~47 s start delay and the
+request are counted. The next day's slot is +15, so yesterday's token has
+always died by then, and no retry pushes the next day onto a boundary. Monday,
+two days after Friday's token died, starts the week over at 07:30. This is
+Amar's decision of 2026-11-04.
+
+One case it cannot cover: a mint by hand later in the morning (11-04 at 09:39,
+say) carries a live token past the next day's attempts.
 
 The logs only partly support that cause. Across the 42 mint attempts logged
 from 2026-10-06 to 2026-11-04, "fails while the previous token is live" fits
@@ -244,11 +256,6 @@ and Mondays failed with no live token at all (10-19, 11-02). The retry below is
 what addresses the spells the logs do show. The `generateAccessToken answered
 HTTP … in …s` line, read beside each day's previous mint time, will settle the
 cause.
-
-**A retry can still land on a boundary.** If Tuesday mints on its 08:10 retry,
-Wednesday's 08:10 slot meets that token's last second, so Wednesday may need a
-retry too, and so on until Monday. That was weighed and accepted: the retry
-absorbs it.
 
 That costs five TOTP logins a week when nothing fails. An earlier design ran
 every 12 hours so a renew could carry the intervening runs — with renew gone,
@@ -600,14 +607,14 @@ screen.
 **Amazon EventBridge → Scheduler → Schedules → Create schedule.**
 
 Five times, one per weekday — names and cron expressions from
-[Schedule](#schedule--once-each-weekday-morning-five-minutes-later-each-day):
+[Schedule](#schedule--once-each-weekday-morning-fifteen-minutes-later-each-day):
 
 | Field | Value |
 |---|---|
 | Name | `auth-dhan-broker-mon` … `auth-dhan-broker-fri` |
 | Occurrence | Recurring schedule |
 | Schedule type | Cron-based schedule |
-| Cron expression | e.g. `5 8 ? * TUE *` for Tuesday |
+| Cron expression | e.g. `45 7 ? * TUE *` for Tuesday |
 | Timezone | `Asia/Kolkata` |
 | Flexible time window | **Off** |
 

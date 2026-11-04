@@ -14,11 +14,12 @@ session functions never have to authenticate themselves.
                                           └──▶ ENABLE daily + intraday schedules
 
 Trigger: EventBridge Scheduler, one schedule per weekday, Asia/Kolkata —
-Mon 08:00, Tue 08:05, Wed 08:10, Thu 08:15, Fri 08:20. A token lives exactly
+Mon 07:30, Tue 07:45, Wed 08:00, Thu 08:15, Fri 08:30. A token lives exactly
 24 hours from its mint, so a run at the same time every day lands on the moment
-the previous token dies; stepping five minutes a day keeps each run after it
-(Amar's call, 2026-11-04 — see README "Schedule"). Every slot is before the
-09:15 open, and the last retry of the latest one is ~08:31.
+the previous token dies. Each day's slot is five minutes after the previous
+day's last retry (slot, +5, +10), so it always comes after yesterday's token
+has died (Amar's call, 2026-11-04 — see README "Schedule"). Every attempt ends
+before the 09:00 pre-open; the last retry of the latest slot is ~08:41.
 
 THIS FUNCTION DECIDES WHETHER THE DAY HAPPENS. It is the only thing that runs
 before the session on every weekday, holiday included — a holiday IS a weekday,

@@ -10,7 +10,7 @@ actually happen in, and what hands off to what.
 ```mermaid
 flowchart TD
     subgraph BEFORE["Before the session"]
-        AUTH["auth-dhan-broker<br/><i>cron, weekdays 08:00</i>"] --> SSM[/"SSM /algo/dhan/token<br/>24h TOTP-minted token"/]
+        AUTH["auth-dhan-broker<br/><i>cron, weekdays 07:30–08:30</i>"] --> SSM[/"SSM /algo/dhan/token<br/>24h TOTP-minted token"/]
         LOADER["instrument-master-loader<br/><i>cron, monthly</i>"] --> IM[("instrument_master")]
     end
 
@@ -71,7 +71,7 @@ Read in clock order, a weekday looks like this:
 | Time (IST) | What runs | Trigger | Writes |
 |---|---|---|---|
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
-| 08:00 | `auth-dhan-broker` | cron | `/algo/dhan/token` |
+| 07:30 Mon, 15 min later each day to 08:30 Fri | `auth-dhan-broker` | cron | `/algo/dhan/token` |
 | 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
 | 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
@@ -81,11 +81,15 @@ Read in clock order, a weekday looks like this:
 | then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
-**Six schedules in total, and three of them drive the same intraday cron.**
-`instrument-master-loader` monthly, `auth-dhan-broker` at 08:00,
+**Ten schedules drive this flow, and three of them drive the same intraday
+cron.** `instrument-master-loader` monthly, `auth-dhan-broker` once per weekday
+(five schedules, 07:30 Monday to 08:30 Friday),
 `daily-market-sentiment` at 09:35, and `intraday-data-loader`'s three
 EventBridge rules — an `-open` rule at 09:45, a quarter-hourly `-session` rule
-for 10:00 to 14:45, and a `-close` rule for 15:00 to 15:35. Everything else in
+for 10:00 to 14:45, and a `-close` rule for 15:00 to 15:35. (The
+`intraday-fno-poller` trio, every five minutes from 09:36 to 15:31, is a
+separate reading that chains to nothing — see
+[its README](../intraday-fno-poller/README.md).) Everything else in
 the session is chained: the loader commits and invokes the sentiment function,
 which measures and invokes the classifier, which writes the judgement and
 invokes the detector, which on a confirmed turn invokes the manager, which
@@ -165,18 +169,23 @@ Measured 2026-09-09, against the live scrip master and the live database.
 
 ## Broker token refresh — each weekday morning
 
-Runs on its own EventBridge Scheduler cron, `cron(0 8 ? * MON-FRI *)` in
-`Asia/Kolkata`. Independent of the trading session.
+Runs on its own EventBridge Scheduler crons, one per weekday in
+`Asia/Kolkata`: `auth-dhan-broker-mon` 07:30, `-tue` 07:45, `-wed` 08:00,
+`-thu` 08:15, `-fri` 08:30 (from 2026-11-09; until then one
+`cron(0 8 ? * MON-FRI *)`). Independent of the trading session.
 
 ```mermaid
 flowchart TD
-    START(["EventBridge Scheduler<br/>08:00 IST, Mon-Fri"]) --> TOTP
+    START(["EventBridge Scheduler<br/>07:30 Mon … 08:30 Fri IST"]) --> TOTP
 
     TOTP["Generate TOTP<br/><i>RFC 6238, stdlib</i>"]
     TOTP --> GEN["POST /app/generateAccessToken<br/><i>clientId + PIN + TOTP</i>"]
 
     GEN -->|"non-200"| FAIL["raise → Lambda error<br/><i>alarm fires, no token</i>"]
-    GEN -->|"200, no accessToken"| FAIL2["raise, quoting Dhan's body<br/><i>e.g. bad TOTP</i>"]
+    GEN -->|"200, Invalid TOTP"| RETRY{"retries<br/>left?<br/><i>2, 5 min apart</i>"}
+    RETRY -->|"yes: wait 300 s"| TOTP
+    RETRY -->|no| FAIL2["raise, quoting Dhan's body<br/><i>one alarm for the morning</i>"]
+    GEN -->|"200, other refusal"| FAIL2
     GEN -->|200| EXP
 
     EXP{"JWT <b>exp</b><br/>claim<br/>readable?"}
@@ -200,9 +209,20 @@ and seeding from the portal does not help: the chain breaks every weekend and
 Monday's TOTP token is itself unrenewable. The branch was built, tested against
 the live API, and deleted.
 
-**Why one run a day is enough.** A token lives exactly 24 hours, so 08:00
-covers the 09:15–15:30 session several times over. An earlier design ran every
-12 hours purely to give the renew a margin it turned out not to need.
+**Why one run a day is enough.** A token lives exactly 24 hours, so any slot
+from 07:30 to 08:30 covers the 09:15–15:30 session several times over. An
+earlier design ran every 12 hours purely to give the renew a margin it turned
+out not to need.
+
+**Why the slot moves and "Invalid TOTP" is retried.** Dhan answers "Invalid
+TOTP" to correct codes, in spells lasting minutes: 15 of 37 trading days to
+2026-11-04 needed a retry, and twice every automatic attempt failed. So that
+refusal alone is retried in-run, five minutes apart (slot, +5, +10). The slot
+moves fifteen minutes a day, five minutes past the previous day's last retry,
+because a token dies exactly 24 hours after its mint, which puts a fixed slot
+on yesterday's token's expiry. The logs only partly
+support that cause. The measurements are in
+[auth-dhan-broker](../auth-dhan-broker/README.md#schedule--once-each-weekday-morning-fifteen-minutes-later-each-day).
 
 **Why an unreadable expiry raises.** `expires_at` is what consumers key their
 freshness check off. A guessed value would keep a dead token in circulation
@@ -260,7 +280,7 @@ shortened one; the 00:00 start is what prevents both.
 comes from the intraday call instead.
 
 **This function does not run at all on a holiday.** Its schedule is switched
-off at 08:00 that morning by `auth-dhan-broker`, which reads
+off that morning (07:30–08:30) by `auth-dhan-broker`, which reads
 `algo.trading_holiday` and disables the session schedules before the day starts
 — see [trading-calendar](../trading-calendar/README.md).
 
@@ -330,13 +350,13 @@ costs an extra API call. If it fails, the exception still propagates — but the
 index candles are already committed rather than lost alongside it.
 
 **This function does not run at all on a holiday**, and neither does the chain
-it drives. Its schedule is switched off at 08:00 by `auth-dhan-broker` — so the
+it drives. Its schedule is switched off that morning by `auth-dhan-broker` — so the
 snapshot, the manager and the playbooks are never invoked either, since every
 one of them is reached from here rather than from a cron of its own.
 
 There is still no holiday gate *inside* this handler, and adding one would be a
-regression. No token is minted on a holiday and the previous one expired at
-08:00 that morning, so a wrongly-enabled schedule fails loudly here and
+regression. No token is minted on a holiday and the previous one expired that
+morning, 24 hours after it was minted, so a wrongly-enabled schedule fails loudly here and
 `error-notifier` reports it. A calendar check in the handler would turn that
 alarm into a polite skip and hide the broken toggle — see
 [auth-dhan-broker](../auth-dhan-broker/README.md#there-is-deliberately-no-calendar-check-inside-the-session-functions).

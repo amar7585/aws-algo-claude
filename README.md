@@ -12,7 +12,7 @@ deterministic to read.
 | Component | Status |
 |---|---|
 | [instrument-master-loader](instrument-master-loader/README.md) | **running** — 15,463 instruments, monthly |
-| [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 08:00; also the holiday gate that arms the day's schedules |
+| [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 07:30 Mon → 08:30 Fri; also the holiday gate that arms the day's schedules |
 | [trading-calendar](trading-calendar/README.md) | **live** — `algo.trading_holiday`, all 16 NSE holidays for 2026 |
 | [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:35 |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |

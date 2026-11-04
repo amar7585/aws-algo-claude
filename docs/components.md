@@ -7,7 +7,7 @@
 | Component | Kind | Cadence | Status | Docs |
 |---|---|---|---|---|
 | `instrument-master-loader` | Lambda function | monthly | **built, running** | [README](../instrument-master-loader/README.md) |
-| `auth-dhan-broker` | Lambda function | daily, weekdays 08:00 — also the holiday gate | **built, running** | [README](../auth-dhan-broker/README.md) |
+| `auth-dhan-broker` | Lambda function | daily, weekdays 07:30 Mon → 08:30 Fri — also the holiday gate | **built, running** | [README](../auth-dhan-broker/README.md) |
 | `trading-calendar` | reference data, no Lambda | seeded by hand, yearly | **seeded** | [README](../trading-calendar/README.md) |
 | `daily-market-sentiment` | Lambda function | daily, weekdays 09:35 | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
@@ -32,8 +32,9 @@ doing the daily fetch and the daily read in one function on one schedule, and a
 single intraday cron on `intraday-data-loader` - two Scheduler rules, one
 function - that chains the rest.
 
-**Six schedules, and three of them are intraday.** Monthly for the instrument
-master, 08:00 for the token, 09:35 for the daily read, and the loader's own
+**Ten schedules, and three of them are intraday.** Monthly for the instrument
+master, one per weekday for the token (07:30 Monday, fifteen minutes later each
+day to 08:30 Friday), 09:35 for the daily read, and the loader's own
 trio: `intraday-data-loader-open` at 09:45, `intraday-data-loader-session`
 every 15 minutes from 10:00 to 14:45, then `intraday-data-loader-close` at
 15:00/15:15/15:30/15:35. The split exists
@@ -110,17 +111,19 @@ function has to authenticate itself and no token is refreshed by hand.
 | Runtime | Python 3.14, zip package, 7 modules |
 | Layer | `neon-db-driver`, `neon-access` — for the holiday read only |
 | Package contents | `handler`, `config`, `params`, `dhan`, `db`, `notify`, `schedules` |
-| Schedule | `cron(0 8 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Schedule | `auth-dhan-broker-mon` … `-fri`, `Asia/Kolkata`: 07:30, 07:45, 08:00, 08:15, 08:30, each with retries at +5 and +10 min (from 2026-11-09; until then `cron(0 8 ? * MON-FRI *)`) |
 | Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
 | Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open`, `intraday-fno-poller-session`, `intraday-fno-poller-close`, `intraday-fno-poller-open` — all seven, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy, and a schedule with its own target role needs that role in `iam:PassRole`) |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
-Mints a token from client id + PIN + TOTP and writes it to the parameter. Any
+Mints a token from client id + PIN + TOTP and writes it to the parameter. An
+"Invalid TOTP" refusal is retried in-run, five minutes apart, up to twice —
+Dhan gives that answer to correct codes, in spells lasting minutes. Any other
 failure raises; there is no fallback path.
 
 **It also decides whether the trading day happens at all.** A holiday is a
-weekday, so the `MON-FRI` cron still fires on one: this is the only thing that
+weekday, so that weekday's schedule still fires on one: this is the only thing that
 runs before every session, which makes it the one symmetric decision point.
 On a holiday it disables all seven session schedules, sends a Telegram notice and
 mints nothing; otherwise it mints, stores, and enables them. The session
@@ -134,8 +137,8 @@ holiday read is the whole reason.
 **There is deliberately no renew step.** `/v2/RenewToken` would have let one
 TOTP login carry a week, but it refuses TOTP-minted tokens outright —
 `"Renewal of token not allowed for this token type"`, measured 2026-09-10. The
-branch was built, tested live and removed. A token lives 24 hours, so one 08:00
-run covers the 09:15–15:30 session with hours to spare.
+branch was built, tested live and removed. A token lives 24 hours, so one
+morning run covers the 09:15–15:30 session with hours to spare.
 
 Full configuration, IAM, the measured API findings and what remains unknown are
 in its [README](../auth-dhan-broker/README.md).
@@ -156,8 +159,9 @@ Three Dhan calls, ~12 s.
 
 It reads the Dhan token from `/algo/dhan/token` rather than holding broker
 credentials of its own. It does **not** invoke `auth-dhan-broker` on demand —
-that path cannot fire in practice, since the 08:00 refresh precedes the 09:35
-run by nearly two hours and a token lives 24 hours.
+that path cannot fire in practice, since the morning refresh (07:30–08:30, its
+last retry by ~08:41) precedes the 09:35 run by at least 54 minutes and a token lives
+24 hours.
 
 Its README carries the measured facts that make it work: `fromDate` keeps only
 what is stamped after it (so intraday fetches start at 00:00), the daily

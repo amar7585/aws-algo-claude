@@ -36,7 +36,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Plane | Cadence | Trigger | Status |
 |---|---|---|---|
 | Instrument master refresh | monthly | EventBridge Scheduler cron | **built** |
-| Broker token refresh | daily, weekdays 08:00 | EventBridge Scheduler cron | **built** |
+| Broker token refresh | daily, weekdays 07:30 Mon → 08:30 Fri | EventBridge Scheduler cron, one per weekday | **built** |
 | Daily candles + daily read | daily, weekdays 09:35 | EventBridge Scheduler cron | **built** |
 | Intraday candles | every 15 min, 09:45–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
 | Intraday market measurement | on each loader run, 25×/day | invoke from `intraday-data-loader` | **built** |
