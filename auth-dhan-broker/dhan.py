@@ -118,15 +118,25 @@ def token_expiry_epoch(access_token):
 # ---------------------------------------------------------------------------
 # Dhan auth
 # ---------------------------------------------------------------------------
+class InvalidTOTPError(RuntimeError):
+    """Dhan refused the TOTP code. The one refusal the handler retries."""
+
+
 def generate_token(client_id, pin, totp_secret):
     """Mint a token from client id + PIN + TOTP.
 
-    This is the only way in, so any failure here is terminal and raises.
+    One attempt, with a code computed at call time. Any failure raises;
+    an "Invalid TOTP" refusal raises InvalidTOTPError so the handler can tell it
+    apart from the rest.
     """
     query = urllib.parse.urlencode(
         {"dhanClientId": client_id, "pin": pin, "totp": totp_now(totp_secret)}
     )
+    sent = time.time()
     status, body = _post(GENERATE_URL + "?" + query)
+    # Diagnostic. Eleven of the refusals to 2026-11-04 arrived ~10.9 s after the
+    # request; this line says whether that time is Dhan's or the Neon wake-up's.
+    logger.info("generateAccessToken answered HTTP %s in %.2fs", status, time.time() - sent)
 
     if status != 200:
         raise RuntimeError(
@@ -147,7 +157,8 @@ def generate_token(client_id, pin, totp_secret):
         # Dhan answers 200 with a {message, status} envelope for at least some
         # refusals. The body is the only thing that says which, and it carries
         # no token, so log it whole rather than just its keys.
-        raise RuntimeError(
+        error = InvalidTOTPError if payload.get("message") == "Invalid TOTP" else RuntimeError
+        raise error(
             "generateAccessToken returned HTTP 200 but no accessToken. Dhan "
             "said: %s" % body[:500]
         )

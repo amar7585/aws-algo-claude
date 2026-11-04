@@ -207,17 +207,83 @@ prose calls the endpoint a POST, but its own worked curl passes neither `-d`
 nor `-X POST`, which makes it a GET. Only after switching to GET did the real
 `"not allowed for this token type"` answer surface.
 
-## Schedule — once each weekday morning
+## Schedule — once each weekday morning, five minutes later each day
 
-`cron(0 8 ? * MON-FRI *)`, timezone `Asia/Kolkata`.
+One schedule per weekday, timezone `Asia/Kolkata`:
 
-A token lives exactly 24 hours (86,400 s, measured), so the 08:00 token covers
-the 09:15–15:30 session with hours to spare. Weekends are skipped because
-nothing trades then; Monday mints a fresh token like any other weekday.
+| Schedule | Cron | Slot |
+|---|---|---|
+| `auth-dhan-broker-mon` | `cron(0 8 ? * MON *)` | 08:00 |
+| `auth-dhan-broker-tue` | `cron(5 8 ? * TUE *)` | 08:05 |
+| `auth-dhan-broker-wed` | `cron(10 8 ? * WED *)` | 08:10 |
+| `auth-dhan-broker-thu` | `cron(15 8 ? * THU *)` | 08:15 |
+| `auth-dhan-broker-fri` | `cron(20 8 ? * FRI *)` | 08:20 |
 
-That costs five TOTP logins a week. An earlier design ran every 12 hours so a
-renew could carry the intervening runs — with renew gone, the second daily run
-bought nothing and was removed.
+They replace `auth-dhan-broker-daily` (`cron(0 8 ? * MON-FRI *)`), which ends
+after Friday 2026-11-06; the five start on Monday 2026-11-09.
+
+A token lives exactly 24 hours (86,400 s, measured), so any slot covers the
+09:15–15:30 session with hours to spare. Weekends are skipped because nothing
+trades then; Monday mints a fresh token like any other weekday.
+
+**Why the slot moves.** A token dies exactly 24 hours after it was minted, so a
+run at the same time every day arrives at the moment yesterday's token dies.
+If Dhan refuses to mint while the previous token is still live, a fixed 08:00
+run is a coin flip every day, and a day that needed a retry pushes the next
+day's live token past the next day's run. Stepping the slot five minutes a day
+keeps each run after yesterday's token has died, and Monday, two days after
+Friday's token died, starts the week over at 08:00. This is Amar's decision of
+2026-11-04.
+
+The logs only partly support that cause. Across the 42 mint attempts logged
+from 2026-10-06 to 2026-11-04, "fails while the previous token is live" fits
+22 and contradicts 18. It fits the 10-28 to 11-04 run closely: the retries that
+worked landed 1.3, 1.6 and 6.1 s after the old token died. But mints worked
+with the old token still live for 69 s, 54 min and 4.5 h (10-07, 10-15, 10-09),
+and Mondays failed with no live token at all (10-19, 11-02). The retry below is
+what addresses the spells the logs do show. The `generateAccessToken answered
+HTTP … in …s` line, read beside each day's previous mint time, will settle the
+cause.
+
+**A retry can still land on a boundary.** If Tuesday mints on its 08:10 retry,
+Wednesday's 08:10 slot meets that token's last second, so Wednesday may need a
+retry too, and so on until Monday. That was weighed and accepted: the retry
+absorbs it.
+
+That costs five TOTP logins a week when nothing fails. An earlier design ran
+every 12 hours so a renew could carry the intervening runs — with renew gone,
+the second daily run bought nothing and was removed.
+
+### "Invalid TOTP" is retried inside the run, five minutes apart
+
+Dhan answers `HTTP 200 {"message":"Invalid TOTP","status":"error"}` to codes
+that are correct. Our clock and Dhan's agree to ~20 ms (its `expiryTime` minus
+24 h against our log time, every mint to 2026-11-04). The failures don't
+cluster at the edges of the 30-second code window. They come in spells lasting
+minutes:
+
+- 15 of 37 trading days to 2026-11-04 needed a retry.
+- On 10-08 and 11-04 all three automatic attempts (08:00 to 08:04) failed. A
+  run by hand later that morning worked.
+
+So on `Invalid TOTP` the handler waits `TOTP_RETRY_DELAY_SECONDS` (300), makes a
+fresh code and tries again, up to `TOTP_RETRIES` (2) times:
+
+- **Slot, +5 and +10 minutes.** Two retries is the most that fits: Lambda stops
+  any run at 15 minutes.
+- **Any other refusal raises at once.** A wrong PIN does not improve with
+  waiting.
+- **One alarm, not three.** Failed tries are logged as `WARNING`, which
+  `error-notifier`'s filter (`?ERROR ?Traceback ?"Task timed out" ?"Unable to
+  import"`, case-sensitive) does not match. The alarm comes from the final
+  raise.
+- **Short timeout fails fast.** If the invocation has too little time left for
+  another wait (timeout not raised), it raises immediately instead of being
+  killed mid-sleep.
+
+The retries seen until 2026-11-04 (about +1 and +3 minutes, under the same
+RequestId) were **Lambda's own async retries**, not the schedule's. Those are
+now `0`, so this loop is the only one.
 
 ## Target
 
@@ -272,6 +338,8 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `NEON_CONNECTION_STRING` | no | — (override; SSM is the source of truth) |
 | `DHAN_GENERATE_TOKEN_URL` | no | `https://auth.dhan.co/app/generateAccessToken` |
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
+| `TOTP_RETRIES` | no | `2` — retries after an `Invalid TOTP`; more do not fit Lambda's 15-minute cap at the default delay |
+| `TOTP_RETRY_DELAY_SECONDS` | no | `300` |
 | `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close,intraday-data-loader-open,intraday-fno-poller-session,intraday-fno-poller-close,intraday-fno-poller-open` — the deployed value sets the same seven explicitly (since 2026-10-16); each also needs its ARN in the IAM policy, and a new target role needs `iam:PassRole` |
 | `SCHEDULE_GROUP_NAME` | no | `default` |
 | `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
@@ -365,11 +433,12 @@ and race to write the parameter, last write winning. Nothing corrupts — the
 record is a single JSON blob, so there is no torn write — it is just wasted
 work against an endpoint we would rather not hammer.
 
-What actually keeps that from happening is the schedule. One `cron(0 8 ? *
-MON-FRI *)` run a day cannot overlap itself, so the only way to get two
-concurrent runs is to invoke by hand while the scheduled one is in flight. If
-you need to test during the 08:00 minute, wait for it to finish rather than
-reaching for this setting.
+What actually keeps that from happening is the schedule. One run a day, from
+one of the five weekday schedules, cannot overlap itself, so the only way to
+get two concurrent runs is to invoke by hand while the scheduled one is in
+flight. A run that is retrying stays in flight for up to ~12 minutes after its
+slot. If you need to test then, wait for it to finish rather than reaching for
+this setting.
 
 ## Deployment shape
 
@@ -486,7 +555,14 @@ by that name in the package.
 ### 6. General configuration
 
 **Configuration → General configuration → Edit.** Memory **256 MB**, timeout
-**1 min**. Observed usage is ~100 MB, so the 128 MB default is too tight.
+**15 min** — two five-minute retry waits must fit (see
+[the retry](#invalid-totp-is-retried-inside-the-run-five-minutes-apart)). With the
+old 1-minute timeout the code still runs, but raises on the first `Invalid
+TOTP` instead of retrying. Observed usage is ~100 MB, so the 128 MB default is
+too tight.
+
+**Configuration → Asynchronous invocation → Edit.** Retry attempts **0**. The
+handler does its own retrying; Lambda's would add re-runs 1–2 minutes later.
 
 No VPC — the function needs the public internet to reach Dhan.
 
@@ -523,20 +599,26 @@ screen.
 
 **Amazon EventBridge → Scheduler → Schedules → Create schedule.**
 
+Five times, one per weekday — names and cron expressions from
+[Schedule](#schedule--once-each-weekday-morning-five-minutes-later-each-day):
+
 | Field | Value |
 |---|---|
-| Name | `auth-dhan-broker-daily` |
+| Name | `auth-dhan-broker-mon` … `auth-dhan-broker-fri` |
 | Occurrence | Recurring schedule |
 | Schedule type | Cron-based schedule |
-| Cron expression | `0 8 ? * MON-FRI *` |
+| Cron expression | e.g. `5 8 ? * TUE *` for Tuesday |
 | Timezone | `Asia/Kolkata` |
 | Flexible time window | **Off** |
 
 The form previews the **next 10 trigger dates** — check them before continuing.
-They must read 08:00, Monday to Friday only. That preview is the reliable way to
-confirm the expression whatever wrapper format the field expects.
+Each must read its own slot, on its own weekday only. That preview is the
+reliable way to confirm the expression whatever wrapper format the field
+expects.
 
-Next page: target **AWS Lambda → Invoke** → `auth-dhan-broker`.
+Next page: target **AWS Lambda → Invoke** → `auth-dhan-broker`. All five can
+share one Scheduler role: its policy names this function's ARN, and all five
+invoke this function.
 
 Settings page:
 
@@ -547,17 +629,19 @@ Settings page:
 | Maximum age of event | `1 hour` |
 | Permissions | **Create new role for this schedule** |
 
-`Flexible time window: Off` matters — the 08:00 run has to land before the 09:15
-market open, and a flexible window would let it drift.
+`Flexible time window: Off` matters — the run has to land at its slot, before
+the 09:15 market open, and a flexible window would let it drift.
 
-Retries are capped at 2 rather than the default 185: a transient network failure
-is worth retrying, but a broken TOTP seed should surface as an alarm within the
-hour instead of retrying all day.
+These retry attempts are the Scheduler's, and apply only when the *invoke*
+fails — the function's own errors are handled by its in-run retry. They are
+capped at 2 rather than the default 185: a transient failure is worth retrying,
+but a broken TOTP seed should surface as an alarm within the hour instead of
+retrying all day.
 
 ### 11. Confirm the schedule fired
 
-After the next 08:00 IST slot, **Lambda → auth-dhan-broker → Monitor → View
-CloudWatch logs**.
+After the next slot, **Lambda → auth-dhan-broker → Monitor → View CloudWatch
+logs**.
 
 A healthy line reads `dhan token refreshed: {...}`. The token itself is never
 logged — only its 12-character prefix.
@@ -609,6 +693,14 @@ failure modes, the three shapes Dhan returns on refusal (non-200, a 200 carrying
 `{message, status}` and no token, and a non-JSON 200), that the response never
 contains the token, and that a token with an unreadable expiry raises without
 writing anything.
+
+Covered for the in-run retry (2026-11-04), with `time.sleep` patched:
+- `Invalid TOTP` twice then a token: three requests, two 300 s waits, and the
+  token stored and the schedules enabled.
+- Three refusals: raises `all 3 attempts`, nothing written.
+- A non-TOTP refusal: raises at once, no wait.
+- A 60 s invocation budget: raises after the first refusal, no wait.
+- No retry log line contains `ERROR` or `Traceback`.
 
 **Fake the `_post` function, not `urllib`** — Dhan's refusal bodies are the
 thing worth asserting on, and they are what those tests replay.

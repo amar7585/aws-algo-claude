@@ -9,12 +9,16 @@ session functions never have to authenticate themselves.
     holiday? ──yes──▶ DISABLE daily + intraday schedules ──▶ skip
        │no
     TOTP ──▶ POST /app/generateAccessToken ──▶ write /algo/dhan/token
-                                          ├──▶ non-200 or no token ──▶ raise
+                                          ├──▶ "Invalid TOTP" ──▶ wait 5 min, fresh code, retry (×2)
+                                          ├──▶ any other refusal, or the last retry ──▶ raise
                                           └──▶ ENABLE daily + intraday schedules
 
-Trigger: EventBridge Scheduler, cron(0 8 ? * MON-FRI *) Asia/Kolkata — once
-each weekday morning, before the 09:15 open. A token lives 24 hours, so the
-08:00 token covers the whole session with hours to spare.
+Trigger: EventBridge Scheduler, one schedule per weekday, Asia/Kolkata —
+Mon 08:00, Tue 08:05, Wed 08:10, Thu 08:15, Fri 08:20. A token lives exactly
+24 hours from its mint, so a run at the same time every day lands on the moment
+the previous token dies; stepping five minutes a day keeps each run after it
+(Amar's call, 2026-11-04 — see README "Schedule"). Every slot is before the
+09:15 open, and the last retry of the latest one is ~08:31.
 
 THIS FUNCTION DECIDES WHETHER THE DAY HAPPENS. It is the only thing that runs
 before the session on every weekday, holiday included — a holiday IS a weekday,
@@ -68,9 +72,14 @@ import time
 
 from neon_access import connect, read_neon_connection_string, today_ist
 
-from config import TOKEN_PARAMETER_NAME
+from config import (
+    HTTP_TIMEOUT_SECONDS,
+    TOKEN_PARAMETER_NAME,
+    TOTP_RETRIES,
+    TOTP_RETRY_DELAY_SECONDS,
+)
 from db import holiday_for, next_trading_day
-from dhan import generate_token, token_expiry_epoch
+from dhan import InvalidTOTPError, generate_token, token_expiry_epoch
 from notify import format_holiday_notice, send_telegram
 from params import write_stored_token
 from schedules import set_managed_schedules
@@ -78,12 +87,54 @@ from schedules import set_managed_schedules
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
 
+# What one more attempt needs beyond its wait: the request itself, then the
+# SSM write and the seven schedule calls.
+_ATTEMPT_HEADROOM_SECONDS = HTTP_TIMEOUT_SECONDS + 15
+
+
+def _generate_with_retry(client_id, pin, totp_secret, context):
+    """generate_token, retried on "Invalid TOTP" only, TOTP_RETRY_DELAY_SECONDS apart.
+
+    Each try computes a fresh code. A failed try is logged as a WARNING, which
+    error-notifier's filter does not match, so the alarm comes once, from the
+    final raise. If the invocation has too little time left for another wait
+    and try (the timeout was not raised with the code), it raises now rather
+    than being killed mid-sleep.
+    """
+    attempts = TOTP_RETRIES + 1
+    for attempt in range(1, attempts + 1):
+        try:
+            token = generate_token(client_id, pin, totp_secret)
+            if attempt > 1:
+                logger.info("Invalid TOTP cleared on attempt %d of %d", attempt, attempts)
+            return token
+        except InvalidTOTPError as exc:
+            if attempt == attempts:
+                raise InvalidTOTPError(
+                    "Invalid TOTP on all %d attempts, %d s apart. Last answer: %s"
+                    % (attempts, TOTP_RETRY_DELAY_SECONDS, exc)
+                ) from exc
+            needed = TOTP_RETRY_DELAY_SECONDS + _ATTEMPT_HEADROOM_SECONDS
+            left = context.get_remaining_time_in_millis() / 1000 if context else needed
+            if left < needed:
+                raise InvalidTOTPError(
+                    "Invalid TOTP on attempt %d of %d, and only %.0f s are left in "
+                    "this invocation where a retry needs %d - raise the function "
+                    "timeout. Last answer: %s" % (attempt, attempts, left, needed, exc)
+                ) from exc
+            logger.warning(
+                "attempt %d of %d: %s - retrying in %d s",
+                attempt, attempts, exc, TOTP_RETRY_DELAY_SECONDS,
+            )
+            time.sleep(TOTP_RETRY_DELAY_SECONDS)
+
 
 def lambda_handler(event, context):
     """EventBridge Scheduler entry point.
 
-    Raises on failure so the invocation is recorded as an error and the
-    schedule's retry policy applies. Returns metadata only — never the token;
+    Raises on failure so the invocation is recorded as an error and
+    error-notifier reports it. The only retry is _generate_with_retry's — the
+    function's async retries are 0. Returns metadata only — never the token;
     consumers read that from the parameter.
     """
     started = time.time()
@@ -134,7 +185,7 @@ def lambda_handler(event, context):
     pin = os.environ["DHAN_PIN"]
     totp_secret = os.environ["DHAN_TOTP_SECRET"]
 
-    access_token = generate_token(client_id, pin, totp_secret)
+    access_token = _generate_with_retry(client_id, pin, totp_secret, context)
     expires_at = token_expiry_epoch(access_token)
     record = write_stored_token(access_token, expires_at)
 

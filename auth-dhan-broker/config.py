@@ -26,6 +26,20 @@ NEXT_SESSION_HORIZON_DAYS = 10
 
 HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "30"))
 
+# "Invalid TOTP" is retried INSIDE the run, five minutes apart. Dhan answers it
+# to a correctly computed code (our clock and Dhan's agree to ~20 ms, measured
+# 2026-11-04) and the refusals come in spells of a few minutes: 15 of 37 trading
+# days to 2026-11-04 needed a retry, and on 10-08 and 11-04 all three automatic
+# attempts failed while a run by hand later that morning worked.
+#
+# Two retries is the most that fits: Lambda stops any run at 15 minutes, and
+# two waits of 300 s plus three attempts of up to HTTP_TIMEOUT_SECONDS each is
+# ~12 minutes. The function's own async retries are set to 0 so this loop is the
+# only one — Lambda's would re-run the whole thing 1-2 minutes after a failure.
+# Any other refusal raises at once: a wrong PIN does not get better by waiting.
+TOTP_RETRIES = int(os.environ.get("TOTP_RETRIES", "2"))
+TOTP_RETRY_DELAY_SECONDS = int(os.environ.get("TOTP_RETRY_DELAY_SECONDS", "300"))
+
 # RFC 6238 defaults, which is what Dhan's authenticator enrolment issues.
 TOTP_STEP_SECONDS = 30
 TOTP_DIGITS = 6
