@@ -1,0 +1,5 @@
+# Local only. Pulled market data, the unpacked driver layer, and generated outputs
+# never belong in the repo (same rule as backtesting/data/ in the root .gitignore).
+data/
+driver/
+out/
