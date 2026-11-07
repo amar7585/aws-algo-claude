@@ -7,9 +7,14 @@
 manual workflow for the observation-only phase — validate what Amar spotted against
 captured data + futures OI, then hand-log it to `algo.session_observations`.
 
-**Phase.** Observation-only. Nothing is auto-traded. A pattern-detector Lambda is
-deployed but **log-only** (writes no table); we still hand-log observations here.
-`session_observations` is hand-curated ground truth — the detector must never write it.
+**Phase.** Observation-only. Nothing is auto-traded.
+- A pattern-detector Lambda is deployed but **log-only** (writes no table); we still
+  hand-log observations here.
+- Its v2, `pattern-recorder` (live since 2026-11-06), records candle
+  patterns at levels to `algo.pattern_events`. That is **the machine's** read,
+  useful as a cross-check in step 4.
+- `session_observations` is hand-curated ground truth. Neither function may ever
+  write it.
 Deep lineage is in the memory note `pattern-detector-futures-oi-design`.
 
 ---
@@ -114,10 +119,17 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 ## Pattern vocabulary logged so far
 
 - **Reversals:** `evening_star`, `double_top`, `double_bottom`, `breakout_fade_reclaim` (incl.
-  downside failed-breakdown reclaim), `orb_breakout_fade_reclaim`.
-- **Continuation:** `orb_breakout_retest`.
+  downside failed-breakdown reclaim), `orb_breakout_fade_reclaim`, `orb_liquidity_sweep`
+  (side-agnostic; side in notes).
+- **Continuation:** `orb_breakout_retest`, `pd_breakout_retest` (side-agnostic; side in notes).
 
 Introduce a new `pattern_type` only with Amar's sign-off.
+
+**These are hand-logged names, not v2's families.**
+- `pattern_events` (pattern-recorder) uses R1 rejection / R2 sweep / C1 break / C2 retest,
+  with subtypes and double/triple labels.
+- `pattern-recorder/v2-pattern-definitions.md` (section 10) maps each logged row onto them.
+- Keep logging in the vocabulary above. Don't rename rows to v2 families.
 
 ## Optional — Dhan REST cross-check (raw 5-min OI, not stored in the DB)
 
@@ -139,7 +151,9 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 1. Amar attaches the chart and says which trade(s)/pattern(s) he saw.
 2. Confirm the Neon project id; run queries 1 & 2 for today; confirm the active `fut_security_id`.
 3. Two-clock read + level proximity for each pattern.
-4. Cross-check the live pattern-detector's decision if useful.
+4. Cross-check the live pattern-detector's decision if useful, and, once pattern-recorder is
+   live, what v2 recorded around the event: `algo.pattern_events` for that day,
+   `trigger_ts` within ~15 min of `event_ts`.
 5. **Propose** the `session_observations` row(s), values filled, and **surface the judgment calls**
    (pattern_type name, entry/event candle, resolution point, signal_agreement).
 6. On Amar's OK, INSERT; then update the memory note `pattern-detector-futures-oi-design` with
@@ -147,6 +161,11 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 
 ## State so far
 
-`session_observations` has **7 rows** — 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, all NIFTY
-INDEX; verified against Dhan REST where noted. Standing plan: keep hand-logging each session until
-the rules are clear enough to automate; the detector is already deployed log-only.
+`session_observations` has **9 rows**, all NIFTY INDEX, counted 2026-11-06:
+- 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04;
+- verified against Dhan REST where noted.
+
+Standing plan: keep hand-logging each session until the rules are clear enough to automate.
+- The detector is deployed log-only.
+- Its v2 recorder is live and is checked against these rows: 7 of 9 matched in the replay
+  (`pattern-recorder/v2-phase-a-replay.md`).

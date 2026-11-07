@@ -1,6 +1,6 @@
-"""Offline replay of pattern-detector v2 over stored history.
+"""Offline replay of the v2 pattern library (pattern-recorder) over stored history.
 
-    python pattern-detector/replay/replay.py [data_dir]
+    python pattern-recorder/replay/replay.py [data_dir]
 
 Reads the JSON pulled by fetch.py (default replay/data), runs structure.py +
 patterns.py from the parent folder per session, and writes out/replay_report.md and
@@ -26,13 +26,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
 import structure as st  # noqa: E402
 import patterns as pt   # noqa: E402
+import inputs           # noqa: E402  - the SAME assembly the Lambda uses
 
 DATA = sys.argv[1] if len(sys.argv) > 1 and __name__ == "__main__" else os.path.join(HERE, "data")
 OUT = os.path.join(HERE, "out")
 SEP_FUT = "68407"
 DAMAGE_FROM = datetime.date(2026, 9, 11)
 DAMAGED_MINUTES = {9 * 60 + 40 + 15 * k for k in range(22)} | {15 * 60 + 10, 15 * 60 + 20}
-RVOL_SESSIONS = 20
 OI_CONFIRM_PCT = 3.0
 HORIZONS = (15, 30, 60)
 
@@ -40,11 +40,6 @@ HORIZONS = (15, 30, 60)
 def load(name):
     with open(os.path.join(DATA, name + ".json"), encoding="utf-8") as f:
         return json.load(f)
-
-
-def to_bar(r):
-    return {"ts": int(r["candle_ts"]), "open": float(r["open"]), "high": float(r["high"]),
-            "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"] or 0)}
 
 
 def day_date(day):
@@ -60,64 +55,29 @@ def num(v):
 
 fut_rows, idx_rows = load("fut_5m"), load("idx_5m")
 fno_rows, sent_rows, fno5_rows, obs_rows = load("fno"), load("sent"), load("fno5"), load("obs")
-
-TODAY = st.ist_day(time.time())
-fut_by = collections.defaultdict(lambda: collections.defaultdict(list))
-for r in fut_rows:
-    b = to_bar(r)
-    fut_by[str(r["security_id"])][st.ist_day(b["ts"])].append(b)
-idx_by = collections.defaultdict(list)
-for r in idx_rows:
-    b = to_bar(r)
-    idx_by[st.ist_day(b["ts"])].append(b)
-for c in fut_by:
-    for d in fut_by[c]:
-        fut_by[c][d].sort(key=lambda b: b["ts"])
-for d in idx_by:
-    idx_by[d].sort(key=lambda b: b["ts"])
-
-fno_by_day = collections.defaultdict(list)
 for r in fno_rows:
     r["snapshot_ts"] = int(r["snapshot_ts"])
-    fno_by_day[st.ist_day(r["snapshot_ts"])].append(r)
-for d in fno_by_day:
-    fno_by_day[d].sort(key=lambda r: r["snapshot_ts"])
+
+TODAY = st.ist_day(time.time())
+store = inputs.Store(fut_rows, idx_rows, fno_rows)
 fno_by_ts = {r["snapshot_ts"]: r for r in fno_rows}
 sent_by_ts = {int(r["snapshot_ts"]): r for r in sent_rows}
 fno5_by_bar = {(str(r["fut_security_id"]), int(r["fut_bar_ts"])): r for r in fno5_rows}
-
-days = sorted(d for d in set(idx_by) | {d for c in fut_by for d in fut_by[c]} if d < TODAY)
-
-
-def active_contract(day):
-    rows = fno_by_day.get(day)
-    if rows:
-        return collections.Counter(str(r["fut_security_id"]) for r in rows).most_common(1)[0][0], "stored"
-    best = max(((sum(b["volume"] for b in fut_by[c].get(day, [])), c) for c in fut_by), default=(0, None))
-    return (best[1], "max_volume") if best[0] > 0 else (None, None)
-
+days = [d for d in store.days if d < TODAY]
 
 # ---- per-session detection --------------------------------------------------------------
 sessions = []
-clock_vol = {}   # day -> {minute: volume} of the active contract
-for k, day in enumerate(days):
-    contract, how = active_contract(day)
-    if contract is None or not fut_by[contract].get(day):
+for day in days:
+    contract, how = store.active_contract(day)
+    if contract is None:
         continue
-    bars = fut_by[contract][day]
-    prev_day = days[k - 1] if k > 0 else None
-    prev = fut_by[contract].get(prev_day, []) if prev_day is not None else []
-    clock_vol[day] = {st.ist_minute(b["ts"]): b["volume"] for b in bars}
-    earlier = [d for d in days[:k] if d in clock_vol][-RVOL_SESSIONS:]
-    rvol_hist = collections.defaultdict(list)
-    for d in earlier:
-        for m, v in clock_vol[d].items():
-            rvol_hist[m].append(v)
+    si = store.session_inputs(day, contract)
+    if not si["session_bars"]:
+        continue
     sessions.append({
         "day": day, "date": day_date(day), "contract": contract, "contract_how": how,
-        "bars": bars, "prev": prev, "idx": idx_by.get(day, []),
-        "prev_idx": idx_by.get(prev_day, []) if prev_day is not None else [],
-        "fno": fno_by_day.get(day, []), "rvol": dict(rvol_hist),
+        "bars": si["session_bars"], "prev": si["prev_bars"], "idx": si["index_bars"],
+        "prev_idx": si["prev_index_bars"], "fno": si["fno_rows"], "rvol": si["rvol_history"],
         "damaged": contract == SEP_FUT and day_date(day) >= DAMAGE_FROM,
     })
 
@@ -137,15 +97,31 @@ for s in sessions:
 
 # ---- consistency: simulated live runs vs full-session detection --------------------------
 def run_clocks(s):
+    """
+    [(snapshot_ts, captured_at, closed_after)] for each run of the session, where
+    closed_after is the freshness lower bound live uses: the captured_at of the
+    row at prev_snapshot_ts. On a session's first run that row is the PREVIOUS
+    day's last, so the whole morning is fresh even when the first run is late
+    (09-30, 10-08). Measured 2026-11-05; the Phase A replay wrongly used "one
+    interval back" here. Sessions before stored rows existed are simulated on the
+    09:45 grid (+70 s, the measured median), first run fresh from the open.
+    """
     if s["fno"]:
         out = []
         for r in s["fno"]:
-            cap = r.get("captured_at")
-            out.append((r["snapshot_ts"], int(cap) if cap else r["snapshot_ts"] + 70))
+            cap = int(r["captured_at"]) if r.get("captured_at") else r["snapshot_ts"] + 70
+            prev = fno_by_ts.get(int(r["prev_snapshot_ts"])) if r.get("prev_snapshot_ts") else None
+            after = int(prev["captured_at"]) if prev and prev.get("captured_at") else cap - 900
+            out.append((r["snapshot_ts"], cap, after))
         return out, "stored"
     base = st.ist_day_start(s["bars"][0]["ts"])
     grid = [9 * 60 + 45 + 15 * k for k in range(24)] + [15 * 60 + 35]
-    return [(base + m * 60, base + m * 60 + 70) for m in grid], "simulated"
+    out, after = [], s["bars"][0]["ts"] - 1
+    for m in grid:
+        cap = base + m * 60 + 70
+        out.append((base + m * 60, cap, after))
+        after = cap
+    return out, "simulated"
 
 
 cons = {"runs": 0, "truncated_checked": 0, "truncated_mismatch": 0, "skipped": 0, "double": 0}
@@ -153,19 +129,16 @@ mismatch_examples = []
 for s in sessions:
     clocks, how = run_clocks(s)
     assigned = collections.Counter()
-    prev_cap = None
-    for snap_ts, cap in clocks:
-        closed_after = prev_cap if prev_cap is not None else cap - 900
+    for snap_ts, cap, closed_after in clocks:
         expect = pt.fresh_events(s["events"], closed_after, cap)
         for e in expect:
             assigned[id(e)] += 1
         cons["runs"] += 1
         if how == "stored":
-            cut = [b for b in s["bars"] if b["ts"] + 300 <= cap]
-            cut_idx = [b for b in s["idx"] if b["ts"] + 300 <= cap]
-            cut_fno = [r for r in s["fno"] if r["snapshot_ts"] <= snap_ts]
-            got = pt.fresh_events(pt.detect_session(cut, s["prev"], cut_idx, s["prev_idx"], cut_fno, s["rvol"]),
-                                  closed_after, cap)
+            # What live computes at this run: the same assembly, bars closed by
+            # its captured_at, fno rows up to its snapshot.
+            cut = store.session_inputs(s["day"], s["contract"], closed_by=cap, snapshot_ts=snap_ts)
+            got = pt.fresh_events(inputs.detect(cut, pt.detect_session), closed_after, cap)
             strip = lambda es: [{k: v for k, v in e.items() if k not in ("date", "contract", "session_damaged", "slot_damaged")} for e in es]  # noqa: E731
             cons["truncated_checked"] += 1
             if strip(got) != strip(expect):
@@ -173,7 +146,6 @@ for s in sessions:
                 if len(mismatch_examples) < 3:
                     mismatch_examples.append((s["date"].isoformat(), st.clock(snap_ts),
                                               len(got), len(expect)))
-        prev_cap = cap
     for e in s["events"]:
         n = assigned[id(e)]
         if n == 0:
@@ -487,15 +459,14 @@ L.append("## 8. Follow-up cuts\n")
 skipped = []
 for s in sessions:
     clocks, how = run_clocks(s)
-    hit, prev = set(), None
-    for snap, cap in clocks:
-        for e in pt.fresh_events(s["events"], prev if prev is not None else cap - 900, cap):
+    hit = set()
+    for snap, cap, after in clocks:
+        for e in pt.fresh_events(s["events"], after, cap):
             hit.add(id(e))
-        prev = cap
     for e in s["events"]:
         if id(e) not in hit:
             closes = e["trigger_ts"] + 300
-            why = ("before the first run's window" if closes <= clocks[0][1] - 900
+            why = ("before the first run's window" if closes <= clocks[0][2]
                    else "after the last run" if closes > clocks[-1][1] else "between runs")
             skipped.append((e["date"], why, st.clock(clocks[0][1])))
 by_why = collections.Counter((d, w, f) for d, w, f in skipped)

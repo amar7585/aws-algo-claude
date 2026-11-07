@@ -15,10 +15,15 @@ recent 5-minute bars and runs two branches on every snapshot:
 
 Both branches push to **Telegram** on an actionable, fresh event.
 
+As its **last** step, after everything above, it hands the run's payload to
+[`pattern-recorder`](../pattern-recorder/README.md) (v2: candle patterns at levels,
+recorded to `algo.pattern_events`), asynchronously. Unset means off. See
+[The hand-off to pattern-recorder](#the-hand-off-to-pattern-recorder).
+
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 6 modules |
+| Runtime | Python 3.14, zip package, 7 modules (`recorder.py` added 2026-11-06) |
 | Layers | `neon-db-driver` + `neon-access` (no classifier layer — it does not score) |
 | Schedule | **none** — invoked by `market-classifier`, once per snapshot (≤25×/day) |
 | Reads | `algo.candle_5min` (the future's **and** the index's **closed** bars) and the prior snapshot's PCR and run clock (`captured_at`) from `algo.intraday_fno_data`; the fno + sentiment rows and the daily read arrive in the payload |
@@ -162,7 +167,30 @@ and future-dependent.
   → pattern-detector      confirmed turn?  ── no ─→ stand down, log the reason
                                             └─ yes ─→ invoke ↓
   → strategy-manager      routes on regime|bias  (now runs ONLY on a turn)
+
+  pattern-detector, last step, every run ─→ pattern-recorder (Event) → algo.pattern_events
 ```
+
+## The hand-off to pattern-recorder
+
+`recorder.py`. After the turn, the continuation alerts and Telegram are all done, the
+detector forwards the payload it received to `pattern-recorder`, with `Event`.
+- **Why a separate function, and why last:** this function has no `EventInvokeConfig`,
+  so Lambda retries a failed invocation twice.
+  - Had v2 run in here, a v2 failure after the existing branches would re-send their
+    alerts and re-dispatch the manager on each retry.
+  - Invoked last and asynchronously, a recorder failure stays in the recorder's own
+    log group.
+- **Unset means off:** with no `PATTERN_RECORDER_FUNCTION_NAME`, nothing is invoked and
+  a log line says so. That env var is the kill switch, so turning v2 off needs no
+  deploy.
+- **Live since 2026-11-06:** code deployed 09:39 IST (CodeSha256 `1nNqeiLS…`; the
+  previous code was `WU75ZJh7…`), switched on 09:40:22. The first hand-off was the
+  09:45 run.
+- **Verified 2026-11-06 on 816 stored payloads, old code against new:**
+  - with it unset, every decision and outward call is identical (29 turns, 29
+    dispatches, 43 Telegram alerts);
+  - with it set, the same, plus the hand-off as the last call on every run.
 
 **Write, then invoke** — there is nothing to write, so it just invokes, `Event`,
 on a confirmed turn. `UNSET MEANS OFF` — with no `STRATEGY_MANAGER_FUNCTION_NAME`
@@ -173,7 +201,8 @@ set, a turn is detected and logged and nothing is dispatched.
 Its own execution role (`pattern-detector-role`), not a borrowed one:
 `ssm:GetParameter` on `/algo/neon/connection` **and `/algo/telegram/brief`**
 (+ `kms:Decrypt` via SSM), `logs` on **its own** log group only, and
-`lambda:InvokeFunction` on `strategy-manager`'s ARN — not a wildcard. A role
+`lambda:InvokeFunction` on `strategy-manager`'s ARN **and `pattern-recorder`'s ARN** —
+not a wildcard. A role
 missing the Telegram parameter does not fail at import: it raises on the first
 alert, after the detection has already run. See CLAUDE.md on the silent
 borrowed-role trap. `error-notifier` is subscribed to this function's log group.
@@ -184,6 +213,7 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 |---|---|---|
 | `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = off; set it to switch the manager gate on |
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
+| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2 (always `Event`) |
 | `VOLUME_Z_MIN` | `2.0` | z that counts as a volume spike (spikes only) — **provisional** |
 | `VOLUME_LOOKBACK` | `20` | bars for the z-score baseline |
 | `CANDIDATE_WINDOW_SECONDS` | `1800` | how far back the reversal candle is looked for |

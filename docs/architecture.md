@@ -43,6 +43,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Intraday classification | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
 | Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** |
 | Strategy routing | on a confirmed turn | invoke from `pattern-detector` | **built** |
+| Pattern recording (v2) | on each snapshot, as the detector's last step | invoke from `pattern-detector` (unset = off) | **built** (live since 2026-11-06) |
 | Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
@@ -125,8 +126,13 @@ the cost of a wake-up on the first connection of each run.
 | `intraday_sentiments` | judgement — regime, structure, bias, buildup, and the swing/volatility reads; joins `intraday_fno_data` on `snapshot_ts` | 92 | market-classifier |
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 920 | intraday-market-sentiment |
 | `index_constituents` | `index_name, security_id, instrument_type, exchange_segment, symbol, updated_at` — the NIFTY 50 / NIFTY 500 rosters for breadth, maintained by hand | 548 (NIFTY50 50, NIFTY500 498) | seeded by hand |
+| `pattern_events` | v2 pattern events: one per (`rules_version`, trigger bar, family, subtype, direction) — level, candles, volume flags. **No OI, no outcome** (both joined at read time). [schema](../pattern-recorder/schema.sql) | created 2026-11-06; written from the 09:45 run that day (2 rows) | pattern-recorder |
 
-**The strategy plane added no tables.** `strategy-manager` is a pure router: it
+**`pattern-recorder` is the one writer in the strategy plane.** It records what the v2
+rules recognise to `pattern_events`. It alerts nothing and dispatches nothing, and
+it never writes the hand-logged `session_observations`.
+
+**Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars
 — `candle_5min`, `candle_15min`, `candle_1hr`, `candle_daily` and
 `instrument_master` — because a playbook knows which bars it needs. Neither

@@ -1,11 +1,11 @@
 """
-pattern-detector v2 - PATTERNS: the *when*.
+pattern-recorder (pattern-detector v2) - PATTERNS: the *when*.
 
 The 5-min candle shapes, the five pattern families and the volume flags, on the
 active future. The definitions are v2-pattern-definitions.md sections 4, 5 and
 7; this module is their exact form. structure.py supplies the *where*.
 
-NOT WIRED IN YET - see structure.py. Phase A replays this offline.
+WHERE IT RUNS - see structure.py: the pattern-recorder Lambda and the replay.
 
 RECOGNITION ONLY. An event says what formed, where, and what volume was doing
 when it formed. It carries no entry, stop, target or score: those belong to a
@@ -39,6 +39,12 @@ import statistics
 
 import structure as st
 from structure import BAR_SECONDS, SUPPORT, RESISTANCE
+
+# The rules this module implements. Every stored event carries it and it is in
+# algo.pattern_events' key, so a change to the definitions writes NEW rows beside
+# the old ones instead of overwriting them. Bump it with any change that can
+# alter which events are found or what they carry.
+RULES_VERSION = "v2.0"
 
 # ---- tunables. PROVISIONAL, env-overridable (definitions section 11) --------
 # Single-bar shapes need a real range: on a 5-pt bar a "doji" is noise. 0.03% is

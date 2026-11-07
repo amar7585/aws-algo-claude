@@ -1,13 +1,14 @@
 # pattern-detector v2 — pattern definitions
 
-← [pattern-detector README](README.md) · [Session-observation runbook](../docs/session-observation-runbook.md)
+← [pattern-recorder README](README.md) · [Session-observation runbook](../docs/session-observation-runbook.md)
 
-**Status: DEFINITIONS ACCEPTED 2026-11-05 — V1–V11 taken as recommended (Amar).
-V12 (two logged-row questions) is still open. Nothing here is built.** Each build phase
-in section 12 needs its own approval before any code is written.
+**Status: DEFINITIONS ACCEPTED 2026-11-05 — V1–V11 and B1–B6 accepted (Amar). V12
+(the 11-04 question) is still open.** The library implements them (`structure.py`,
+`patterns.py`, `RULES_VERSION = "v2.0"`). Phase C, running them live through the
+`pattern-recorder` function, is **live since 2026-11-06 09:45**.
 
-It lives in `pattern-detector/` because changes to one function stay in that function's
-folder. It can move to `docs/` if you prefer.
+It lived in `pattern-detector/` while it was offline-only. Phase C (C1 = B) moved it,
+with the library and `replay/`, into `pattern-recorder/`.
 
 **Scope is recognition only.** It describes patterns and what was true when they formed.
 Entries, exits, targets, stops, P&L and hit rates are decided later, per strategy.

@@ -45,10 +45,15 @@ the end of this file are the current run.
   buildup agreeing at tick0 went with a move of **+7.1 / +8.1 / +8.8** (R1·R2 / C1 / C2),
   against **−6.1 / −6.8 / −7.3** when it disagreed. Far-side option OI unwinding at a
   break still went with worse follow-through (C1 −30.4, n=16; C2 −9.5, n=16).
-- **Unannounced events (B3, for Phase C):** 35, all on days the first live run was late:
-  - 09-15 to 09-18: first run 10:00;
-  - 09-30: first run 12:00;
-  - 10-08: first run 12:33.
+- ~~**Unannounced events (B3, for Phase C):** 35, all on days the first live run was
+  late.~~ **Corrected 2026-11-06: this was a fault in the replay, not in live.**
+  - On the first row of every day, `prev_snapshot_ts` points at the previous day's
+    15:25 row. So live's freshness window on a first run starts at yesterday's last
+    run, and a late morning is announced late, not lost.
+  - The replay had simulated the first run as "one interval back". It now does what
+    live does, and **2** events remain unannounced: both on 09-15, the first stored
+    day, whose first row has no previous row.
+  - B3 needed no code.
 
 ---
 
@@ -126,9 +131,9 @@ the end of this file are the current run.
 
 ---
 
-*Current generated tables (after B1 + B2) follow, unedited — reproduce with `python pattern-detector/replay/replay.py`.*
+*Current generated tables (after B1 + B2, replay freshness corrected 2026-11-06) follow, unedited — reproduce with `python pattern-recorder/replay/replay.py`.*
 
-Generated 2026-11-05 10:03 local. Library: `pattern-detector/structure.py` + `patterns.py` (uncommitted). NEAR 0.05%, MIN_RANGE 0.03%, RECLAIM_MAX_BARS 6, SWING_K 2.
+Generated 2026-11-06 09:18 local. Library: `pattern-detector/structure.py` + `patterns.py` (uncommitted). NEAR 0.05%, MIN_RANGE 0.03%, RECLAIM_MAX_BARS 6, SWING_K 2.
 
 **Descriptive only** - no hit rates, no P&L. Forward moves are on the future, from the trigger bar's close.
 
@@ -142,7 +147,7 @@ Events per clean session: min 12, median 23.0, max 46.
 
 ## 2. Consistency (does live == replay?)
 
-- Simulated runs: 2141. Events never announced by any run: **35**; announced twice: **0**.
+- Simulated runs: 2141. Events never announced by any run: **2**; announced twice: **0**.
 - Real-data no-look-ahead check (sessions with stored run clocks): detection on bars closed by each run's `captured_at` vs full-session detection, fresh events compared: **816/816 runs identical**.
 
 ## 3. Events per session, by family (clean sessions)
@@ -297,7 +302,7 @@ Same, split by time of day for the two reversal families (60m MFE / MAE, n):
 
 ## 8. Follow-up cuts
 
-**Events no run would announce: 35** - 2026-09-15 before the first run's window (first run 10:00) x2, 2026-09-16 before the first run's window (first run 10:00) x3, 2026-09-17 before the first run's window (first run 10:00) x3, 2026-09-18 before the first run's window (first run 10:00) x3, 2026-09-30 before the first run's window (first run 12:00) x13, 2026-10-08 before the first run's window (first run 12:33) x11
+**Events no run would announce: 2** - 2026-09-15 before the first run's window (first run 10:00) x2
 
 **No-pattern baseline** - every clean-session bar 09:30-14:55, read in each direction. Then splits of the events (clean sessions). 60m for / against, and the move at 60m, medians, pts.
 

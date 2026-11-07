@@ -28,7 +28,9 @@ flowchart TD
         PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule</i>"]
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on sideways|range-bound</i>"]
+        REC["<b>pattern-recorder</b><br/><i>invoked last, every run - v2 patterns<br/>live since 2026-11-06</i>"] --> PEV[("pattern_events")]
         PD -->|"Event: only on a confirmed turn"| MGR
+        PD -.->|"Event: last step, unset = off"| REC
         MGR -->|"Event: both sentiments"| SWEEP
         SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
     end
@@ -77,6 +79,7 @@ Read in clock order, a weekday looks like this:
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
 | immediately after | `pattern-detector` | **invoke** | no table (log + Telegram alerts) |
+| as the detector's last step, every run (live since 2026-11-06) | `pattern-recorder` | **invoke** | `pattern_events` |
 | immediately after, on a confirmed turn | `strategy-manager` | **invoke** | nothing |
 | then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
@@ -386,6 +389,8 @@ flowchart TD
     SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, bias, buildup</i>")]
 
     WRITE2 --> PD["<b>pattern-detector</b> - Event invoke<br/><i>reads the future's candle_5min</i>"]
+    PD -.->|"last step, every run<br/>unset = off"| REC["<b>pattern-recorder</b> - Event invoke<br/><i>v2: re-derive the session, upsert</i>"]
+    REC --> PEV[("pattern_events")]
     PD --> TURN{"abnormal-volume reversal<br/>+ buildup/OI confirm?"}
     TURN -->|"no turn"| STAND(["stand down, log the reason"])
     TURN -->|"confirmed turn"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
@@ -482,8 +487,9 @@ flowchart LR
     F7["pattern-detector"] --> LG7[/"log group"/]
     F8["strategy-manager"] --> LG8[/"log group"/]
     F9["strategy-range-liquidity-sweep"] --> LG9[/"log group"/]
+    F10["pattern-recorder"] --> LG10[/"log group"/]
 
-    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 & LG10 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
     EN --> TG(["Telegram"])
     EN -.->|"never subscribe<br/>its own log group"| EN
 

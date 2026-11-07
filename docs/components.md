@@ -18,6 +18,7 @@
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn gate | **built, running** | [README](../pattern-detector/README.md) |
+| `pattern-recorder` | Lambda function | invoked by the detector as its last step, ≤25×/day — v2 patterns → `pattern_events`, records only | **built, running** (live since 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
 | `strategy-manager` | Lambda function | on a confirmed turn — a pure router | **built, running** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
 

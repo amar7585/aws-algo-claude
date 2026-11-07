@@ -3,7 +3,7 @@
 Synthetic bars test LOGIC only - not evidence. The real-data replay (replay.py) is
 the evidence: a synthetic fixture hid a live-data bug in this repo before (CLAUDE.md).
 
-    python pattern-detector/replay/checks.py      # exits 1 on any failure
+    python pattern-recorder/replay/checks.py      # exits 1 on any failure
 """
 import datetime
 import pathlib

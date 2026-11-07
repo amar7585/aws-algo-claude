@@ -1,5 +1,5 @@
 """
-pattern-detector v2 - STRUCTURE: the *where*.
+pattern-recorder (pattern-detector v2) - STRUCTURE: the *where*.
 
 The 15-minute bars, the swings, the named levels and the context attached to
 every v2 event. Pure functions over plain bar lists: no database, no clock, no
@@ -7,9 +7,9 @@ I/O. The definitions are v2-pattern-definitions.md sections 2, 3 and 6; this
 module is the exact form of them, and where the two disagree the document is
 the one to argue with.
 
-NOT WIRED IN YET. handler.py does not import this module. Phase A of the v2
-build is an offline replay over stored history; the handler, detect.py and the
-deployed zip are unchanged, so the live detector behaves exactly as before.
+WHERE IT RUNS. In the pattern-recorder Lambda (handler.py), which
+pattern-detector invokes as its last step, and in the offline replay
+(replay/replay.py). pattern-detector's own detection does not use it.
 
 ONE SERIES: THE FUTURE. Every shape, level and volume read here is on the
 active future's own bars. Measured 2026-11-05: index and future 5-min candles

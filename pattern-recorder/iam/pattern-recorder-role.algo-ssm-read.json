@@ -1,0 +1,24 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "ReadAlgoSsmParameters",
+            "Effect": "Allow",
+            "Action": "ssm:GetParameter",
+            "Resource": [
+                "arn:aws:ssm:ap-south-1:709458364771:parameter/algo/neon/connection"
+            ]
+        },
+        {
+            "Sid": "DecryptThoseParameters",
+            "Effect": "Allow",
+            "Action": "kms:Decrypt",
+            "Resource": "*",
+            "Condition": {
+                "StringEquals": {
+                    "kms:ViaService": "ssm.ap-south-1.amazonaws.com"
+                }
+            }
+        }
+    ]
+}

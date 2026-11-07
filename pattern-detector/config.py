@@ -95,3 +95,11 @@ STRATEGY_MANAGER_FUNCTION_NAME = os.environ.get("STRATEGY_MANAGER_FUNCTION_NAME"
 STRATEGY_MANAGER_INVOCATION_TYPE = os.environ.get(
     "STRATEGY_MANAGER_INVOCATION_TYPE", "Event"
 )
+
+# --------------------------------------------------------------------------
+# The pattern-recorder hand-off (pattern-detector v2) - see recorder.py.
+# Invoked asynchronously as the LAST step of every run. UNSET MEANS OFF: this
+# env var is the kill switch. Setting it needs lambda:InvokeFunction on the
+# recorder's ARN in this function's role.
+# --------------------------------------------------------------------------
+PATTERN_RECORDER_FUNCTION_NAME = os.environ.get("PATTERN_RECORDER_FUNCTION_NAME", "")

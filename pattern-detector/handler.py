@@ -28,6 +28,8 @@ Modules:
     db.py        the recent CLOSED 5-min bars from candle_5min
     detect.py    the two-clock turn rule
     dispatch.py  the strategy-manager gate
+    notify.py    Telegram
+    recorder.py  the hand-off to pattern-recorder (v2), last step, unset = off
 """
 
 import logging
@@ -39,6 +41,7 @@ from db import read_bars, read_future_bars, read_prev_snapshot
 from detect import bar_closed_within, detect, detect_continuation
 from dispatch import dispatch_to_manager
 from notify import send_telegram
+from recorder import invoke_recorder
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -205,6 +208,10 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     for text in messages:
         send_telegram(text)
 
+    # ---- hand-off to pattern-recorder (v2). LAST, after everything above, so
+    # nothing it does can affect this run's decisions or alerts (recorder.py).
+    recorded_by = invoke_recorder(event)
+
     return {
         "status": "success",
         "snapshot": stamp,
@@ -213,5 +220,6 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "dispatched_to": dispatched,
         "continuation_alerts": [alert["kind"] for alert in alerts],
         "telegram_sent": len(messages),
+        "recorded_by": recorded_by,
         "elapsed_seconds": round(time.monotonic() - started, 2),
     }

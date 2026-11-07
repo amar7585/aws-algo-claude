@@ -23,7 +23,8 @@ deterministic to read.
 | [intraday-fno-poller](intraday-fno-poller/README.md) | **running** (live since 2026-10-19) — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 71×/day. Phase 1: **nothing reads it yet** ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — **measures** basis/OI, VIX, two option chains and SMA/RSI → `intraday_fno_data`. Invoked by the loader, 25×/day |
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/bias/buildup on `intraday_sentiments`, invokes the detector |
-| [pattern-detector](pattern-detector/README.md) | **deployed** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm); gates the manager, fires only on a confirmed turn |
+| [pattern-detector](pattern-detector/README.md) | **deployed** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm); gates the manager, fires only on a confirmed turn; as its last step hands each run to `pattern-recorder` (unset = off) |
+| [pattern-recorder](pattern-recorder/README.md) | **live since 2026-11-06 09:45** — pattern-detector v2: candle patterns at levels (PDH/PDL, opening range, 15-min swings, option walls) on the future, volume recorded → `pattern_events`. Records only: no alerts, no dispatch |
 | [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off `intraday_sentiments` and invokes the playbooks that combination allows, on a turn |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
 
@@ -163,6 +164,11 @@ Two planes on different clocks, deliberately uncoupled:
   shortlists the playbooks valid for the `regime|bias` and invokes those —
   `strategy-range-liquidity-sweep` on a range day, nothing on a trending one.
   Nothing in the strategy plane writes to Postgres.
+- **Last, on every run** — `pattern-detector` hands the snapshot to
+  `pattern-recorder` (asynchronously, unset = off), which re-derives the
+  session's v2 pattern events and upserts them to `pattern_events`. It is
+  recognition only and cannot affect the detector's decisions (built
+  2026-11-06, live since the 09:45 run).
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

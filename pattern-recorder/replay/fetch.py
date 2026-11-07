@@ -1,6 +1,6 @@
 """Read-only pull of the tables the v2 replay needs, from Neon AI Trader APP / Algo.
 
-    python -I pattern-detector/replay/fetch.py [driver_dir] [out_dir]
+    python -I pattern-recorder/replay/fetch.py [driver_dir] [out_dir]
 
 driver_dir defaults to replay/driver (the repo's own neon-db-driver layer zip,
 unpacked - see README.md), out_dir to replay/data. Both are git-ignored.
