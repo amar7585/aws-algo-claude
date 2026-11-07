@@ -22,10 +22,21 @@ distance rather than dropped, so the premise stays measurable.
 STATELESS: the candidate is re-derived from the stored future bars each run;
 no pending turn is remembered between invokes. Only CLOSED bars are passed in
 (db.read_bars), so a replay on stored bars reaches the decision live reached.
+
+THE VOLUME BASELINE LEAVES 09:15 BARS OUT (2026-11-06), as pattern-recorder's
+v2 rule does. The open bar is several times a normal bar, and in a plain 20-bar
+baseline it sat there until 10:55. Measured on 35 sessions, 09-15..11-04: with
+it in, the 09:30 bar's baseline sd was 1.53x larger (median; up to 3.17x).
+Replayed over 850 stored runs (09-15..11-06), leaving it out gained 12 level
+breaks, 2 retest entries and 1 turn, and lost none. Live on 2026-11-06 it had cost the 09:30
+orb_high break: z 1.48 with it, 5.55 without. The baseline still reaches back
+into the previous session, so a 09:20 bar has one.
 """
 
 import logging
 import statistics
+
+from neon_access import ist_datetime
 
 from config import (
     BAR_SECONDS,
@@ -51,6 +62,30 @@ def bar_closed_within(bar_ts, closed_after, closed_by):
     read it closed, so a stateless re-derivation announces each event once.
     """
     return closed_after < bar_ts + BAR_SECONDS <= closed_by
+
+
+OPEN_BAR = (9, 15)  # IST (hour, minute) of the session's first bar
+
+
+def _is_open_bar(bar):
+    when = ist_datetime(bar["ts"])
+    return (when.hour, when.minute) == OPEN_BAR
+
+
+def _baseline(bars, i):
+    """
+    The volumes of up to VOLUME_LOOKBACK bars before bar i, nearest first, with
+    09:15 bars LEFT OUT (see the module docstring). It is not cut at the session
+    start, so the early bars of a session are scored against the end of the
+    previous one, as before.
+    """
+    volumes = []
+    for bar in reversed(bars[:i]):
+        if len(volumes) == VOLUME_LOOKBACK:
+            break
+        if not _is_open_bar(bar):
+            volumes.append(bar["volume"])
+    return volumes
 
 
 def _volume_z(target_volume, baseline_volumes):
@@ -87,16 +122,15 @@ def find_candidate(fut_bars, snapshot_ts):
     fut_bars is oldest-first, closed bars only, each {ts, open, high, low,
     close, volume}. The window is the bars that started within
     CANDIDATE_WINDOW_SECONDS before the snapshot; each is scored on its own
-    preceding baseline so a later bar's z is not contaminated by the anomaly
-    itself.
+    preceding baseline (_baseline: 09:15 bars left out) so a later bar's z is
+    not contaminated by the anomaly itself.
     """
     window_start = snapshot_ts - CANDIDATE_WINDOW_SECONDS
     best = None
     for i, bar in enumerate(fut_bars):
         if not (window_start < bar["ts"] <= snapshot_ts):
             continue
-        baseline = [b["volume"] for b in fut_bars[max(0, i - VOLUME_LOOKBACK):i]]
-        z = _volume_z(bar["volume"], baseline)
+        z = _volume_z(bar["volume"], _baseline(fut_bars, i))
         if z is None or z < VOLUME_Z_MIN:
             continue
         direction = _reversal_direction(bar, fut_bars[max(0, i - 3):i])
@@ -315,15 +349,15 @@ def _continuation_confirmations(direction, fno, sentiment, prev_pcr):
 def _future_volume_z(fut_bars, ts):
     """
     Signed volume z of the FUTURE bar at ts, against its VOLUME_LOOKBACK
-    predecessors. The break is timed on the index, but the abnormal-volume tell
-    is the future's - it carries the real traded volume - so the two series are
-    aligned by timestamp. None when the future has no bar at that instant.
+    predecessors (_baseline: 09:15 bars left out). The break is timed on the
+    index, but the abnormal-volume tell is the future's - it carries the real
+    traded volume - so the two series are aligned by timestamp. None when the
+    future has no bar at that instant.
     """
     index = next((i for i, bar in enumerate(fut_bars) if bar["ts"] == ts), None)
     if index is None:
         return None
-    baseline = [b["volume"] for b in fut_bars[max(0, index - VOLUME_LOOKBACK):index]]
-    return _volume_z(fut_bars[index]["volume"], baseline)
+    return _volume_z(fut_bars[index]["volume"], _baseline(fut_bars, index))
 
 
 def detect_continuation(fno, sentiment, index_bars, fut_bars, daily,
@@ -341,6 +375,13 @@ def detect_continuation(fno, sentiment, index_bars, fut_bars, daily,
     because the future carries the real traded volume and a basis that would
     misplace a spot level if the break were measured on it directly. Both series
     hold closed bars only (db.read_bars).
+
+    ONLY THIS SESSION'S BARS CAN BE A BREAK (2026-11-06). The bars read reach
+    back into the previous afternoon, and today's opening range applied to them
+    found "breaks" there. Those were never fresh, so never alerted, but a retest
+    of one on today's bars was: 4 RETEST ENTRY alerts in 35 sessions (09-15..
+    11-04) named a break from the session before. The bar BEFORE a break may
+    still be yesterday's last, so a 09:15 gap through a level is still a break.
     """
     highs, lows = _key_levels(fno, daily)
     if not highs and not lows:
@@ -349,8 +390,11 @@ def detect_continuation(fno, sentiment, index_bars, fut_bars, daily,
     def fresh(ts):
         return bar_closed_within(ts, closed_after, closed_by)
 
+    session_day = ist_datetime(int(fno["snapshot_ts"])).date()
     alerts = []
     for i, bar in enumerate(index_bars):
+        if ist_datetime(bar["ts"]).date() != session_day:
+            continue
         broken = _find_break(index_bars, i, highs, lows)
         if broken is None:
             continue

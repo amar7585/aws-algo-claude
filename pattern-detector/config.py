@@ -29,7 +29,7 @@ BAR_SECONDS = 300
 # most bars at all - a zero-volume bar only reaches -mean/sd, about -1.6 on the
 # future. Across 2,175 futures bars (09-15..10-28) the collapse side flagged 0
 # real bars against 35 spikes; its only live output was a forming-bar artifact.
-VOLUME_LOOKBACK = int(os.environ.get("VOLUME_LOOKBACK", "20"))    # bars for the z baseline
+VOLUME_LOOKBACK = int(os.environ.get("VOLUME_LOOKBACK", "20"))    # bars for the z baseline, 09:15 bars left out (detect._baseline)
 VOLUME_Z_MIN = float(os.environ.get("VOLUME_Z_MIN", "2.0"))      # z that counts as a spike
 
 # The reversal candle is looked for among the future's CLOSED 5-min bars that

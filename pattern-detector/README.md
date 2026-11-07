@@ -59,6 +59,39 @@ hold:
 - Across 2,175 futures bars (09-15..10-28) the collapse side flagged 0 real bars,
   against 35 spikes. Its only live output was a forming-bar artifact (below).
 
+**The baseline leaves 09:15 bars out** (live since 2026-11-06 12:07:12 IST,
+CodeSha256 `GgRBzfXXAQWqxuCHPoC+IDZzdyR/HwkTwvwps6d7Dog=`; the previous code was
+`1nNqeiLS…`, the rollback). The same deploy holds the session limit on breaks
+below. The baseline is
+the 20 bars before the one scored, and it still reaches back into the previous
+session. The open bar is several times a normal bar, so a plain 20-bar baseline
+carried it until 10:55.
+- **The effect, measured on 35 sessions (09-15..11-04):** with the open bar in,
+  the 09:30 bar's baseline sd was 1.53× larger at the median, and up to 3.17×.
+  That cut the z by about a third.
+- **What it cost live:** on 2026-11-06 the 09:30 `orb_high` break scored z 1.48
+  with the open bar in the baseline, so no LEVEL BREAK was sent. Without it the
+  z is 5.55.
+- **Replayed over 850 stored runs (09-15..11-06 12:00), deployed zip against
+  this code:**
+  - leaving it out gained 12 level breaks (today's 09:30 one included), 2 retest
+    entries and 1 turn (2026-09-24 09:45, so 1 extra manager dispatch);
+  - it lost none;
+  - every gain is on a bar from 09:30 to 10:05;
+  - 5 more candidates were logged as unconfirmed.
+- **Unchanged:** the two 2026-09-18 turns (z 9.84 and 3.42) and every
+  hand-logged observation.
+- **Same rule in v2:** `pattern-recorder` uses it too.
+- **Verified live, 2026-11-06:** all 14 runs after the deploy (12:15 to 15:25)
+  equal a replay of the new code, with 0 errors. Each was "no turn" with no
+  alerts, and each forwarded to the recorder.
+
+**Not fixed: the 09:15 bar's own z.** It is scored against the previous
+afternoon, and reaches 2.0 on 29 of 35 sessions (median 6.66). So for a gap
+through PDH/PDL at the open, the volume gate filters almost nothing. 7 of the 23
+replayed level breaks are such gaps. A real fix needs time-of-day volume, which
+v2 records as `rvol_tod`, so it can be judged from data first.
+
 **+1-tick — confirmation.** One snapshot later the turn is confirmed by the
 futures `buildup` turning the right way (`LONG_BUILDUP` for a low,
 `LONG_UNWINDING` for a high) **OR** the relevant option OI moving
@@ -111,6 +144,14 @@ The structure is committed; every number is a starting point.
   Read on the **index** bars (the levels are spot levels). The abnormal-volume tell
   (a spike, `z ≥ CONT_VOLUME_Z_MIN`) is the **future's**, aligned by timestamp,
   because the future carries the real traded volume.
+- **Only this session's bars can be a break** (since 2026-11-06).
+  - **Why:** the bars read reach back into the previous afternoon. Today's
+    opening range applied to them found "breaks" there. Those were never fresh,
+    so never alerted, but a retest of one on today's bars was.
+  - **How often:** 4 RETEST ENTRY alerts in 35 sessions (09-16, 09-17, 09-22,
+    10-07). Each named a break from the session before and carried that bar's z.
+  - **Gap opens still count:** the bar *before* a break may be the previous
+    session's last, so a 09:15 gap through a level is still a break.
 - **Retest entry** — after a break, price closes back on the far side of the
   level (the dip), then a later bar closes back across it (the reclaim). The
   reclaim bar is the entry. A continuation that never dips back has no retest
@@ -215,7 +256,7 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
 | `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2 (always `Event`) |
 | `VOLUME_Z_MIN` | `2.0` | z that counts as a volume spike (spikes only) — **provisional** |
-| `VOLUME_LOOKBACK` | `20` | bars for the z-score baseline |
+| `VOLUME_LOOKBACK` | `20` | bars for the z-score baseline, 09:15 bars left out |
 | `CANDIDATE_WINDOW_SECONDS` | `1800` | how far back the reversal candle is looked for |
 | `OI_CONFIRM_PCT` | `3.0` | \|option OI change\| that confirms a turn — **provisional** |
 | `LEVEL_EPS_PCT` | `0.15` | proximity to a wall counted as "at the level" — annotated, not gated |
