@@ -80,6 +80,11 @@ CONT_VOLUME_Z_MIN = float(os.environ.get("CONT_VOLUME_Z_MIN", "2.0"))  # spike z
 # so a setup that "can produce a trade signal" reaches the phone, not only the
 # log. The same parameter the daily brief and error-notifier use.
 TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
+# UNSET MEANS OFF (plan v3, 2026-11-09): with no TELEGRAM_ENABLED the alerts are
+# decided and LOGGED but not sent - v1 is log-only once pattern-recorder v2.1
+# sends. Set it to "on" to send. Set it on the live function BEFORE deploying
+# this code, so the deploy changes nothing until the cutover removes it.
+TELEGRAM_ENABLED = os.environ.get("TELEGRAM_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
 
 # --------------------------------------------------------------------------

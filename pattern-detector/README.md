@@ -197,6 +197,18 @@ Delivery is fail-loud: a refused Telegram call raises, so Lambda records the
 error and `error-notifier` reports it. It uses the same `/algo/telegram/brief`
 parameter as the daily brief and `error-notifier`.
 
+**The Telegram switch (plan v3, deployed 2026-11-09 13:50:10 IST, CodeSha256 `CBczFaGk23EJsOJYC4M/j+guN52ID11U0nmq/CaDu8E=`; previous `GgRBzfXX…`; `TELEGRAM_ENABLED=on` set at 13:48 before it, and `PATTERN_RECORDER_FUNCTION_NAME` unset with it - v2.1 now runs on the poller).** Sending needs `TELEGRAM_ENABLED=on`.
+**Unset means off:** the alerts are still decided and logged ("telegram off - not
+sent: ..."), but nothing goes to Telegram. It exists so v1 can become log-only once
+`pattern-recorder` v2.1 sends the alerts, with no code change on the night.
+- **Before deploying this code,** set `TELEGRAM_ENABLED=on` on the live function. The old
+  code ignores it, so the deploy changes nothing.
+- **At the v2.1 cutover,** unset it, together with `STRATEGY_MANAGER_FUNCTION_NAME`.
+- **Replayed over 880 stored runs against the deployed code:**
+  - with it on, every decision and outward call is identical: 70 Telegram messages and 30
+    manager invokes;
+  - with it off, the only change is no Telegram.
+
 A table comes once the rule is proven on live sessions. It never writes the
 hand-curated `algo.session_observations`, whose `outcome`/`resolved_ts` are human
 and future-dependent.
@@ -254,7 +266,7 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 |---|---|---|
 | `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = off; set it to switch the manager gate on |
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
-| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2 (always `Event`) |
+| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2.0 (always `Event`). **Unset it when v2.1 goes on**: v2.1 runs on intraday-fno-poller and refuses this payload |
 | `VOLUME_Z_MIN` | `2.0` | z that counts as a volume spike (spikes only) — **provisional** |
 | `VOLUME_LOOKBACK` | `20` | bars for the z-score baseline, 09:15 bars left out |
 | `CANDIDATE_WINDOW_SECONDS` | `1800` | how far back the reversal candle is looked for |
@@ -263,5 +275,6 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 | `FUT_BARS_LOOKBACK` | `40` | closed future 5-min bars read per run |
 | `FUTURES_INSTRUMENT_TYPE` | `FUTIDX` | the future's instrument_type in `candle_5min` |
 | `CONT_VOLUME_Z_MIN` | `2.0` | z on the future's break bar that counts as a spike (spikes only) — **provisional, n=1** |
+| `TELEGRAM_ENABLED` | *(unset)* | **unset = log-only**, no Telegram. Set to `on` to send. Set it before deploying the switch; unset it at the v2.1 cutover |
 | `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | `bot_token` + `chat_id`; shared with the daily brief and `error-notifier` |
 | `HTTP_TIMEOUT_SECONDS` | `8` | Telegram call timeout |

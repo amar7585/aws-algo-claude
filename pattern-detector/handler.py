@@ -37,6 +37,7 @@ import time
 
 from neon_access import connect, ist_datetime, read_neon_connection_string
 
+from config import TELEGRAM_ENABLED
 from db import read_bars, read_future_bars, read_prev_snapshot
 from detect import bar_closed_within, detect, detect_continuation
 from dispatch import dispatch_to_manager
@@ -205,8 +206,12 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
             messages.append(_retest_message(stamp, alert))
 
     # ---- deliver. Fail-loud: a refused alert must raise so Lambda records it. --
+    # TELEGRAM_ENABLED unset = log-only (plan v3: v1 stops sending once v2.1 does).
     for text in messages:
-        send_telegram(text)
+        if TELEGRAM_ENABLED:
+            send_telegram(text)
+        else:
+            logger.info("telegram off (TELEGRAM_ENABLED unset) - not sent: %s", text.replace("\n", " | "))
 
     # ---- hand-off to pattern-recorder (v2). LAST, after everything above, so
     # nothing it does can affect this run's decisions or alerts (recorder.py).
@@ -219,7 +224,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "direction": detection.get("direction"),
         "dispatched_to": dispatched,
         "continuation_alerts": [alert["kind"] for alert in alerts],
-        "telegram_sent": len(messages),
+        "telegram_sent": len(messages) if TELEGRAM_ENABLED else 0,
         "recorded_by": recorded_by,
         "elapsed_seconds": round(time.monotonic() - started, 2),
     }
