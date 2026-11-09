@@ -115,3 +115,9 @@ HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "60"))
 # 24 bind parameters per fno_5m_leg row against Postgres's 65,535 cap is a
 # ceiling of 2,730 rows per statement. A tick writes 10.
 UPSERT_BATCH_SIZE = int(os.environ.get("UPSERT_BATCH_SIZE", "500"))
+
+# The hand-off to pattern-recorder (v2.1, plan v3 step 4) - see recorder.py.
+# Invoked asynchronously as the LAST step of every run. UNSET MEANS OFF: this env
+# var is the kill switch. Setting it needs lambda:InvokeFunction on the
+# recorder's ARN in this function's role.
+PATTERN_RECORDER_FUNCTION_NAME = os.environ.get("PATTERN_RECORDER_FUNCTION_NAME", "")

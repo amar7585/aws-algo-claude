@@ -21,9 +21,9 @@ every snapshot now holds exactly 10. See [Schedule](#schedule) and
 | Schedule | three rules, `Asia/Kolkata`, **71 runs a day**, one minute past each five-minute mark except 15:26 — see [Schedule](#schedule) |
 | Writes | `algo.fno_5m_snapshot`, `algo.fno_5m_leg` — one transaction |
 | Reads | `algo.instrument_master`, and its own previous row |
-| Invokes / invoked by | **nothing.** No consumer reads its tables yet (phase 1) |
+| Invokes / invoked by | invoked by nothing. **Since 2026-11-09 13:52:** as its LAST step it hands each committed tick to `pattern-recorder` v2.1 (`Event`, `recorder.py`), behind `PATTERN_RECORDER_FUNCTION_NAME` (unset = off). See [The hand-off to pattern-recorder](#the-hand-off-to-pattern-recorder) |
 | Instruments | NIFTY (`13`/`INDEX`), the current-month future, resolved at run time |
-| Runtime | Python 3.14, zip package, 8 modules, pure Python |
+| Runtime | Python 3.14, zip package, 9 modules (`recorder.py` added 2026-11-09), pure Python |
 | Layers | `neon-db-driver` + `neon-access` |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
 
@@ -159,8 +159,32 @@ other session functions. The weekend guard stays.
    no outer strikes behind. A missing column, a partial leg, or a chain that yields **no
    legs** raises.
 
-Raises on any failure — never a `{"statusCode": 500}` shape. No invoke, so nothing
-downstream can be failed by it and it cannot be failed by anything downstream.
+9. **Hand off** the committed tick to `pattern-recorder` (unset = off).
+
+Raises on any failure — never a `{"statusCode": 500}` shape.
+
+## The hand-off to pattern-recorder
+
+*(plan v3, step 4, deployed 2026-11-09 13:52:21 IST, CodeSha256 `MmdsHFWXWtUe/lbjTWKzZfhZ65DWYoskilmH0kXmmg8=`; previous `u3SfzVCz…`; `PATTERN_RECORDER_FUNCTION_NAME=pattern-recorder` set with it; the first handed-off tick was 13:56)*
+
+`recorder.py` runs after the row and its legs are **committed**. It invokes
+`pattern-recorder` asynchronously with the tick, plus the index and future instruments.
+This function does not wait for it, and nothing the recorder finds can change this row.
+- **Why here:** the tick is the 5-minute clock v2.1 runs on. It is written about 100 s
+  after each candle closes (p50 99 s, max 107 s over 663 ticks, 10-27..11-09), so the
+  trigger candle's own OI change is already stored when the recorder runs.
+- **Unset means off:** with no `PATTERN_RECORDER_FUNCTION_NAME`, nothing is invoked and a
+  log line says so. That env var is the kill switch.
+- **A configured invoke that does not land raises.**
+  - Retries are off here (EventInvokeConfig and the schedule are both 0), so the error is
+    recorded once.
+  - The committed row stands, and error-notifier reports the error.
+  - That tick's events are announced by the next tick only if they are still fresh then,
+    so a failed hand-off can cost that tick's alerts.
+- **IAM:** a new inline policy `invoke-pattern-recorder` on `intraday-fno-poller-role`
+  (`lambda:InvokeFunction` on the recorder's ARN only), beside the managed
+  `intraday-fno-poller-access`. The file is in `pattern-recorder/iam/`. **Grant first,
+  then set the env var.**
 
 ## Configuration
 
@@ -179,9 +203,11 @@ downstream can be failed by it and it cannot be failed by anything downstream.
 | `API_PACING_SECONDS` | `4.0` | measured; tighter than the documented 5/s |
 | `HTTP_TIMEOUT_SECONDS` | `60` | |
 | `UPSERT_BATCH_SIZE` | `500` | 24 params per leg row against Postgres's 65,535 cap |
+| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every committed tick to v2.1 (`Event`) |
 
 The Dhan client id comes from the access token's own `dhanClientId` claim, not from
-configuration. No environment variables are required.
+configuration. No environment variables are required; `PATTERN_RECORDER_FUNCTION_NAME`
+only switches the hand-off on.
 
 ## Layout
 
@@ -194,6 +220,7 @@ expiry.py     nearest / monthly selection           (verbatim copy)
 chain.py      ATM, PCR, OI walls, max pain, legs    (verbatim copy)
 reading.py    which bar is which, what changed      (pure; new)
 db.py         the two-table write, previous-tick read
+recorder.py   the hand-off to pattern-recorder        (new, 2026-11-09)
 schema.sql    algo.fno_5m_snapshot, algo.fno_5m_leg
 ```
 
@@ -283,6 +310,6 @@ the three names/ARNs from the gate. The 15-minute chain is unaffected at every s
 
 ## Not in scope
 
-No classification, no signals, no Telegram, no thresholds, no consumer, no order placement.
+No classification, no signals, no Telegram, no thresholds, no order placement. Its one consumer, from v2.1, is `pattern-recorder`, which it invokes and does not wait for.
 No VIX, SMA/RSI, breadth, opening range, VWAP or day high/low on the fast row. No backfill.
 No change to `candle_5min` (it has no OI column and keeps none).

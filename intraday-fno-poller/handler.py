@@ -7,11 +7,13 @@ interest and volume (including the last closed bar's own OI change), the option
 chain aggregates for the nearest and monthly expiries, and the raw ATM +-2 legs.
 
 ON ITS OWN CRON. Three EventBridge rules, 71 runs a day, one minute past each
-five-minute mark except 15:26 (see config.py). It invokes nothing and is invoked by nothing:
-the 15-minute chain (loader -> intraday-market-sentiment -> market-classifier ->
-pattern-detector -> strategy-manager) is untouched, and NOTHING READS THIS
-FUNCTION'S TABLES YET. Phase 1 is storing - Dhan serves only a LIVE option
-chain, so a five-minute reading not taken is gone for good.
+five-minute mark except 15:26 (see config.py). It is invoked by nothing. As its
+LAST step it hands the committed tick to pattern-recorder (v2.1, plan v3), which
+runs the v2 patterns on the 5-min clock - recorder.py, behind
+PATTERN_RECORDER_FUNCTION_NAME (unset = off). The 15-minute chain (loader ->
+intraday-market-sentiment -> market-classifier -> pattern-detector) is
+untouched. Dhan serves only a LIVE option chain, so a five-minute reading not
+taken is gone for good.
 
 It does not classify, score, read the daily read, or compute SMA/RSI, breadth or
 VIX. Those stay on the 15-minute row, and the fast row joins to it at read time
@@ -29,6 +31,7 @@ Modules:
     chain.py     ATM, PCR, OI walls, max pain, raw legs
     reading.py   which bar is which, and what changed (pure)
     db.py        the two-table write, the previous-tick read
+    recorder.py  the hand-off to pattern-recorder
 """
 
 import datetime
@@ -63,6 +66,7 @@ from config import (
 from db import previous_tick, resolve_by_symbol, resolve_instrument, write_snapshot
 from dhan import DhanClient, require_oi, session_candles, to_candles
 from params import read_client_id, read_token_record
+from recorder import invoke_recorder
 from reading import (
     bar_at,
     bar_before,
@@ -334,6 +338,9 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
 
         legs_written = write_snapshot(conn, row, legs)
 
+        # LAST: hand the committed tick to pattern-recorder (v2.1). Unset = off.
+        recorded_by = invoke_recorder(row, index, future)
+
         elapsed = time.monotonic() - started
         logger.info(
             "done in %.1fs: snapshot %s, closed bar %s, spot %.2f, fut_bar vol %s "
@@ -356,6 +363,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
             "monthly_expiry": monthly_date.isoformat(),
             "near_pcr_oi": near["pcr_oi"],
             "legs_written": legs_written,
+            "recorded_by": recorded_by,
             "dhan_calls": client.calls,
             "elapsed_seconds": round(elapsed, 2),
         }
