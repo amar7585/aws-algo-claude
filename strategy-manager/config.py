@@ -96,6 +96,19 @@ STRATEGY_REGISTRY = json.loads(
     os.environ.get("STRATEGY_REGISTRY", json.dumps(_DEFAULT_REGISTRY))
 )
 
+# ---- trend days route on day_trend, not on regime|bias (Amar, 2026-11-09) ------
+# A v2 alert arriving with day_trend up/down goes to the TREND playbooks below and
+# NEVER to the registry above: a trend day's hold is a breakout trade, and the
+# registry's range playbook would fade it. regime|bias lags the trend read (on
+# 2026-11-06 bias read range-bound 10:45-11:30, exactly during the PDH hold), so
+# it cannot route a trend day. day_trend none - and any payload without v2's
+# alert - routes on the registry as before.
+#
+# Comma-separated function names. UNSET = OFF: trend-day alerts route to nothing,
+# logged as a deliberate stand-down. Setting it needs lambda:InvokeFunction on
+# each named ARN in this role's invoke-playbooks policy.
+TREND_PLAYBOOKS = [x.strip() for x in os.environ.get("TREND_PLAYBOOKS", "").split(",") if x.strip()]
+
 # Asynchronous, and the choice is load-bearing. This function returning is not
 # a claim that any strategy succeeded - each has its own log group and
 # error-notifier reports its failures directly. A synchronous invoke would put

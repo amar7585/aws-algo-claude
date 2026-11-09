@@ -1,0 +1,22 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "CreateGroup",
+            "Effect": "Allow",
+            "Action": "logs:CreateLogGroup",
+            "Resource": "arn:aws:logs:ap-south-1:709458364771:*"
+        },
+        {
+            "Sid": "WriteOwnLogs",
+            "Effect": "Allow",
+            "Action": [
+                "logs:CreateLogStream",
+                "logs:PutLogEvents"
+            ],
+            "Resource": [
+                "arn:aws:logs:ap-south-1:709458364771:log-group:/aws/lambda/strategy-trend-pullback:*"
+            ]
+        }
+    ]
+}

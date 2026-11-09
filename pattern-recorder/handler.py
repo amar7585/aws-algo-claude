@@ -193,7 +193,8 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
                 logger.info("tick %s: no 15-min row yet today - %s %s not dispatched (nothing to route on)",
                             stamp, e["family"], e["direction"])
                 continue
-            payload = dispatch.manager_payload(index, fifteen, daily, e, day_trend, pt.RULES_VERSION)
+            payload = dispatch.manager_payload(index, fifteen, daily, e, day_trend, pt.RULES_VERSION,
+                                               session["index_bars"])
             if db.claim_and_mark(conn, row, "manager_sent_at", lambda: dispatch.invoke_manager(payload), now):
                 sent_manager += 1
     finally:

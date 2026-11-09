@@ -32,14 +32,34 @@ from config import (
     INVOCATION_TYPE,
     MAX_PAYLOAD_BYTES,
     STRATEGY_REGISTRY,
+    TREND_PLAYBOOKS,
 )
 
 logger = logging.getLogger()
+
+TREND_STATES = ("up", "down")
 
 
 def routing_key(regime, bias):
     """The registry key for a market that looks like this."""
     return f"{regime}|{bias}"
+
+
+def trend_shortlist(day_trend):
+    """
+    The playbooks for a v2 alert on a TREND day (day_trend up/down).
+
+    Never the regime|bias registry - see config.TREND_PLAYBOOKS. Empty (unset)
+    is a deliberate stand-down, logged as such, not a miss.
+    """
+    if day_trend not in TREND_STATES:
+        raise RuntimeError(f"trend_shortlist called with day_trend {day_trend!r}")
+    functions = list(TREND_PLAYBOOKS)
+    if not functions:
+        logger.info("day trend %s: no TREND_PLAYBOOKS configured - nothing routed", day_trend)
+    else:
+        logger.info("day trend %s: eligible %s", day_trend, ", ".join(functions))
+    return functions
 
 
 def shortlist(regime, bias):

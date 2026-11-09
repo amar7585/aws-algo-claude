@@ -36,6 +36,12 @@ WHAT IT DOES NOT DO. It does not place orders, hold position state, size
 anything, or decide whether a setup is worth taking. The regime-and-bias gate
 is the whole of its judgement.
 
+SINCE 2026-11-09 the caller is pattern-recorder (v2), once per v2 alert, and the
+payload adds v2's alert (`detection`, carrying day_trend) and today's closed
+index candles (`index_bars`). ROUTING: day_trend up/down -> TREND_PLAYBOOKS
+(strategy-trend-pullback); day_trend none, or no `detection` -> the regime|bias
+registry as before. Both are carried through to the playbooks.
+
 Modules:
     config.py    the payload contract and the registry
     registry.py  the routing key, the gate and the asynchronous dispatch
@@ -47,7 +53,7 @@ import time
 from neon_access import ist_datetime, now_epoch
 
 from config import CONTEXT_VERSION
-from registry import dispatch, routing_key, shortlist
+from registry import TREND_STATES, dispatch, routing_key, shortlist, trend_shortlist
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -117,15 +123,26 @@ def read_event(event):
             "today. This morning's 09:35 run did not land.",
             daily.get("trade_date"), daily.get("created_at"),
         )
-    return snapshot, instrument, daily
+
+    # v2's alert (pattern-recorder, 2026-11-09 on). Optional: a payload without
+    # it routes on the registry exactly as before. When present it is carried
+    # through to the playbooks, with the index candles v2 handed over.
+    detection = event.get("detection")
+    if detection is not None and not isinstance(detection, dict):
+        raise RuntimeError(f"`detection` must be an object, got {type(detection).__name__}")
+    index_bars = event.get("index_bars")
+    if index_bars is not None and not isinstance(index_bars, list):
+        raise RuntimeError(f"`index_bars` must be a list, got {type(index_bars).__name__}")
+    return snapshot, instrument, daily, detection, index_bars, event.get("source")
 
 
 def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     started = time.monotonic()
-    snapshot, instrument, daily = read_event(event)
+    snapshot, instrument, daily, detection, index_bars, source = read_event(event)
 
     snapshot_ts = int(snapshot["snapshot_ts"])
     regime, bias = snapshot["regime"], snapshot["bias"]
+    day_trend = (detection or {}).get("day_trend")
     logger.info(
         "snapshot %s: %s, structure %s, volatility %s, score %s/%s, "
         "confidence %s",
@@ -137,8 +154,11 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     )
 
     # The whole contract. Two rows and an instrument - the snapshot carries its
-    # own classification, so there is no separate `classification` block, and
-    # no candles: playbooks fetch their own.
+    # own classification, so there is no separate `classification` block.
+    # ADDITIVE since 2026-11-09, so context_version stays 2 and the sweep
+    # playbook reads it unchanged: v2's alert (`detection`) and the index
+    # candles v2 handed over (`index_bars` - the stored candles lag up to 15
+    # minutes behind a 5-min alert), present only when v2 sent them.
     dispatch_context = {
         "context_version": CONTEXT_VERSION,
         "dispatched_at": now_epoch(),
@@ -146,20 +166,34 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "snapshot": snapshot,
         "daily": daily,
     }
+    if detection is not None:
+        dispatch_context["source"] = source
+        dispatch_context["detection"] = detection
+    if index_bars is not None:
+        dispatch_context["index_bars"] = index_bars
 
-    eligible = shortlist(regime, bias)
+    # ROUTING. A trend day (v2's day_trend up/down) goes to the trend
+    # playbooks, never to the regime|bias registry - see config.TREND_PLAYBOOKS.
+    if day_trend in TREND_STATES:
+        route = f"day trend {day_trend}"
+        eligible = trend_shortlist(day_trend)
+    else:
+        route = routing_key(regime, bias)
+        eligible = shortlist(regime, bias)
     dispatched = dispatch(dispatch_context, eligible)
 
     elapsed = time.monotonic() - started
     logger.info(
         "done in %.2fs: %s, %d eligible, %d invoked",
-        elapsed, routing_key(regime, bias), len(eligible), len(dispatched),
+        elapsed, route, len(eligible), len(dispatched),
     )
     return {
         "status": "success",
         "snapshot": ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
         "instrument": instrument.get("trading_symbol"),
         "routing_key": routing_key(regime, bias),
+        "route": route,
+        "day_trend": day_trend,
         "regime": regime,
         "bias": bias,
         "structure": snapshot.get("structure"),

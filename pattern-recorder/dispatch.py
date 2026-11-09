@@ -7,10 +7,14 @@ timeout. UNSET MEANS OFF: with no STRATEGY_MANAGER_FUNCTION_NAME nothing is
 invoked. A configured invoke that does not land RAISES - a detected alert that
 never reached the manager is a silent hole.
 
-The manager routes on regime|bias, which live on the 15-min sentiment row, so the
-payload carries the latest 15-min snapshot (measurement + judgement merged, as
-pattern-detector sent it), the daily read, the instrument, and the alert as
-`detection`. It reads nothing else from `detection`.
+The manager routes a trend day (detection.day_trend up/down) to the trend
+playbooks and everything else on regime|bias, which live on the 15-min sentiment
+row. So the payload carries the latest 15-min snapshot (measurement + judgement
+merged, as pattern-detector sent it), the daily read, the instrument, the alert
+as `detection`, and - since 2026-11-09 - today's CLOSED index candles up to this
+tick as `index_bars`: a playbook judging a 5-min alert cannot use candle_5min,
+which the loader refreshes only every 15 minutes. About 75 candles x 5 numbers,
+a few KB against the 256 KB async limit.
 """
 
 import json
@@ -25,12 +29,13 @@ logger = logging.getLogger()
 _lambda = None
 
 
-def manager_payload(instrument, snapshot, daily, event, day_trend, rules_version):
+def manager_payload(instrument, snapshot, daily, event, day_trend, rules_version, index_bars):
     return {
         "source": "pattern-recorder",
         "instrument": instrument,
         "snapshot": snapshot,
         "daily": daily,
+        "index_bars": [{k: b[k] for k in ("ts", "open", "high", "low", "close")} for b in index_bars],
         "detection": {
             "rules_version": rules_version,
             "day_trend": day_trend,

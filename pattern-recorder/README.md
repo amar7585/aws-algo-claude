@@ -12,7 +12,7 @@ are candle patterns at levels, with volume recorded and OI joined at read time.
 
 | | |
 |---|---|
-| Status | **v2.1 LIVE, sending, since 2026-11-09 16:04:08 IST** (`ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` set after the close; the first live tick is Wed 2026-11-11 09:15, since 11-10 is a holiday). Code since 13:50:40 IST: CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`, which ran in shadow 13:56 → 15:31 that day. The previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off. intraday-fno-poller's hand-off switched on at 13:52:21. See [Switching to v2.1](#switching-to-v21) |
+| Status | **v2.1 LIVE, sending, since 2026-11-09 16:04:08 IST** (`ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` set after the close; the first live tick is Wed 2026-11-11 09:15, since 11-10 is a holiday). Code since 13:50:40 IST: CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`, which ran in shadow 13:56 → 15:31 that day. The previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off. intraday-fno-poller's hand-off switched on at 13:52:21. Redeployed 2026-11-09 22:34 IST, CodeSha256 `iyIJsEeU…` (previous `t7TcsOAi…`): the manager payload adds today's closed index candles (`index_bars`) for strategy-trend-pullback; detection unchanged. See [Switching to v2.1](#switching-to-v21) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 11 modules (`handler`, `config`, `db`, `dhan`, `params`, `inputs`, `structure`, `patterns`, `alerts`, `notify`, `dispatch`) |
 | Layers | `neon-db-driver` + `neon-access` |
@@ -40,6 +40,8 @@ every 5 min:  intraday-fno-poller ─(writes its 5-min row, then)─Event─► 
                  → upsert algo.pattern_events (rules v2.1)
                  → alert = new event at PDH/PDL/ORH/ORL that fits day_trend
                  → Telegram + strategy-manager, once each (claim, send, mark)
+                   (the manager payload carries today's closed index candles as
+                   `index_bars` since 2026-11-09, for strategy-trend-pullback)
 
 every 15 min: loader → sentiment → market-classifier (day_trend) → pattern-detector (v1, log only)
 ```

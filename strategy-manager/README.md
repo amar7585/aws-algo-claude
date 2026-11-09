@@ -60,6 +60,29 @@ detector's turn) is itself the trigger.
 playbook succeeded. Each has its own log group and `error-notifier` reports
 from all of them.
 
+## Trend days route on `day_trend`, not on the registry (2026-11-09)
+
+Since 2026-11-09 the caller is `pattern-recorder` (v2), once per alert, and its
+payload carries the alert as `detection` (with the classifier's `day_trend`) and
+today's closed index candles as `index_bars`.
+
+| `detection.day_trend` | Routed to |
+|---|---|
+| `up` / `down` | **`TREND_PLAYBOOKS`** (`strategy-trend-pullback`) — never the registry below |
+| `none`, or no `detection` | the `regime\|bias` registry below, exactly as before |
+
+Why not a registry cell: a trend day's hold is a breakout trade, and the only
+filled cell (`sideways|range-bound`) is a range playbook that would fade it. And
+`regime|bias` lags the trend read — on 2026-11-06 bias read range-bound 10:45–11:30,
+exactly during the PDH hold Amar traded. `TREND_PLAYBOOKS` unset = trend-day
+alerts route to nothing, logged as a deliberate stand-down.
+
+Deployed 2026-11-09 22:36 IST (CodeSha256 `bwCjwZCp…`, previous `yfd92VM/…`); `TREND_PLAYBOOKS=strategy-trend-pullback` set 22:37.
+
+`detection`, `index_bars` and `source` are passed through to the playbooks. The
+change is **additive**: `context_version` stays 2 and the sweep playbook reads the
+new context unchanged (verified offline 2026-11-09).
+
 ## Routing is on a combination
 
 `regime` alone is not enough. "sideways" says the swing read found no
@@ -149,5 +172,6 @@ fires. See CLAUDE.md.
 | Variable | Default | Why |
 |---|---|---|
 | `STRATEGY_REGISTRY` | the 9-cell map above | filling a cell is configuration, not a redeploy |
+| `TREND_PLAYBOOKS` | *(unset)* | comma-separated; where a trend-day (`day_trend` up/down) alert goes. Unset = nowhere. Each name needs its ARN in `invoke-playbooks` |
 | `INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
 | `MAX_PAYLOAD_BYTES` | 262144 | Lambda's asynchronous cap |
