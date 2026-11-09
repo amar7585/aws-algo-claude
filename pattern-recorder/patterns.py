@@ -44,7 +44,10 @@ from structure import BAR_SECONDS, SUPPORT, RESISTANCE
 # algo.pattern_events' key, so a change to the definitions writes NEW rows beside
 # the old ones instead of overwriting them. Bump it with any change that can
 # alter which events are found or what they carry.
-RULES_VERSION = "v2.0"
+#   v2.0  2026-11-06  PDH/PDL/ORH/ORL from the future's own bars
+#   v2.1  2026-11-09  PDH/PDL/ORH/ORL from the INDEX, priced on the future with
+#                     each bar's basis (plan v3). Everything else unchanged.
+RULES_VERSION = "v2.1"
 
 # ---- tunables. PROVISIONAL, env-overridable (definitions section 11) --------
 # Single-bar shapes need a real range: on a 5-pt bar a "doji" is noise. 0.03% is
@@ -205,7 +208,6 @@ class _Session:
         self.session_bars = list(session_bars)
         self.bars15 = st.build_15min(self.session_bars)
         self.swings = st.find_swings(self.bars15)
-        self.day = st.day_levels(prev_bars, self.session_bars)
         self.index_day = st.day_levels(prev_index_bars, index_bars) if index_bars else []
         self.fno_rows = sorted(fno_rows or [], key=lambda r: r["snapshot_ts"])
         self.fut_close = {b["ts"]: b["close"] for b in self.bars}
@@ -232,15 +234,25 @@ class _Session:
         return max(self.first_index_at_or_after(known_from_ts) - 1, 0)
 
     def levels_at(self, i):
-        """Every level in force when bar i opened."""
+        """
+        Every level in force when bar i opened.
+
+        v2.1: PDH/PDL/ORH/ORL are the INDEX's (the previous index session's
+        high/low, the index's 09:15-09:25 range) - the levels a trader marks on
+        the chart - priced on the future as index level + that bar's basis, the
+        same way an option wall is. v2.0 took them from the future's own bars,
+        which put the 2026-11-06 PDH 61 points above the index's (the previous
+        day's basis was ~62, that day's ~25). Without index bars there are no
+        such levels; the live handler refuses to run that way.
+        """
         ts = self.bars[i]["ts"]
         session_open = self.session_bars[0]["ts"]
         levels = []
-        for lvl in self.day:
+        for lvl in self.index_day:
             if lvl["known_from"] is None or lvl["known_from"] > ts:
                 continue
             levels.append(_Level(lvl["name"], self.history_start(lvl["known_from"]),
-                                 session_open, price=lvl["price"]))
+                                 session_open, strike=lvl["price"], basis_fn=self.basis))
         for kind, name in (("high", st.SWING_HIGH), ("low", st.SWING_LOW)):
             swing = st.latest_swing(self.swings, kind, ts)
             if swing is not None:

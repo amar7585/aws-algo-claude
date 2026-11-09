@@ -6,10 +6,15 @@ schema algo - the only database this function touches. A second Neon project
 carries an `algo` schema with the same table names and incompatible column
 types, so the connection string comes only from /algo/neon/connection.
 
-READS  algo.candle_5min        the active future's and the index's 5-min bars
-       algo.intraday_fno_data  the option walls, each day's active contract,
-                               and the previous run's captured_at
-WRITES algo.pattern_events     and nothing else - never session_observations
+READS  algo.candle_5min            earlier sessions' 5-min bars (today's come from Dhan)
+       algo.intraday_fno_data      the option walls, each day's active contract,
+                                   and the latest 15-min snapshot (for the manager)
+       algo.intraday_sentiments    the latest day_trend, regime and bias
+       algo.fno_5m_snapshot        the previous tick's captured_at, each bar's OI change
+       algo.daily_market_sentiment the daily read handed to the manager
+WRITES algo.pattern_events         and nothing else - never session_observations.
+                                   The upsert never touches the sent marks; only
+                                   claim_and_mark() sets them.
 
 Every read is bounded by epoch values; there is no timezone arithmetic in SQL
 (hard rule 2). connect() lives in the neon-access layer. pg8000's DB-API uses
@@ -21,6 +26,7 @@ DO UPDATE SET are all generated from COLUMNS, as in intraday-fno-poller, so they
 cannot drift apart. Keep it in step with schema.sql.
 """
 
+import decimal
 import logging
 import re
 
@@ -30,8 +36,26 @@ logger = logging.getLogger()
 
 CANDLE_5MIN = "algo.candle_5min"
 FNO_DATA = "algo.intraday_fno_data"
+SENTIMENTS = "algo.intraday_sentiments"
+FNO_5M = "algo.fno_5m_snapshot"
+DAILY = "algo.daily_market_sentiment"
 TABLE = "algo.pattern_events"
 BAR_SECONDS = 300
+SENT_MARKS = ("telegram_sent_at", "manager_sent_at")
+
+# The daily read exactly as intraday-market-sentiment hands it on (its db.py), so
+# strategy-manager and its playbooks see the same shape from either sender.
+DAILY_COLUMNS = (
+    "trade_date", "bias", "structure", "regime", "volatility",
+    "score", "max_score", "confidence",
+    "swing_direction", "swing_high", "swing_low", "structure_determined",
+    "range_used", "volatility_expanding", "gap_pct",
+    "pd_high", "pd_low", "pd_close",
+    "rsi", "sma9", "sma50", "sma100", "sma200",
+    "prev_volume", "avg_volume_50", "vix",
+    "price", "expected_move", "upper_volatility", "lower_volatility",
+    "min15_high", "min15_low", "created_at",
+)
 
 KEY = ("security_id", "instrument_type", "rules_version", "trigger_ts", "family",
        "subtype", "direction")
@@ -78,17 +102,104 @@ def _rows(cursor):
     return [dict(zip(cols, r)) for r in cursor.fetchall()]
 
 
-def read_fno_rows(conn, security_id, instrument_type, since_ts, until_snapshot_ts):
-    """The 15-min snapshots from since_ts up to and including this run's."""
+def _plain(row):
+    """Decimals to floats, so a row can be logged and JSON-encoded as-is."""
+    return {k: float(v) if isinstance(v, decimal.Decimal) else v for k, v in row.items()}
+
+
+def read_fno_rows(conn, security_id, instrument_type, since_ts, captured_by):
+    """
+    The 15-min snapshots from since_ts that were WRITTEN by this run's clock
+    (captured_at <= captured_by). Bounding on the write clock, not on
+    snapshot_ts, keeps a Lambda retry minutes later on the same inputs.
+    """
     cursor = conn.cursor()
     cursor.execute(
         f"SELECT snapshot_ts, captured_at, prev_snapshot_ts, fut_security_id, "
         f"near_max_oi_call, near_max_oi_put, near_max_pain FROM {FNO_DATA} "
         f"WHERE security_id = %s AND instrument_type = %s "
-        f"AND snapshot_ts >= %s AND snapshot_ts <= %s ORDER BY snapshot_ts",
-        (str(security_id), str(instrument_type), int(since_ts), int(until_snapshot_ts)),
+        f"AND snapshot_ts >= %s AND captured_at <= %s ORDER BY snapshot_ts",
+        (str(security_id), str(instrument_type), int(since_ts), int(captured_by)),
     )
     return _rows(cursor)
+
+
+def read_latest_fifteen(conn, security_id, instrument_type, day_start, captured_by):
+    """
+    Today's newest 15-min snapshot that this run can read, as ONE dict: the
+    intraday_fno_data row merged with its intraday_sentiments row (sentiment
+    wins on a shared key - identical values), the shape pattern-detector handed
+    strategy-manager. None before the day's first classifier row (09:45).
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT * FROM {SENTIMENTS} WHERE security_id = %s AND instrument_type = %s "
+        f"AND snapshot_ts >= %s AND captured_at <= %s ORDER BY snapshot_ts DESC LIMIT 1",
+        (str(security_id), str(instrument_type), int(day_start), int(captured_by)),
+    )
+    sentiment = _rows(cursor)
+    if not sentiment:
+        return None
+    sentiment = _plain(sentiment[0])
+    cursor.execute(
+        f"SELECT * FROM {FNO_DATA} WHERE security_id = %s AND instrument_type = %s "
+        f"AND snapshot_ts = %s",
+        (str(security_id), str(instrument_type), int(sentiment["snapshot_ts"])),
+    )
+    fno = _rows(cursor)
+    if not fno:
+        raise RuntimeError(
+            f"{SENTIMENTS} has a row at {sentiment['snapshot_ts']} but {FNO_DATA} has none - "
+            f"the chain wrote a judgement with no measurement")
+    return {**_plain(fno[0]), **sentiment}
+
+
+def read_prev_tick_captured_at(conn, security_id, instrument_type, snapshot_ts):
+    """
+    captured_at of the newest poller tick BEFORE this one, any day - so a missed
+    tick widens the next run's fresh window instead of losing its events. None
+    when there is no earlier tick at all.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT captured_at FROM {FNO_5M} WHERE security_id = %s AND instrument_type = %s "
+        f"AND snapshot_ts < %s ORDER BY snapshot_ts DESC LIMIT 1",
+        (str(security_id), str(instrument_type), int(snapshot_ts)),
+    )
+    rows = cursor.fetchall()
+    return int(rows[0][0]) if rows and rows[0][0] is not None else None
+
+
+def read_bar_oi(conn, security_id, instrument_type, day_start, captured_by):
+    """{fut_bar_ts: fut_bar_oi_change} for today's ticks this run can read."""
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT fut_bar_ts, fut_bar_oi_change FROM {FNO_5M} WHERE security_id = %s "
+        f"AND instrument_type = %s AND snapshot_ts >= %s AND captured_at <= %s",
+        (str(security_id), str(instrument_type), int(day_start), int(captured_by)),
+    )
+    return {int(ts): change for ts, change in cursor.fetchall() if ts is not None}
+
+
+def read_daily(conn, security_id, instrument_type, day_start):
+    """
+    The daily read in force today - the newest daily_market_sentiment row stamped
+    BEFORE today (trade_date is the session a row describes) - with `stale` set
+    when it was written before today, exactly as intraday-market-sentiment builds
+    it. None when there is no such row.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT {', '.join(DAILY_COLUMNS)} FROM {DAILY} WHERE security_id = %s "
+        f"AND instrument_type = %s AND trade_date < %s ORDER BY trade_date DESC LIMIT 1",
+        (str(security_id), str(instrument_type), int(day_start)),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return None
+    row = _plain(dict(zip(DAILY_COLUMNS, rows[0])))
+    row["stale"] = int(row["created_at"] or 0) < int(day_start)
+    return row
 
 
 def read_future_bars(conn, contracts, since_ts, closed_by):
@@ -190,6 +301,45 @@ def upsert_events(conn, rows):
             written += len(batch)
         conn.commit()
         return written
+    except Exception:
+        conn.rollback()
+        raise
+
+
+# ---- send once -------------------------------------------------------------------
+
+def claim_and_mark(conn, row, column, action, now):
+    """
+    Run action() at most once for this event, and record it in `column`.
+
+    In ONE transaction: lock the event's row only if `column` is still NULL
+    (FOR UPDATE SKIP LOCKED, so an overlapping run skips it instead of
+    waiting), run the action - the Telegram send or the manager invoke - then
+    set the mark and commit.
+    - If the action raises, the transaction rolls back, the mark stays NULL, and
+      the exception propagates: the run fails, and Lambda's retry sends again.
+    - The only duplicate left is a send that succeeded followed by a commit that
+      failed.
+    Returns True when this call ran the action, False when it was already done
+    (or is being done by another run).
+    """
+    if column not in SENT_MARKS:
+        raise ValueError(f"unknown sent mark {column!r}")
+    where = " AND ".join(f"{c} = %s" for c in KEY)
+    key = [row[c] for c in KEY]
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            f"SELECT 1 FROM {TABLE} WHERE {where} AND {column} IS NULL FOR UPDATE SKIP LOCKED", key)
+        if not cursor.fetchall():
+            conn.rollback()
+            return False
+        action()
+        cursor.execute(f"UPDATE {TABLE} SET {column} = %s WHERE {where}", [int(now)] + key)
+        if cursor.rowcount != 1:
+            raise RuntimeError(f"marking {column} affected {cursor.rowcount} rows, expected 1")
+        conn.commit()
+        return True
     except Exception:
         conn.rollback()
         raise

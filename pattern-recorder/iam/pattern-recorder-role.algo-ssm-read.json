@@ -6,7 +6,9 @@
             "Effect": "Allow",
             "Action": "ssm:GetParameter",
             "Resource": [
-                "arn:aws:ssm:ap-south-1:709458364771:parameter/algo/neon/connection"
+                "arn:aws:ssm:ap-south-1:709458364771:parameter/algo/neon/connection",
+                "arn:aws:ssm:ap-south-1:709458364771:parameter/algo/dhan/token",
+                "arn:aws:ssm:ap-south-1:709458364771:parameter/algo/telegram/brief"
             ]
         },
         {

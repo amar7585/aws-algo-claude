@@ -67,4 +67,5 @@ dump("fno", "SELECT * FROM algo.intraday_fno_data WHERE security_id = '13' ORDER
 dump("sent", "SELECT * FROM algo.intraday_sentiments WHERE security_id = '13' ORDER BY snapshot_ts")
 dump("fno5", "SELECT * FROM algo.fno_5m_snapshot WHERE security_id = '13' ORDER BY snapshot_ts")
 dump("obs", "SELECT * FROM algo.session_observations ORDER BY event_ts")
+dump("daily", "SELECT * FROM algo.daily_market_sentiment WHERE security_id = '13' ORDER BY trade_date")
 conn.close()

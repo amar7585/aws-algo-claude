@@ -63,8 +63,8 @@ Entries, exits, targets, stops, P&L and hit rates are decided later, per strateg
 
 | Id | Level | Definition | Available |
 |---|---|---|---|
-| L1 | `pdh` / `pdl` | max high / min low of the **same contract's** 5-min bars on the previous trading session | all day; absent if the contract has no bars that day |
-| L2 | `orh` / `orl` | high / low of the future's 09:15, 09:20 and 09:25 bars (the 09:15 15-min bar) | from 09:30 |
+| L1 | `pdh` / `pdl` | **v2.1:** max high / min low of the **index's** 5-min bars on the previous trading session, priced on the future with each bar's basis (as L4). *v2.0 used the same contract's own bars.* | all day |
+| L2 | `orh` / `orl` | **v2.1:** high / low of the **index's** 09:15, 09:20 and 09:25 bars, priced on the future with each bar's basis. *v2.0 used the future's own bars.* | from 09:30 |
 | L3 | `swing_high` / `swing_low` | k=2 fractal on **this session's 15-min bars**: bar `t` is a swing high if `h[t] > h[t−1]`, `h[t] > h[t−2]`, `h[t] ≥ h[t+1]`, `h[t] ≥ h[t+2]` (the mirror for lows). It is **known only once bar `t+2` closes**, so there is no look-ahead. v1 uses the **latest** confirmed swing high and swing low. | from about 10:30 (the first bar that can confirm is 09:45, known at 10:30) |
 | L4 *(needs your OK, V1)* | `call_wall` / `put_wall` / `max_pain` | `near_max_oi_call`, `near_max_oi_put`, `near_max_pain` from the latest `intraday_fno_data` row at or before the bar. These are **index strikes, converted to the future** with that bar's own basis, `strike + (c_future − c_index)`. From 15:15 on, the index is frozen by the closing auction, so the 15:10 basis is used instead. | from 09:45 |
 
@@ -236,7 +236,8 @@ The logged sessions show why nothing here is a requirement yet:
 ## 8. Timing, freshness, statelessness
 
 - **Runs on the existing 15-min chain** (*V7*), on every snapshot, alongside today's two
-  branches.
+  branches. *v2.1 (2026-11-09): runs every 5 minutes after intraday-fno-poller instead,
+  with today's candles from Dhan; see the pattern-recorder README.*
 - **Stateless:** each run re-derives the session from its stored bars:
   - up to 75 future 5-min bars;
   - the previous session's bars, for PDH/PDL;
@@ -327,3 +328,28 @@ with results at the top of [v2-phase-a-replay.md](v2-phase-a-replay.md). Still o
 (the 11-04 question), the table schema, and Phase C.*
 
 **Phase C — wire it into the handler** (log + table) and deploy, under its own plan.
+
+## 13. v2.1 — index key levels and the alert rule (plan v3, approved 2026-11-08/09)
+
+**Levels.** PDH/PDL/ORH/ORL (L1, L2) are now the INDEX's, the levels a trader marks on
+the chart. Each is priced on the future as index level + that bar's basis, exactly like
+an option wall. On 2026-11-06, v2.0's future-native PDH sat 61 points above the index's:
+the previous day's basis was ~62, that day's ~25. Swings and walls are unchanged.
+`RULES_VERSION` = `v2.1`, so the new rows sit beside the v2.0 rows.
+
+**Alerts** (`alerts.py`). Only at the KEY levels (PDH/PDL/ORH/ORL: the event's own level,
+or one in `other_levels`), by the classifier's `day_trend`:
+
+| `day_trend` | Alerts on |
+|---|---|
+| `up` | every up pattern |
+| `down` | every down pattern |
+| `none`, or before the first 15-min row (09:45) | R1 + R2 both ways (the no-trend branch, **kept**, Amar 2026-11-09) |
+
+- An event is judged once, on the 5-min run that first sees it, against the latest
+  classifier row that run can read.
+- Volume and OI are shown in the message, never a gate.
+- Replayed, 90 sessions: 7.5 alerts/day (2.0 trend + 5.5 no-trend), and 3 of the 9 logged
+  trades caught.
+- The 15-min classifier lag costs 74 KEY events over 90 sessions; Friday 11-06's 09:45 PDH
+  break is one.
