@@ -234,6 +234,31 @@ bar against it at runtime and raises if Dhan ever changes.
 The same test shows Dhan **returns the in-progress bucket**, which is what makes
 the partial-candle design work at all.
 
+### Weekend sessions have their own grid, and are exempt
+
+Dhan serves a special session on a Saturday or Sunday (Diwali Muhurat trading),
+and its buckets are not on the 09:15 grid. Measured 2026-11-09: Sunday
+**2026-11-08** came back as 14 five-minute bars, 14:20–15:25, for both NIFTY and
+`NIFTY-NOV2026-FUT`. Those bars fall inside 09:15–15:30, so `session_candles()`
+kept them, and the 5-minute check passed. The 14:20 fifteen-minute bar failed
+`assert_alignment()`.
+
+Nothing then refilled the 15-minute or hourly tables. They resume from the
+newest stored day, which was still 11-06, so every run re-fetched Sunday and
+raised on it, starting with the 11-09 09:45 run. Lambda's async retry ran off
+the grid (09:46), fetched 5-minute bars only, succeeded and dispatched the chain.
+That hid the failure apart from one alert per run.
+
+Weekend-dated bars now skip the check and are stored as Dhan returns them, with
+an INFO line per day naming how many. Weekday bars are checked as before. Not
+covered: an afternoon Muhurat on a weekday holiday would still raise. Earlier
+years' evening sessions are dropped by the 09:15–15:30 filter before they reach
+the check.
+
+Kept deliberately (Amar, 2026-11-09). Downstream readers treat the weekend
+session as an ordinary one. On 11-09, `daily-market-sentiment` and
+`pattern-detector` took Sunday as the previous session.
+
 ## Layout
 
 ```

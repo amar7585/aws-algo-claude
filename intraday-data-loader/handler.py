@@ -165,11 +165,26 @@ def assert_alignment(candles, interval, label, from_dt, to_dt):
     future's 90-day backfill held a 09:16 bar on 2026-09-30 while the live grid
     was intact - see FUTURES_COLD_START_DAYS. The message names the instrument
     and the window so the two causes can be told apart from the log alone.
+
+    WEEKEND BARS ARE EXEMPT, and stored as Dhan returns them. A special session
+    on a Saturday or Sunday - Diwali Muhurat trading - has its own grid, not the
+    09:15 one. Sunday 2026-11-08 came back as 5-minute bars from 14:20 to 15:25,
+    and its 14:20 fifteen-minute bar failed this check on every run from the
+    11-09 09:45 run onward. The fifteen-minute and hourly windows start from
+    the newest stored day (11-06), so they could not get past it, and
+    candle_15min and candle_1hr stopped filling. Weekday bars are checked
+    exactly as before. Not covered: an afternoon Muhurat on a weekday holiday
+    would still raise here - earlier years' evening sessions are dropped by
+    session_candles() before they reach this check.
     """
     step = interval * 60
     origin = _minutes(SESSION_START) * 60
+    exempt = {}
     for candle in candles:
         stamp = ist_datetime(candle["ts"])
+        if stamp.weekday() >= 5:
+            exempt[stamp.date()] = exempt.get(stamp.date(), 0) + 1
+            continue
         offset = (stamp.hour * 3600 + stamp.minute * 60 + stamp.second) - origin
         if offset % step:
             raise RuntimeError(
@@ -180,6 +195,11 @@ def assert_alignment(candles, interval, label, from_dt, to_dt):
                 f"reaches thin, illiquid history such as a far-month future "
                 f"before it became current"
             )
+    for day, count in sorted(exempt.items()):
+        logger.info(
+            "%s %sm: %d bar(s) on %s (%s) kept without the alignment check",
+            label, interval, count, day, day.strftime("%A"),
+        )
 
 
 def current_future_symbol(client, today):
