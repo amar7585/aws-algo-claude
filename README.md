@@ -20,12 +20,12 @@ deterministic to read.
 | [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
 | [intraday-data-loader](intraday-data-loader/README.md) | **running** — 5/15/60-min candles, every 15 min 09:45–15:35. **The only intraday cron**: it invokes the sentiment function, which chains to the classifier, detector and manager |
 | [error-notifier](error-notifier/README.md) | **running** — failures from every function to Telegram |
-| [intraday-fno-poller](intraday-fno-poller/README.md) | **running** (live since 2026-10-19) — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 71×/day. Phase 1: **nothing reads it yet** ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
+| [intraday-fno-poller](intraday-fno-poller/README.md) | **running** (live since 2026-10-19) — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 71×/day. Since 2026-11-09 it hands each committed tick to `pattern-recorder` (unset = off) ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — **measures** basis/OI, VIX, two option chains and SMA/RSI → `intraday_fno_data`. Invoked by the loader, 25×/day |
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/bias/buildup on `intraday_sentiments`, invokes the detector |
-| [pattern-detector](pattern-detector/README.md) | **deployed** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm); gates the manager, fires only on a confirmed turn; as its last step hands each run to `pattern-recorder` (unset = off) |
-| [pattern-recorder](pattern-recorder/README.md) | **live since 2026-11-06 09:45** — pattern-detector v2: candle patterns at levels (PDH/PDL, opening range, 15-min swings, option walls) on the future, volume recorded → `pattern_events`. Records only: no alerts, no dispatch |
-| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off `intraday_sentiments` and invokes the playbooks that combination allows, on a turn |
+| [pattern-detector](pattern-detector/README.md) | **deployed, log-only since 2026-11-09 16:04** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm). It still decides and logs its alerts, but sends no Telegram and invokes no manager |
+| [pattern-recorder](pattern-recorder/README.md) | **v2.1 sending since 2026-11-09 16:04** (v2.0 recorded from 2026-11-06) — pattern-detector v2: candle patterns at levels (index PDH/PDL and opening range, 15-min swings, option walls) on the future → `pattern_events`. On each 5-min poller tick; key-level alerts filtered by the classifier's `day_trend` go to Telegram and strategy-manager, once each |
+| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off the 15-min snapshot and invokes the playbooks that combination allows, on each v2.1 alert |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
 
 ## Documentation
@@ -157,18 +157,19 @@ Two planes on different clocks, deliberately uncoupled:
   stalled loader cannot feed it stale inputs.
 - **Then `market-classifier`** scores that measurement with the shared layer
   and writes the **judgement** — regime, structure, bias, buildup — to
-  `intraday_sentiments`, and invokes `pattern-detector`.
+  `intraday_sentiments` (including `day_trend`), and invokes `pattern-detector`.
 - **Then `pattern-detector`** applies the two-clock turn rule (an abnormal-volume
   reversal on the future, confirmed a tick later by futures buildup or option
-  OI). Only on a **confirmed turn** does it invoke `strategy-manager`, which
-  shortlists the playbooks valid for the `regime|bias` and invokes those —
-  `strategy-range-liquidity-sweep` on a range day, nothing on a trending one.
-  Nothing in the strategy plane writes to Postgres.
-- **Last, on every run** — `pattern-detector` hands the snapshot to
-  `pattern-recorder` (asynchronously, unset = off), which re-derives the
-  session's v2 pattern events and upserts them to `pattern_events`. It is
-  recognition only and cannot affect the detector's decisions (built
-  2026-11-06, live since the 09:45 run).
+  OI). **Since 2026-11-09 16:04 it is log-only:** it decides and logs, but sends
+  no Telegram and invokes no manager.
+- **Every 5 minutes, on its own clock** — `intraday-fno-poller` writes the F&O
+  reading and, as its last step, hands the tick to `pattern-recorder`
+  (asynchronously, unset = off). v2.1 re-derives the session's pattern events
+  and upserts them to `pattern_events`. Each new event at a key level that the
+  `day_trend` rule allows goes to Telegram and to `strategy-manager`, once each.
+  The manager shortlists the playbooks valid for the `regime|bias` and invokes
+  those: `strategy-range-liquidity-sweep` on a range day, nothing on a trending
+  one. Only `pattern-recorder` writes to Postgres in the strategy plane.
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

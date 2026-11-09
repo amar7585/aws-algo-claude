@@ -13,12 +13,15 @@ recent 5-minute bars and runs two branches on every snapshot:
   abnormal volume, and the retest-hold entry that follows. Alert-only: it never
   invokes the manager.
 
-Both branches push to **Telegram** on an actionable, fresh event.
+Both branches decide a **Telegram** alert on an actionable, fresh event. **Since
+2026-11-09 16:04 it is log-only:** `TELEGRAM_ENABLED` and `STRATEGY_MANAGER_FUNCTION_NAME`
+are unset, so it sends nothing and invokes nothing. `pattern-recorder` v2.1 sends the
+alerts and triggers strategy-manager now.
 
-As its **last** step, after everything above, it hands the run's payload to
-[`pattern-recorder`](../pattern-recorder/README.md) (v2: candle patterns at levels,
-recorded to `algo.pattern_events`), asynchronously. Unset means off. See
-[The hand-off to pattern-recorder](#the-hand-off-to-pattern-recorder).
+Until 2026-11-09 13:50, as its **last** step, it handed the run's payload to
+[`pattern-recorder`](../pattern-recorder/README.md) (v2.0), asynchronously. That hand-off
+is **off** now (`PATTERN_RECORDER_FUNCTION_NAME` unset): v2.1 runs on intraday-fno-poller's
+5-min tick instead. See [The hand-off to pattern-recorder](#the-hand-off-to-pattern-recorder).
 
 | | |
 |---|---|
@@ -204,6 +207,8 @@ sent: ..."), but nothing goes to Telegram. It exists so v1 can become log-only o
 - **Before deploying this code,** set `TELEGRAM_ENABLED=on` on the live function. The old
   code ignores it, so the deploy changes nothing.
 - **At the v2.1 cutover,** unset it, together with `STRATEGY_MANAGER_FUNCTION_NAME`.
+  **Done 2026-11-09 16:04:11 IST** (the function has no env vars now). Rollback: set both
+  again (`TELEGRAM_ENABLED=on`, `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager`).
 - **Replayed over 880 stored runs against the deployed code:**
   - with it on, every decision and outward call is identical: 70 Telegram messages and 30
     manager invokes;

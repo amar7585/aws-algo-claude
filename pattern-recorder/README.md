@@ -6,13 +6,13 @@
 active future and records what it recognises to `algo.pattern_events`. The patterns
 are candle patterns at levels, with volume recorded and OI joined at read time.
 
-**v2.1 (plan v3, step 4, deployed in shadow 2026-11-09).** The events that pass the alert
-rule go to **Telegram and strategy-manager, once each**. Until `ALERTS_ENABLED` is set it
-runs in **shadow**: it decides the alerts and logs them as `WOULD SEND`, and sends nothing.
+**v2.1 (plan v3, step 4, LIVE 2026-11-09).** The events that pass the alert rule go to
+**Telegram and strategy-manager, once each**. With `ALERTS_ENABLED` unset it runs in
+**shadow**: it decides the alerts and logs them as `WOULD SEND`, and sends nothing.
 
 | | |
 |---|---|
-| Status | **v2.1 live in SHADOW since 2026-11-09 13:50:40 IST** (CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`; the previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off). intraday-fno-poller's hand-off switched on at 13:52:21; the first tick was 13:56. `ALERTS_ENABLED` unset: nothing is sent. See [Switching to v2.1](#switching-to-v21) |
+| Status | **v2.1 LIVE, sending, since 2026-11-09 16:04:08 IST** (`ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` set after the close; the first live tick is Wed 2026-11-11 09:15, since 11-10 is a holiday). Code since 13:50:40 IST: CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`, which ran in shadow 13:56 → 15:31 that day. The previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off. intraday-fno-poller's hand-off switched on at 13:52:21. See [Switching to v2.1](#switching-to-v21) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 11 modules (`handler`, `config`, `db`, `dhan`, `params`, `inputs`, `structure`, `patterns`, `alerts`, `notify`, `dispatch`) |
 | Layers | `neon-db-driver` + `neon-access` |
@@ -146,6 +146,9 @@ The order matters: each step only takes effect once the previous one is in place
 
 Steps 1-4 done 2026-11-09 (IAM by Amar, verified identical to the files; the detector at
 13:50:10, `CBczFaGk…`; this function at 13:50:40; the poller at 13:52:21, `MmdsHFWX…`).
+**Step 5 was skipped:** after the close, Amar chose to go live without a full shadow
+session. The shadow ran 13:56 → 15:31 on 11-09 only. **Step 6 done at 16:04 IST:** this
+function at 16:04:08, the detector at 16:04:11.
 
 1. **IAM, by hand** ([iam/](iam/README.md)):
    - add `/algo/dhan/token` and `/algo/telegram/brief` to the recorder's `algo-ssm-read`;
@@ -160,10 +163,10 @@ Steps 1-4 done 2026-11-09 (IAM by Amar, verified identical to the files; the det
    - deploy its zip (the hand-off);
    - set `PATTERN_RECORDER_FUNCTION_NAME=pattern-recorder`.
    From the next tick, v2.1 runs every 5 minutes, in shadow.
-5. **After one shadow session:**
+5. **After one shadow session** (skipped, see above):
    - `table_check.py` (V3) for the day;
    - the `WOULD SEND` lines against the replay rule and v1's alerts.
-6. **Go live, the same evening, on your OK:**
+6. **Go live** (done 2026-11-09 16:04):
    - here, set `ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager`;
    - on pattern-detector, unset `TELEGRAM_ENABLED` and `STRATEGY_MANAGER_FUNCTION_NAME`
      (v1 becomes log-only).

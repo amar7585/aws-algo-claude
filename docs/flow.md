@@ -25,15 +25,18 @@ flowchart TD
     end
 
     subgraph STRAT["The strategy plane - chained, not scheduled"]
-        PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule</i>"]
+        PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule<br/>LOG-ONLY since 2026-11-09 16:04</i>"]
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on sideways|range-bound</i>"]
-        REC["<b>pattern-recorder</b><br/><i>invoked last, every run - v2 patterns<br/>live since 2026-11-06</i>"] --> PEV[("pattern_events")]
-        PD -->|"Event: only on a confirmed turn"| MGR
-        PD -.->|"Event: last step, unset = off"| REC
+        REC["<b>pattern-recorder</b> v2.1<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
+        REC -->|"each alert, once"| TG3{{"Telegram"}}
+        REC -->|"Event: each alert, once"| MGR
         MGR -->|"Event: both sentiments"| SWEEP
         SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
     end
+
+    POLL["intraday-fno-poller<br/><i>its own cron, every 5 min<br/>09:36-15:31, 71x/day</i>"] --> PTBL[("fno_5m_snapshot<br/>fno_5m_leg")]
+    POLL -.->|"Event: last step, unset = off"| REC
 
     CANDLES -->|"Event: candles committed"| SENT
     SENT -->|"Event: the fno row + today's bars"| CLSF
@@ -78,9 +81,10 @@ Read in clock order, a weekday looks like this:
 | 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
-| immediately after | `pattern-detector` | **invoke** | no table (log + Telegram alerts) |
-| as the detector's last step, every run (live since 2026-11-06) | `pattern-recorder` | **invoke** | `pattern_events` |
-| immediately after, on a confirmed turn | `strategy-manager` | **invoke** | nothing |
+| immediately after | `pattern-detector` | **invoke** | no table (log only since 2026-11-09 16:04) |
+| 09:36–15:31 every 5 min (71 runs) | `intraday-fno-poller` | **cron** (its own trio) | `fno_5m_snapshot`, `fno_5m_leg` |
+| as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram |
+| on each v2.1 alert, once | `strategy-manager` | **invoke** | nothing |
 | then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
@@ -91,12 +95,12 @@ cron.** `instrument-master-loader` monthly, `auth-dhan-broker` once per weekday
 EventBridge rules — an `-open` rule at 09:45, a quarter-hourly `-session` rule
 for 10:00 to 14:45, and a `-close` rule for 15:00 to 15:35. (The
 `intraday-fno-poller` trio, every five minutes from 09:36 to 15:31, is a
-separate reading that chains to nothing — see
-[its README](../intraday-fno-poller/README.md).) Everything else in
-the session is chained: the loader commits and invokes the sentiment function,
-which measures and invokes the classifier, which writes the judgement and
-invokes the detector, which on a confirmed turn invokes the manager, which
-routes.
+separate reading. Since 2026-11-09 it hands each committed tick to
+`pattern-recorder` — see [its README](../intraday-fno-poller/README.md).)
+Everything else in the session is chained: the loader commits and invokes the
+sentiment function, which measures and invokes the classifier, which writes the
+judgement and invokes the detector, which logs. The manager is invoked by
+`pattern-recorder`, once per v2.1 alert, and routes.
 
 **Why chained rather than four crons.** Each step's input *is* the previous
 step's output. A cron on the sentiment function would have to guess how long
@@ -369,8 +373,9 @@ The weekend check stays, as a second line of defence for a manual invoke.
 
 No schedule anywhere in this chain. `intraday-data-loader` commits its candles
 and invokes `intraday-market-sentiment`, which MEASURES and invokes
-`market-classifier`, which JUDGES and invokes `pattern-detector`, which — on a
-confirmed turn only — invokes `strategy-manager`, which routes.
+`market-classifier`, which JUDGES and invokes `pattern-detector`, which logs.
+Since 2026-11-09 16:04 `strategy-manager` is invoked by `pattern-recorder` on
+each v2.1 alert, on the poller's 5-minute clock, and routes.
 
 ```mermaid
 flowchart TD
@@ -389,11 +394,13 @@ flowchart TD
     SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, bias, buildup</i>")]
 
     WRITE2 --> PD["<b>pattern-detector</b> - Event invoke<br/><i>reads the future's candle_5min</i>"]
-    PD -.->|"last step, every run<br/>unset = off"| REC["<b>pattern-recorder</b> - Event invoke<br/><i>v2: re-derive the session, upsert</i>"]
-    REC --> PEV[("pattern_events")]
     PD --> TURN{"abnormal-volume reversal<br/>+ buildup/OI confirm?"}
     TURN -->|"no turn"| STAND(["stand down, log the reason"])
-    TURN -->|"confirmed turn"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
+    TURN -->|"confirmed turn"| TLOG(["log it<br/><i>log-only since 2026-11-09 16:04</i>"])
+    POLL(["intraday-fno-poller tick<br/><b>Event invoke</b>, every 5 min"]) --> REC["<b>pattern-recorder</b> v2.1<br/><i>re-derive the session, upsert</i>"]
+    REC --> PEV[("pattern_events")]
+    REC --> ALERT{"new event at a key level<br/>that day_trend allows?"}
+    ALERT -->|"yes, once"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
 
     MGR --> KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
     KEY -->|"no - drift"| RAISE
@@ -447,13 +454,15 @@ got `None` — every playbook gating on the daily read was gating on nothing.
 computed by `market-classifier` and stored on `intraday_sentiments`; the data
 fetch moved *down* into the playbooks. What is left is the routing decision.
 
-**The manager runs only on a confirmed turn.** `pattern-detector` sits between
-the classifier and the manager and re-derives, from the future's `candle_5min`
-and the stored rows, whether an abnormal-volume reversal one interval back has
-been confirmed this snapshot by the futures buildup or option OI. Only then is
-the manager invoked — a quiet snapshot never reaches routing at all. Its
-thresholds are provisional (5 turns over 2 sessions); see
-[pattern-detector](../pattern-detector/README.md).
+**The manager runs only on a v2.1 alert** (since 2026-11-09 16:04). On each
+5-minute poller tick, `pattern-recorder` re-derives the session's pattern events.
+An event that is new on this tick, sits at a key level (PDH, PDL, or the opening
+range high or low), and points the way the classifier's `day_trend` allows, goes
+to Telegram and invokes the manager, once each; a quiet tick never reaches routing
+at all. The manager is handed the latest 15-min snapshot, so it routes on that
+snapshot's `regime|bias`. Before 2026-11-09 the gate was `pattern-detector`'s
+confirmed turn, which is now log-only; see
+[pattern-recorder](../pattern-recorder/README.md).
 
 **Routing is on `regime|bias`, and every cell is listed.** A key present and
 mapping to `[]` is a deliberate "no playbook today"; a key *missing* means the

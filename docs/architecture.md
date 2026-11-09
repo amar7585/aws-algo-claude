@@ -41,9 +41,10 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Intraday candles | every 15 min, 09:45–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
 | Intraday market measurement | on each loader run, 25×/day | invoke from `intraday-data-loader` | **built** |
 | Intraday classification | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
-| Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** |
-| Strategy routing | on a confirmed turn | invoke from `pattern-detector` | **built** |
-| Pattern recording (v2) | on each snapshot, as the detector's last step | invoke from `pattern-detector` (unset = off) | **built** (live since 2026-11-06) |
+| Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager) |
+| F&O reading, 5-min | every 5 min, 09:36–15:31, 71×/day | EventBridge Scheduler cron (its own trio) | **built** |
+| Pattern recording + alerts (v2.1) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
+| Strategy routing | on each v2.1 alert, once | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09) |
 | Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
@@ -81,8 +82,8 @@ now covers three parameters:
 
 | Parameter | Written by | Read by |
 |---|---|---|
-| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader`, `intraday-market-sentiment` |
-| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier`, `auth-dhan-broker` |
+| `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader`, `intraday-market-sentiment`, `intraday-fno-poller`, `pattern-recorder` |
+| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier`, `auth-dhan-broker`, `pattern-detector`, `pattern-recorder` |
 | `/algo/neon/connection` | by hand | every function that touches Neon |
 
 The last one replaced a `NEON_CONNECTION_STRING` environment variable
@@ -129,8 +130,10 @@ the cost of a wake-up on the first connection of each run.
 | `pattern_events` | v2 pattern events: one per (`rules_version`, trigger bar, family, subtype, direction) — level, candles, volume flags. **No OI, no outcome** (both joined at read time). [schema](../pattern-recorder/schema.sql) | created 2026-11-06; written from the 09:45 run that day (2 rows) | pattern-recorder |
 
 **`pattern-recorder` is the one writer in the strategy plane.** It records what the v2
-rules recognise to `pattern_events`. It alerts nothing and dispatches nothing, and
-it never writes the hand-logged `session_observations`.
+rules recognise to `pattern_events`, and it never writes the hand-logged
+`session_observations`. Since v2.1 (live 2026-11-09 16:04) it also sends the alerts:
+each event that passes the alert rule goes to Telegram and to strategy-manager, once
+each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the sends.
 
 **Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars

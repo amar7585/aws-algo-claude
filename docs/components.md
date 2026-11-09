@@ -17,9 +17,9 @@
 | `market-classifier` (layer) | Lambda layer | — | **built** | [README](../layers/market-classifier/README.md) |
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
-| `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn gate | **built, running** | [README](../pattern-detector/README.md) |
-| `pattern-recorder` | Lambda function | invoked by the detector as its last step, ≤25×/day — v2 patterns → `pattern_events`, records only | **built, running** (live since 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
-| `strategy-manager` | Lambda function | on a confirmed turn — a pure router | **built, running** | [README](../strategy-manager/README.md) |
+| `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
+| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns → `pattern_events`, alerts to Telegram and strategy-manager once each | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
+| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router | **built, running** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
 
 Everything above the divider exists and runs. See
@@ -43,9 +43,10 @@ because one cron spanning 10–15 would keep firing past the close; spelling out
 the last hour is what lands the final run exactly on 15:35. Since 2026-10-16
 there is a second, independent intraday trio, `intraday-fno-poller-open/
 -session/-close` — every five minutes, 09:36 to 15:31, one minute past each
-mark except 15:26 (it would re-stamp the 15:25 bar), 71 runs a day — which
-chains to nothing and is chained from nothing; see
-[intraday-fno-poller](../intraday-fno-poller/README.md). The loader
+mark except 15:26 (it would re-stamp the 15:25 bar), 71 runs a day. It is
+chained from nothing, and since 2026-11-09 it hands each committed tick to
+`pattern-recorder`, which sends the v2.1 alerts and invokes `strategy-manager`;
+see [intraday-fno-poller](../intraday-fno-poller/README.md). The loader
 invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
 previous step's output, so the completion of a write is the only honest trigger
@@ -305,7 +306,7 @@ them. It evaluates no playbook, emits no signal and writes nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Trigger | **asynchronous invoke from `intraday-market-sentiment`** - no schedule |
+| Trigger | **asynchronous invoke from `pattern-recorder`**, once per v2.1 alert (since 2026-11-09 16:04; before that from `pattern-detector` on a confirmed turn) - no schedule |
 | Writes | **nothing** |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` |
 
