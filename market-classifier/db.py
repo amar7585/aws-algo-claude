@@ -26,6 +26,7 @@ SENTIMENTS_COLUMNS = SENTIMENTS_KEY + (
     "confidence", "buildup",
     "swing_direction", "swing_high", "swing_low", "structure_determined",
     "range_used", "session_elapsed", "volatility_expanding",
+    "day_trend",
     "created_at",
 )
 

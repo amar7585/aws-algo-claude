@@ -75,11 +75,18 @@ CREATE TABLE IF NOT EXISTS algo.intraday_sentiments (
     session_elapsed        numeric,            -- fraction of the session, 0-1
     volatility_expanding   boolean NOT NULL,
 
+    -- ---- the day trend (added 2026-11-08) ----------------------------------
+    -- The T1 level rule on the index's 5-min closes from 09:30: a close above
+    -- BOTH PDH and the opening-range high turns it up, a close below both turns
+    -- it off; down is the mirror. NULL only on rows written before the column.
+    day_trend              text,               -- up | down | none
+
     created_at             bigint  NOT NULL,
 
     PRIMARY KEY (security_id, instrument_type, snapshot_ts),
     FOREIGN KEY (security_id, instrument_type)
-        REFERENCES algo.instrument_master (security_id, instrument_type)
+        REFERENCES algo.instrument_master (security_id, instrument_type),
+    CONSTRAINT intraday_sentiments_day_trend CHECK (day_trend IN ('up', 'down', 'none'))
 );
 
 COMMIT;

@@ -86,6 +86,11 @@ CREATE TABLE IF NOT EXISTS algo.pattern_events (
     created_at             bigint  NOT NULL,
     updated_at             bigint  NOT NULL,
 
+    -- send-once marks (added 2026-11-08): epoch seconds of the send, NULL = not
+    -- sent. Not in db.COLUMNS, so the re-derivation upsert never touches them.
+    telegram_sent_at       bigint,
+    manager_sent_at        bigint,
+
     PRIMARY KEY (security_id, instrument_type, rules_version, trigger_ts, family, subtype, direction),
     FOREIGN KEY (security_id, instrument_type)
         REFERENCES algo.instrument_master (security_id, instrument_type),

@@ -23,9 +23,15 @@ already in algo.intraday_fno_data, written by the function that measured it.
 Writes only to Neon project "AI Trader APP" (nameless-mountain-15353651),
 database Algo, schema algo.
 
+THE DAY TREND (added 2026-11-08). Beside regime/structure/bias the row carries
+day_trend - up | down | none - from a level rule on the index's closed candles
+(PDH / PDL from the daily read, the opening range from today's bars). It is a
+separate answer, not an input to the score. See trend.py.
+
 Modules:
     config.py    tunables and the pattern-detector wiring
     inputs.py    assembling classify()'s inputs, and the buildup label
+    trend.py     the day trend
     db.py        Neon access, the judgement-row write
     dispatch.py  handing the judgement to pattern-detector
 
@@ -42,6 +48,7 @@ from neon_access import connect, ist_datetime, now_epoch, read_neon_connection_s
 from db import write_sentiment
 from dispatch import dispatch_to_pattern_detector
 from inputs import buildup, classify_snapshot
+from trend import day_trend
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -99,7 +106,7 @@ def read_event(event):
     return fno, instrument, session_bars, event.get("vix_baseline"), now, event.get("daily")
 
 
-def build_row(fno, result, now):
+def build_row(fno, result, now, trend):
     """The judgement row for algo.intraday_sentiments."""
     return {
         "security_id": fno["security_id"],
@@ -124,6 +131,7 @@ def build_row(fno, result, now):
         "range_used": result["range_used"],
         "session_elapsed": result["session_elapsed"],
         "volatility_expanding": result["volatility_expanding"],
+        "day_trend": trend,
         "created_at": now_epoch(),
     }
 
@@ -134,7 +142,11 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     snapshot_ts = int(fno["snapshot_ts"])
 
     result = classify_snapshot(fno, session_bars, vix_baseline, now)
-    row = build_row(fno, result, now)
+    # Raises BEFORE the write on a missing/stale daily read or an incomplete
+    # opening range - see trend.py. No partial row is written.
+    trend, trend_levels = day_trend(session_bars, daily, int(now.timestamp()))
+    logger.info("day trend %s on levels %s", trend, trend_levels)
+    row = build_row(fno, result, now, trend)
 
     conn = connect(read_neon_connection_string())
     try:
@@ -152,10 +164,10 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     elapsed = time.monotonic() - started
     logger.info(
         "done in %.2fs: snapshot %s bias %s structure %s regime %s buildup %s "
-        "(%+d/%d, confidence %.1f) - dispatched to %s",
+        "day_trend %s (%+d/%d, confidence %.1f) - dispatched to %s",
         elapsed, ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
         row["bias"], row["structure"], row["regime"], row["buildup"],
-        row["score"], row["max_score"], row["confidence"], dispatched,
+        row["day_trend"], row["score"], row["max_score"], row["confidence"], dispatched,
     )
     return {
         "status": "success",
@@ -166,6 +178,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "regime": row["regime"],
         "volatility": row["volatility"],
         "buildup": row["buildup"],
+        "day_trend": row["day_trend"],
         "score": f"{row['score']:+d}/{row['max_score']}",
         "confidence": row["confidence"],
         "dispatched_to": dispatched,

@@ -11,7 +11,7 @@ derives the futures-OI buildup, writes `algo.intraday_sentiments`, and invokes
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules |
+| Runtime | Python 3.14, zip package, 6 modules |
 | Layers | `neon-db-driver` + `neon-access` + `market-classifier` (v2, the scoring rules) |
 | Schedule | **none** — invoked by `intraday-market-sentiment`, once per snapshot (25×/day) |
 | Reads | **nothing from the database** — the measurement row arrives in the payload |
@@ -59,6 +59,36 @@ scale. See [inputs.py](inputs.py) and the [layer README](../layers/market-classi
 `LONG_UNWINDING`, or `FLAT` within the epsilon band). It moved here with the
 scoring because it is a judgement label, not a measurement — the two deltas it
 is built from stay on the fno row.
+
+## The day trend (added 2026-11-08)
+
+`day_trend` — `up` / `down` / `none` — answers one question beside the three
+classification answers: *has today become a trend day yet, and which way?* It is
+not an input to the score. pattern-recorder reads it to decide which patterns to
+alert (plan v3, agreed with Amar 2026-11-07/08). See [trend.py](trend.py).
+
+The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
+
+| | on | off |
+|---|---|---|
+| `up` | a close above **both** PDH and the opening-range high | a close below both |
+| `down` | a close below **both** PDL and the opening-range low | a close above both |
+
+- **PDH / PDL** — the daily read's `pd_high` / `pd_low` (already in the payload).
+  After a weekend Muhurat session, that session is the previous one — nothing
+  special-cased (Amar, 2026-11-09).
+- **Opening range** — today's 09:15, 09:20 and 09:25 candles.
+- **Closed candles only** — the candle still forming at the run is dropped, so
+  the 10:00 run judges up to the 09:55 candle.
+- **Stateless** — re-derived from 09:30 on every run.
+- **Fails loudly** — a missing or stale daily read, or an incomplete opening
+  range once the 09:30 candle has closed, raises before the row is written.
+  `none` is always written explicitly; `NULL` means only "written before
+  2026-11-09".
+
+Verified offline 2026-11-09: equal to the v2.1 replay's day trend at 888 of 888
+runs (37 sessions with a daily row), and the old and new handler write identical
+values in every other column on 864 stored snapshots.
 
 ## No option term is scored yet
 
