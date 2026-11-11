@@ -19,8 +19,9 @@
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
 | `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns → `pattern_events`, alerts to Telegram and strategy-manager once each | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
-| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router | **built, running** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | on `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
+| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → the `regime\|bias` registry | **built, running** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on a no-trend alert, `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
+| `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -328,10 +329,17 @@ the payload. Two things moved out of it:
 Its Dhan call for a live price went with them — the only playbook built never
 read it, because a sweep is confirmed by a *closed* bar.
 
-**Routing is on `regime|bias`, and every one of the nine cells is listed.** A
-key present and mapping to `[]` is a deliberate "no playbook today"; a key
-*missing* means the classifier and the registry have drifted apart, and that
-raises. Eight cells are deliberately empty pending observed sessions.
+**Trend days route on `day_trend` first** (since 2026-11-09 22:37). The alert
+arrives as `detection`; `day_trend` up or down goes to `TREND_PLAYBOOKS`
+(`strategy-trend-pullback`), never to the registry, because the one filled cell is
+a range playbook and `regime|bias` lags the trend read. `none`, or no `detection`,
+routes as below. `detection`, `index_bars` and `source` pass through to the
+playbooks; `context_version` stays 2.
+
+**On a no-trend alert, routing is on `regime|bias`, and every one of the nine
+cells is listed.** A key present and mapping to `[]` is a deliberate "no playbook
+today"; a key *missing* means the classifier and the registry have drifted apart,
+and that raises. Eight cells are deliberately empty pending observed sessions.
 
 Full reasoning, the measured payload size, the registry and the IAM shape are in
 its [README](../strategy-manager/README.md).
@@ -372,6 +380,39 @@ playbook's own illustrated setups on risk-reward.
 Verified against the real 2026-09-11 session, which it correctly stands down:
 the day spent 1.27× its true ATR14 against a 0.78× limit.
 
+### strategy-trend-pullback
+
+The trend-day playbook: on a day the classifier's `day_trend` reads up or down,
+a key level held in the trend's direction — the trade is the hold, with the
+trend. It is not a sweep and not a fade; sweeps stay with
+`strategy-range-liquidity-sweep` on no-trend days (Amar, 2026-11-09).
+
+| | |
+|---|---|
+| Entry point | `handler.lambda_handler` |
+| Runtime | Python 3.14, zip package, 5 modules, **no layers**; 30 s, 128 MB |
+| Trigger | asynchronous invoke from `strategy-manager` (`TREND_PLAYBOOKS`), for a v2.1 alert whose `day_trend` is up or down |
+| Reads | **nothing** - the context carries the alert, today's closed index candles, the 15-min snapshot and the daily read |
+| Writes | **nothing** - its Telegram message and its log are its output |
+| Secrets | `/algo/telegram/brief` |
+| Switch | `TELEGRAM_ENABLED=on` since 2026-11-11 16:56; unset = shadow (logged `WOULD SEND`) |
+
+The rules, all on the index: a v2 **C2** (retest/hold) or **R1** (hold candle)
+with the trend at PDH/PDL/ORH/ORL, its trigger candle closing 09:45–14:30. C1
+breaks and R2 sweeps stand down. Entry is the trigger candle's close. The stop is
+a 5-min close back across min(PDH, ORH) for a long, max(PDL, ORL) for a short —
+the line where the day trend turns off. T1 is the session extreme before the
+trigger, then stop to break-even; T2 holds the rest to the 15:10 close. No
+risk-reward gate. It raises rather than guessing when the trigger candle, the
+opening range or a fresh daily read is missing.
+
+Its first full session, 2026-11-11 (in shadow), had 5 dispatches: 3 candidates
+(R1 holds at ORL, 12:40 / 12:45 / 13:15) and 2 stand-downs (a C1 break at 09:40,
+and a 15:10 hold outside the window). The offline recompute equalled the live
+log on all 5. The reference trade is 2026-11-06's PDH hold (n = 1) — not a
+calibration. The rules, the replay and the reference session are in its
+[README](../strategy-trend-pullback/README.md).
+
 ## Planned
 
 Nothing is currently planned. The obvious next pieces, neither agreed nor
@@ -380,9 +421,10 @@ designed:
 - **Backtesting** the playbooks under this architecture. `trading-algo/backtest/`
   is its own runner, position tracker and report builder, and folding it in
   would have tripled the scope of the round that built the two functions above.
-- **More playbooks.** The registry maps `TREND` to an empty list today, so a
-  trending day routes to nothing - correctly, since every playbook built so far
-  is a range playbook.
+- **More playbooks.** Trend days route on `day_trend` to
+  `strategy-trend-pullback` (since 2026-11-09), so the registry's trending cells
+  stay empty by design. The short-side `short-into-liquidity` setup exists only
+  as a skill, with no Lambda.
 
 ## Shared conventions
 

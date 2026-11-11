@@ -44,8 +44,9 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager) |
 | F&O reading, 5-min | every 5 min, 09:36–15:31, 71×/day | EventBridge Scheduler cron (its own trio) | **built** |
 | Pattern recording + alerts (v2.1) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
-| Strategy routing | on each v2.1 alert, once | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09) |
-| Range sweep playbook | on `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
+| Strategy routing | on each v2.1 alert, once | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). Routes on the alert's `day_trend` first: up/down → the trend playbook, `none` → the `regime\|bias` registry (since 2026-11-09 22:37) |
+| Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) |
+| Range sweep playbook | on a no-trend alert, `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -138,7 +139,10 @@ each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the se
 **Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars
 — `candle_5min`, `candle_15min`, `candle_1hr`, `candle_daily` and
-`instrument_master` — because a playbook knows which bars it needs. Neither
+`instrument_master` — because a playbook knows which bars it needs.
+`strategy-trend-pullback` reads nothing: the payload `pattern-recorder` builds and
+the manager passes through carries the alert, today's closed index candles and the
+daily read. None of the three
 writes anything. The
 regime the manager classifies travels in the invocation payload and each
 strategy records it in its own log alongside what it found, so the decision is

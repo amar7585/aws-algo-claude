@@ -25,8 +25,9 @@ deterministic to read.
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/bias/buildup on `intraday_sentiments`, invokes the detector |
 | [pattern-detector](pattern-detector/README.md) | **deployed, log-only since 2026-11-09 16:04** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm). It still decides and logs its alerts, but sends no Telegram and invokes no manager |
 | [pattern-recorder](pattern-recorder/README.md) | **v2.1 sending since 2026-11-09 16:04** (v2.0 recorded from 2026-11-06) — pattern-detector v2: candle patterns at levels (index PDH/PDL and opening range, 15-min swings, option walls) on the future → `pattern_events`. On each 5-min poller tick; key-level alerts filtered by the classifier's `day_trend` go to Telegram and strategy-manager, once each |
-| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**: reads `regime\|bias` off the 15-min snapshot and invokes the playbooks that combination allows, on each v2.1 alert |
-| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook |
+| [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**, on each v2.1 alert: `day_trend` up/down → `TREND_PLAYBOOKS` (`strategy-trend-pullback`); `none` → the playbooks the snapshot's `regime\|bias` allows |
+| [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **built** — the 15-min opening-range sweep playbook, on a no-trend `sideways\|range-bound` alert |
+| [strategy-trend-pullback](strategy-trend-pullback/README.md) | **sending since 2026-11-11 16:56** (shadow from 2026-11-09 22:33) — the trend-day hold playbook: a v2 hold (C2/R1) at PDH/PDL/ORH/ORL with the day trend → entry, stop on the trend-off line, T1/T2, to Telegram and its log. Reads and writes nothing |
 
 ## Documentation
 
@@ -49,6 +50,7 @@ deterministic to read.
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | Why the five-minute offset, the one thing it reads back from Postgres, the two strike widths, the `open_interest` naming trap |
 | [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads nothing at all, the v2 payload contract, the `regime\|bias` registry |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory |
+| [strategy-trend-pullback](strategy-trend-pullback/README.md) | The 2026-11-06 reference session, the rules (setup, window, S3 stop, T1/T2, no RR gate), the replay behind them, the shadow switch |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 | [layers/market-classifier](layers/market-classifier/README.md) | The taxonomy, the score terms, the swing read, the time-scaled volatility test, and the three decisions deferred until sessions accumulate |
@@ -114,6 +116,13 @@ aws-algo-claude/
 │   ├── trade.py                  entry, stop, targets, risk-reward, grade
 │   ├── gate.py report.py         the fine gate; the playbook's output blocks
 │   └── README.md
+├── strategy-trend-pullback/     Lambda: the trend-day hold playbook
+│   ├── handler.py                entry point, shadow vs send
+│   ├── config.py                 every tunable, TELEGRAM_ENABLED
+│   ├── pullback.py               the gate, levels, entry, stop, T1
+│   ├── report.py notify.py       the message; the Telegram send
+│   ├── iam/                      its role's policies, and the manager's invoke grant
+│   └── README.md
 ├── trading-calendar/             reference data: exchange holidays (no Lambda)
 │   ├── schema.sql                algo.trading_holiday
 │   ├── seed_2026.sql             16 holidays, from NSE's circular
@@ -167,9 +176,12 @@ Two planes on different clocks, deliberately uncoupled:
   (asynchronously, unset = off). v2.1 re-derives the session's pattern events
   and upserts them to `pattern_events`. Each new event at a key level that the
   `day_trend` rule allows goes to Telegram and to `strategy-manager`, once each.
-  The manager shortlists the playbooks valid for the `regime|bias` and invokes
-  those: `strategy-range-liquidity-sweep` on a range day, nothing on a trending
-  one. Only `pattern-recorder` writes to Postgres in the strategy plane.
+  The manager routes on the alert's `day_trend` first: up or down goes to
+  `strategy-trend-pullback`, the trend-day hold playbook (sending to Telegram
+  since 2026-11-11). On `none` it shortlists the playbooks valid for the
+  `regime|bias` and invokes those: `strategy-range-liquidity-sweep` on a range
+  day, nothing otherwise. Only `pattern-recorder` writes to Postgres in the
+  strategy plane.
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

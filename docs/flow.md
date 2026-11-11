@@ -27,12 +27,16 @@ flowchart TD
     subgraph STRAT["The strategy plane - chained, not scheduled"]
         PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule<br/>LOG-ONLY since 2026-11-09 16:04</i>"]
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
-        SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on sideways|range-bound</i>"]
+        SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on a no-trend<br/>sideways|range-bound alert</i>"]
+        TREND["<b>strategy-trend-pullback</b><br/><i>invoked on day_trend up/down<br/>sending since 2026-11-11 16:56</i>"]
         REC["<b>pattern-recorder</b> v2.1<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
         REC -->|"each alert, once"| TG3{{"Telegram"}}
         REC -->|"Event: each alert, once"| MGR
-        MGR -->|"Event: both sentiments"| SWEEP
+        MGR -->|"Event: day_trend none"| SWEEP
+        MGR -->|"Event: day_trend up/down"| TREND
         SWEEP --> LOG{{"CloudWatch log<br/><i>the only output</i>"}}
+        TREND -->|"candidate"| TG4{{"Telegram"}}
+        TREND --> LOG
     end
 
     POLL["intraday-fno-poller<br/><i>its own cron, every 5 min<br/>09:36-15:31, 71x/day</i>"] --> PTBL[("fno_5m_snapshot<br/>fno_5m_leg")]
@@ -69,6 +73,7 @@ flowchart TD
     style PD fill:#1e3a8a,color:#fff
     style MGR fill:#1e3a8a,color:#fff
     style SWEEP fill:#1e3a8a,color:#fff
+    style TREND fill:#1e3a8a,color:#fff
 ```
 
 Read in clock order, a weekday looks like this:
@@ -85,7 +90,8 @@ Read in clock order, a weekday looks like this:
 | 09:36–15:31 every 5 min (71 runs) | `intraday-fno-poller` | **cron** (its own trio) | `fno_5m_snapshot`, `fno_5m_leg` |
 | as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram |
 | on each v2.1 alert, once | `strategy-manager` | **invoke** | nothing |
-| then, on an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
+| then, on a `day_trend` up/down alert | `strategy-trend-pullback` | **invoke** | nothing (Telegram + its log) |
+| or, on a no-trend alert with an allowed regime/bias | `strategy-range-liquidity-sweep` | **invoke** | nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
 **Ten schedules drive this flow, and three of them drive the same intraday
@@ -100,7 +106,8 @@ separate reading. Since 2026-11-09 it hands each committed tick to
 Everything else in the session is chained: the loader commits and invokes the
 sentiment function, which measures and invokes the classifier, which writes the
 judgement and invokes the detector, which logs. The manager is invoked by
-`pattern-recorder`, once per v2.1 alert, and routes.
+`pattern-recorder`, once per v2.1 alert, and routes — on the alert's `day_trend`
+first, then on `regime|bias`.
 
 **Why chained rather than four crons.** Each step's input *is* the previous
 step's output. A cron on the sentiment function would have to guess how long
@@ -402,7 +409,13 @@ flowchart TD
     REC --> ALERT{"new event at a key level<br/>that day_trend allows?"}
     ALERT -->|"yes, once"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
 
-    MGR --> KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
+    MGR --> DT{"detection.day_trend?"}
+    DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v2 + detection + index_bars</i>"]
+    TINV --> TPB["strategy-trend-pullback<br/><i>reads nothing</i>"]
+    TPB --> TGATE{"C2 or R1 hold, with the trend,<br/>at PDH/PDL/ORH/ORL,<br/>closes 09:45-14:30?"}
+    TGATE -->|"any fails"| TDOWN(["stand down,<br/>naming every reason"])
+    TGATE -->|"all pass"| TOUT{{"TREND PULLBACK candidate<br/><i>entry, stop on the trend-off line,<br/>T1/T2 - Telegram + log</i>"}}
+    DT -->|"none"| KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
     KEY -->|"no - drift"| RAISE
     KEY -->|"present, empty"| NONE(["no playbook is valid<br/>on this kind of day"])
     KEY -->|"sideways|range-bound"| INV["<b>Event invoke</b>, context v2<br/><i>merged fno+sentiment + the detection</i>"]
@@ -418,12 +431,14 @@ flowchart TD
     style NONE fill:#78350f,color:#fff
     style DOWN fill:#78350f,color:#fff
     style STAND fill:#78350f,color:#fff
+    style TDOWN fill:#78350f,color:#fff
     style WRITE fill:#14532d,color:#fff
     style WRITE2 fill:#14532d,color:#fff
     style OUT fill:#14532d,color:#fff
+    style TOUT fill:#14532d,color:#fff
 ```
 
-Seven things in that diagram are load-bearing:
+Eight things in that diagram are load-bearing:
 
 **`snapshot_ts` is the newest bar returned, forming one included.** At a 10:00
 run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
@@ -464,7 +479,19 @@ snapshot's `regime|bias`. Before 2026-11-09 the gate was `pattern-detector`'s
 confirmed turn, which is now log-only; see
 [pattern-recorder](../pattern-recorder/README.md).
 
-**Routing is on `regime|bias`, and every cell is listed.** A key present and
+**Trend days route on `day_trend`, not on the registry** (since 2026-11-09 22:37).
+The alert arrives as `detection`, carrying the `day_trend` that `pattern-recorder`
+judged it against. Up or down goes to `TREND_PLAYBOOKS` — `strategy-trend-pullback`
+— and never to the registry; `none` (or no `detection`) goes to the registry below.
+A trend day's hold is a breakout trade, the one filled registry cell is a range
+playbook that would fade it, and `regime|bias` lags the trend read: on 2026-11-06
+bias read range-bound 10:45–11:30, exactly during the PDH hold. The playbook reads
+nothing — the payload carries today's closed index candles and the daily read — and
+it has sent its candidates to Telegram since 2026-11-11 16:56 (`TELEGRAM_ENABLED=on`;
+unset = shadow, logged `WOULD SEND`). See
+[strategy-trend-pullback](../strategy-trend-pullback/README.md).
+
+**On a no-trend alert, routing is on `regime|bias`, and every cell is listed.** A key present and
 mapping to `[]` is a deliberate "no playbook today"; a key *missing* means the
 classifier and the registry have drifted apart, and that raises — routing
 nothing would otherwise look exactly like a correct stand-down. Eight of the
@@ -497,8 +524,9 @@ flowchart LR
     F8["strategy-manager"] --> LG8[/"log group"/]
     F9["strategy-range-liquidity-sweep"] --> LG9[/"log group"/]
     F10["pattern-recorder"] --> LG10[/"log group"/]
+    F11["strategy-trend-pullback"] --> LG11[/"log group"/]
 
-    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 & LG10 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 & LG10 & LG11 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
     EN --> TG(["Telegram"])
     EN -.->|"never subscribe<br/>its own log group"| EN
 
@@ -521,7 +549,8 @@ do: `intraday-market-sentiment` returning success says only that its row was
 written and the invoke was accepted. Their own log groups are the only place
 their failures appear. An unsubscribed `market-classifier` would stop the whole
 chain below it and no alarm would fire anywhere. (All nine groups, including the
-two new functions', are subscribed.)
+two new functions', are subscribed. `strategy-trend-pullback`'s has been since it
+was created, 2026-11-09 22:33.)
 
 This compounds with the execution-role trap. A borrowed role allows
 `logs:PutLogEvents` on one log group ARN only, so a function using it produces
@@ -550,11 +579,13 @@ exactly the same way as a quiet market.
 | Fewer than 200 closed 5-min bars | `MIN_BARS_TO_CLASSIFY`, before the layer is called | raise — not a score capped at ±2 |
 | An SMA absent on the newest bar | explicit `None` check in the layer | raise — never defaulted to `0.0` |
 | the classifier and the registry drift apart | `regime\|bias` key absent from `STRATEGY_REGISTRY` | raise — not an empty shortlist |
+| A trend-day alert with `TREND_PLAYBOOKS` unset | the manager's routing | logged as a deliberate stand-down — routed nowhere |
+| The trend playbook cannot place its levels or entry | trigger candle not in `index_bars`, opening range incomplete, daily read missing or stale | raise — `error-notifier` reports it; no candidate is guessed |
 | The dispatched context exceeds 256 KB | checked before `invoke` | raise, naming the two rows (a real one measures ~840 bytes) |
 | A strategy invoke is refused | `StatusCode` / `FunctionError` | every invoke attempted, then one raise naming all failures |
 | The manager's payload shape changes | `context_version` assertion in each strategy (now v2) | raise — never a gate passing on a vanished input |
 | A strategy fails after dispatch | its own log group → `error-notifier` | reported from there; the manager cannot see it and does not claim to |
-| The daily read is missing or stale | `stale` flag from `created_at`, set where the row is read | logged by both the reader and the router; playbooks stand down on their own gate |
+| The daily read is missing or stale | `stale` flag from `created_at`, set where the row is read | logged by both the reader and the router; the sweep playbook stands down on its own gate, the trend playbook raises (no PDH/PDL to place) |
 | Token JWT has no `exp` claim | claim check before write | raise — nothing stored |
 | Dhan token expired | `expires_at` check before any call | raise — never call with a dead token |
 | `security_id` matches 0 or 2+ rows | exactly-one check in `resolve_instrument` | raise — no silent wrong instrument |
