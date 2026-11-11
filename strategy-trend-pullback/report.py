@@ -17,13 +17,18 @@ def render(candidate, detection, snapshot, stamp):
     pair = "PDH / ORH" if up else "PDL / ORL"
     lv = c["levels"]
     pair_values = f"{_p(lv['pdh'])} / {_p(lv['orh'])}" if up else f"{_p(lv['pdl'])} / {_p(lv['orl'])}"
+    if c.get("gap"):
+        why = (f"ORL - gap day, opening range wholly above PDH {_p(lv['pdh'])}" if up
+               else f"ORH - gap day, opening range wholly below PDL {_p(lv['pdl'])}")
+    else:
+        why = f"{beyond} of {pair} {pair_values}"
     sub = f"/{d['subtype']}" if d.get("subtype") else ""
     lines = [
         f"TREND PULLBACK {c['side']} - {stamp}",
         f"Day trend {d['day_trend']} | hold at {NAMES[c['key_level']]} {_p(c['key_price'])} "
         f"({d['family']}{sub}, candle {clock(c['trigger_ts'])})",
         f"Entry  {_p(c['entry'])}  (index close of the {clock(c['trigger_ts'])} candle)",
-        f"Stop   exit on a 5-min close {word} {_p(c['off_line'])} ({beyond} of {pair} {pair_values})",
+        f"Stop   exit on a 5-min close {word} {_p(c['off_line'])} ({why})",
         f"       nominal {_p(c['stop_nominal'])}, risk {c['risk']:.0f} pts",
     ]
     if c["t1"] is None:

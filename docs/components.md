@@ -401,7 +401,9 @@ The rules, all on the index: a v2 **C2** (retest/hold) or **R1** (hold candle)
 with the trend at PDH/PDL/ORH/ORL, its trigger candle closing 09:45–14:30. C1
 breaks and R2 sweeps stand down. Entry is the trigger candle's close. The stop is
 a 5-min close back across min(PDH, ORH) for a long, max(PDL, ORL) for a short —
-the line where the day trend turns off. T1 is the session extreme before the
+the line where the day trend turns off; on a gap day (the whole opening range
+beyond PDH / PDL) that line is the far side of the opening range, in the
+classifier and the playbook alike (2026-11-11). T1 is the session extreme before the
 trigger, then stop to break-even; T2 holds the rest to the 15:10 close. No
 risk-reward gate. It raises rather than guessing when the trigger candle, the
 opening range or a fresh daily read is missing.

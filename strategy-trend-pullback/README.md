@@ -13,7 +13,7 @@ on no-trend days (Amar, 2026-11-09).
 
 | | |
 |---|---|
-| Status | **deployed in SHADOW 2026-11-09 22:33 IST** (CodeSha256 `/ZpB2MYN…`, `TELEGRAM_ENABLED` unset — candidates are logged `WOULD SEND`). strategy-manager routes to it since 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`). First live session Wed 2026-11-11 |
+| Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 5 modules, **no layers** |
 | Trigger | asynchronous invoke from `strategy-manager`, for a v2 alert on a day whose `day_trend` is up or down |
@@ -52,7 +52,7 @@ All on the **index** — the chart the levels are drawn on.
 | Setup | v2's **C2** (retest / hold of a level broken this session in the trend's direction) or **R1** (hold candle), in the trend's direction, at PDH/PDL/ORH/ORL (its own level or one within NEAR) | breakout-and-hold only. C1 (the break itself) was weak in the replay; R2 sweeps belong to the sweep playbook |
 | Window | trigger candle closes 09:45–14:30 | Amar's short-into-liquidity window |
 | Entry | the index close of the trigger candle | the alert lands ~2 min after it |
-| Stop (S3) | exit on a 5-min **close** below min(PDH, ORH) for a long (above max(PDL, ORL) for a short) — the line where the day trend turns off. Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the only stop that survived real trend days in the replay (0 of 47 stopped before T1); S1 (pullback low) and S2 (close back across the level) were shaken out on a quarter to a third of them |
+| Stop (S3) | exit on a 5-min **close** below min(PDH, ORH) for a long (above max(PDL, ORL) for a short) — the line where the day trend turns off. On a **gap day** (the whole opening range above PDH / below PDL) that line is the opening-range low / high instead — the same line as market-classifier's `day_trend` off line (2026-11-11, option C). Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the only stop that survived real trend days in the replay (0 of 47 stopped before T1); S1 (pullback low) and S2 (close back across the level) were shaken out on a quarter to a third of them |
 | T1 | the session high before the trigger candle (low for a short), then **stop to break-even** on the remainder | Amar's break-even rule from short-into-liquidity. None when the entry is already beyond it |
 | T2 | the remainder held to the 15:10 close | the index freezes for the closing auction from 15:15 |
 | RR gate | **none** | a 1.5 gate kept the worse setups in the replay |
@@ -79,6 +79,35 @@ the day trend read at the live 15-min lag:
 Verified 2026-11-09: `pullback.evaluate()` equals the replay's S3 values on all 88
 holds (entry, stop, risk, T1) and stands down the other 68 with-trend alerts
 (40 breaks, 4 sweeps, 24 outside the window).
+
+## Gap days (2026-11-11, option C)
+
+The first live session, 2026-11-11, gapped wholly above PDH (ORL 25263.80 >
+PDH 25084.05). Its three candidates — R1 holds at ORL, 12:40 / 12:45 / 13:15 —
+carried the stop at PDH, risk 222–238 pts against 116–133 to T1; the index fell
+330 pts that afternoon without closing below PDH, so the stop never triggered.
+
+Replay, 80 sessions 07-01 → 11-11, every hold, the playbook's own management (half
+at T1, the rest at break-even or 15:10), index points:
+
+| Option | trades | total pts | mean R | won / lost | worst |
+|---|---|---|---|---|---|
+| S3 as it was | 95 | +1653 | +0.18 | 59 / 36 | −195 |
+| gap-aware stop only | 93 | +1874 | +0.67 | 57 / 36 | −162 |
+| **gap-aware stop + the classifier's off line (chosen)** | 92 | +1899 | +0.68 | 57 / 35 | −162 |
+| stand down on gap days | 56 | −138 | −0.10 | 30 / 26 | −145 |
+
+19 gap days carry 39 of the 95 holds; on them the median risk halves (156 → 82).
+Non-gap days are unchanged by construction, including the 2026-11-06 reference.
+On 11-11 the three candidates' stop becomes ORL 25263.80 (risk 42 / 58 / 45); the
+13:30 close 25215.40 stops them for −76 / −93 / −81 — a close-based stop can exit
+beyond its nominal level. Descriptive, small sample: C differs from the gap-aware
+stop alone on one trade (09-09 10:35).
+
+Verified offline 2026-11-11: `pullback.evaluate()` equals that replay on all 92
+option-C candidates; on the 56 non-gap holds the old and new code agree on every
+field; on the 39 gap-day holds only the stop line moves (to ORL / ORH); the 68
+other with-trend alerts still stand down.
 
 ## Configuration
 

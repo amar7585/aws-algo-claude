@@ -17,6 +17,10 @@ THE RULES, all on the INDEX (the chart the levels are drawn on):
   entry   the index close of the trigger candle
   stop    S3 - exit on a 5-min close below min(PDH, ORH) for a long (above
           max(PDL, ORL) for a short): the line where the day trend turns off.
+          On a GAP day - the whole opening range above PDH (below PDL) - that
+          line is the opening-range low (high) instead: max(min(PDH, ORH), ORL)
+          for a long, min(max(PDL, ORL), ORH) for a short. The same line as
+          market-classifier's day_trend off line (Amar, 2026-11-11, option C).
           Nominal stop for the risk figure = that line minus the buffer.
   T1      the session extreme before the trigger candle; then stop to
           break-even on the remainder. None when the entry is already beyond it.
@@ -124,7 +128,8 @@ def evaluate(detection, index_bars, daily):
     last = bars[max(0, i + 1 - STOP_BUFFER_LOOKBACK_BARS):i + 1]
     buffer = max(entry * STOP_BUFFER_PCT / 100,
                  STOP_BUFFER_RANGE_FACTOR * statistics.fmean(b["high"] - b["low"] for b in last))
-    off_line = min(lv["pdh"], lv["orh"]) if up else max(lv["pdl"], lv["orl"])
+    gap = lv["orl"] > lv["pdh"] if up else lv["orh"] < lv["pdl"]
+    off_line = max(min(lv["pdh"], lv["orh"]), lv["orl"]) if up else min(max(lv["pdl"], lv["orl"]), lv["orh"])
     nominal = off_line - sign * buffer
     risk = (entry - nominal) * sign
     if risk <= 0:
@@ -144,7 +149,9 @@ def evaluate(detection, index_bars, daily):
         "key_price": lv[key],
         "levels": lv,
         "off_line": off_line,
-        "off_line_name": ("PDH" if lv["pdh"] <= lv["orh"] else "ORH") if up else ("PDL" if lv["pdl"] >= lv["orl"] else "ORL"),
+        "gap": gap,
+        "off_line_name": (("ORL" if gap else "PDH" if lv["pdh"] <= lv["orh"] else "ORH") if up
+                          else ("ORH" if gap else "PDL" if lv["pdl"] >= lv["orl"] else "ORL")),
         "buffer": buffer,
         "stop_nominal": nominal,
         "risk": risk,

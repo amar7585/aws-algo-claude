@@ -12,14 +12,28 @@ unchanged; this is a separate answer stored beside them.
 THE RULE (T1), on the index's CLOSED 5-minute candles from the 09:30 candle on:
 
     up    on   a close above BOTH PDH and the opening-range high
-          off  a close below BOTH of them (below the lower of the two)
+          off  a close below BOTH of them (below the lower of the two) -
+               or, on a GAP day, a close below the opening-range low
     down  on   a close below BOTH PDL and the opening-range low
-          off  a close above BOTH of them (above the higher of the two)
+          off  a close above BOTH of them (above the higher of the two) -
+               or, on a GAP day, a close above the opening-range high
+
+As one line: up off = max(min(PDH, ORH), ORL); down off = min(max(PDL, ORL), ORH).
 
 A close that switches one trend off can switch the other on in the same candle.
 Between "on" and "off" the state holds - a pullback that stays above the lower
 of PDH / ORH keeps an up day up, which is what lets the 2026-11-06 PDH hold be
 read as a with-trend long.
+
+GAP DAYS (Amar, 2026-11-11, option C). When the whole opening range sits above
+PDH (ORL > PDH), the lower of PDH / ORH is PDH, far below price: on 2026-11-11
+the day stayed "up" through a 330-point fall that never reached PDH. On such a
+day the trend turns off when price closes back below the opening range - it is
+falling into the gap. Mirror for a range wholly below PDL. On every other day
+the line is exactly the lower (higher) of the two, as before. strategy-trend-
+pullback uses the same line as its stop, so "trend off" means one thing in both.
+Replay (80 sessions to 2026-11-11): 19 gap days; the line changes the trend on 3
+(07-24, 09-09, 11-11), where price closed back into the gap.
 
 THE LEVELS.
   PDH / PDL     the daily read's pd_high / pd_low - the previous session's
@@ -94,6 +108,14 @@ def _levels(opening, daily):
     }
 
 
+def off_lines(lv):
+    """(up off, down off): the lower of PDH / ORH (higher of PDL / ORL), or the far
+    side of the opening range when the whole range sits beyond PDH (PDL) - a gap day."""
+    up_off = max(min(lv["pdh"], lv["orh"]), lv["orl"])
+    down_off = min(max(lv["pdl"], lv["orl"]), lv["orh"])
+    return up_off, down_off
+
+
 def day_trend(session_bars, daily, run_epoch):
     """
     Today's day trend as of the run clock: (up | down | none, levels or None).
@@ -113,8 +135,8 @@ def day_trend(session_bars, daily, run_epoch):
     opening = [b for b in closed if SESSION_OPEN_MINUTE <= _ist_minute(b["ts"]) < RULE_FROM_MINUTE]
     lv = _levels(opening, daily)
 
-    up_on, up_off = max(lv["pdh"], lv["orh"]), min(lv["pdh"], lv["orh"])
-    down_on, down_off = min(lv["pdl"], lv["orl"]), max(lv["pdl"], lv["orl"])
+    up_on, down_on = max(lv["pdh"], lv["orh"]), min(lv["pdl"], lv["orl"])
+    up_off, down_off = off_lines(lv)
     state = NONE
     for bar in judged:
         close = float(bar["close"])

@@ -71,8 +71,11 @@ The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
 
 | | on | off |
 |---|---|---|
-| `up` | a close above **both** PDH and the opening-range high | a close below both |
-| `down` | a close below **both** PDL and the opening-range low | a close above both |
+| `up` | a close above **both** PDH and the opening-range high | a close below both — on a **gap day** (the whole opening range above PDH), a close below the opening-range low |
+| `down` | a close below **both** PDL and the opening-range low | a close above both — on a **gap day** (the whole opening range below PDL), a close above the opening-range high |
+
+As one line: up off = max(min(PDH, ORH), ORL); down off = min(max(PDL, ORL), ORH).
+On every non-gap day that is exactly the lower (higher) of the two.
 
 - **PDH / PDL** — the daily read's `pd_high` / `pd_low` (already in the payload).
   After a weekend Muhurat session, that session is the previous one — nothing
@@ -89,6 +92,21 @@ The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
 Verified offline 2026-11-09: equal to the v2.1 replay's day trend at 888 of 888
 runs (37 sessions with a daily row), and the old and new handler write identical
 values in every other column on 864 stored snapshots.
+
+**The gap-day off line (Amar, 2026-11-11, option C).** On 2026-11-11 the whole
+opening range sat above PDH, so "below the lower of PDH / ORH" meant PDH, 180
+points under the range: the day stayed `up` through a 330-point fall that never
+reached it. On a gap day the trend now turns off when price closes back below
+the opening range (mirror for a range below PDL). `strategy-trend-pullback` uses
+the same line as its stop, so "trend off" means one thing in both. Chosen on
+outcomes over a replay of 80 sessions (07-01 → 11-11): 19 gap days; the line
+changes the trend on 3 of them (07-24, 09-09, 11-11), where price closed back
+into the gap. Verified offline 2026-11-11: old vs new rule on all 912 stored
+snapshots (39 sessions) — equal on 904; the 8 that differ are 11-11 13:45 →
+15:25 (`up` → `none`); none on a non-gap day, none on the other 7 gap days; the
+handler writes identical values in every other column. Deployed 2026-11-11 18:53
+IST (CodeSha256 `PuU8qJzU…`, previous `vNi2RmBT…`); rows written before then keep
+the old rule's value (not backfilled).
 
 ## No option term is scored yet
 
