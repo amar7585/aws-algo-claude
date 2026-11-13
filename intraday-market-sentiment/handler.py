@@ -79,6 +79,7 @@ from config import (
     NIFTY_INSTRUMENT_TYPE,
     NIFTY_SECURITY_ID,
     RAW_STRIKES_PER_SIDE,
+    RECENT_RANGE_BARS,
     VIX_INSTRUMENT_TYPE,
     VIX_SECURITY_ID,
 )
@@ -88,6 +89,7 @@ from db import (
     read_constituents,
     resolve_by_symbol,
     resolve_instrument,
+    width_profile,
     write_snapshot,
 )
 from dhan import (
@@ -100,7 +102,13 @@ from dhan import (
 from measurement import indicator_columns
 from dispatch import dispatch_to_classifier
 from params import read_client_id, read_token_record
-from sentiment import bar_volume_stats, newest_bar, pct_change, session_stats
+from sentiment import (
+    bar_volume_stats,
+    newest_bar,
+    pct_change,
+    recent_range,
+    session_stats,
+)
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -320,6 +328,13 @@ def lambda_handler(event, context):
         # daily row describes the previous session, so a row stamped today
         # never exists. See db.daily_sentiment.
         daily = daily_sentiment(conn, index, ist_midnight_epoch(today))
+        # And the third: today's normal width per 5-min slot, built at 09:35 by
+        # daily-market-sentiment. The last six closed candles are judged against
+        # it - market-classifier's volatility test reads the ratio (2026-11-12).
+        recent = recent_range(
+            index_bars, run_epoch, CANDLE_INTERVAL_MINUTES * 60,
+            width_profile(conn, index, ist_midnight_epoch(today)), RECENT_RANGE_BARS,
+        )
         # The futures deltas are guarded against a monthly roll the same way
         # the option OI deltas below are guarded against an expiry roll.
         fut_base = future_baseline(baseline, future["security_id"])
@@ -344,6 +359,9 @@ def lambda_handler(event, context):
             "orb_low": index_stats["orb_low"],
             "last_bar_volume": volume_stats["last_bar_volume"],
             "volume_vs_avg": volume_stats["volume_vs_avg"],
+            "recent_range_pct": recent["recent_range_pct"],
+            "recent_range_vs_normal": recent["recent_range_vs_normal"],
+            "recent_range_from_ts": recent["recent_range_from_ts"],
 
             "fut_security_id": future["security_id"],
             "fut_symbol": future["trading_symbol"],
@@ -450,6 +468,24 @@ def lambda_handler(event, context):
             row, index, index_bars,
             vix_baseline=baseline["vix"] if baseline else None,
             now=now, daily=daily,
+        )
+
+        # FAIL LOUDLY, AFTER THE WRITE (plan choice B2, 2026-11-12). Without the
+        # 30-minute ratio the classifier cannot judge volatility, but the row's
+        # option chain cannot be fetched again later - Dhan serves no historical
+        # chain - so the row is written and handed on first, and only then does
+        # the run fail, so error-notifier reports it.
+        if row["recent_range_vs_normal"] is None:
+            raise RuntimeError(
+                f"snapshot {ist_datetime(snapshot_ts):%H:%M} written and dispatched "
+                f"WITHOUT recent_range_vs_normal: {recent['reason']} - "
+                f"market-classifier's volatility test needs it (check "
+                f"daily-market-sentiment's 09:35 width-profile build)"
+            )
+        logger.info(
+            "recent range: %d closed candles from %s, width %.3f%%, %.2fx normal",
+            RECENT_RANGE_BARS, ist_datetime(row["recent_range_from_ts"]).strftime("%H:%M"),
+            row["recent_range_pct"], row["recent_range_vs_normal"],
         )
 
         elapsed = time.monotonic() - started

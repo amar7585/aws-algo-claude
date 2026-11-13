@@ -18,6 +18,15 @@ session_elapsed comes from the RUN CLOCK, not snapshot_ts: at a 09:45 run the
 bar stamped 09:45 has zero seconds of data in it, so 30 minutes have elapsed,
 not 35. expected_move and session_elapsed used to live in
 intraday-market-sentiment/classification.py; they moved here with the scoring.
+
+THE VOLATILITY RANGE TEST IS THE LAST 30 MINUTES (agreed with Amar 2026-11-12).
+The row's recent_range_vs_normal - the last six closed candles' width over the
+normal for their clock slots, measured by intraday-market-sentiment - is passed
+as classify()'s recent_range_ratio, which makes it the range test; range_used
+(day range vs the VIX move x sqrt(elapsed)) is still computed and stored, but no
+longer votes on this frame. A row WITHOUT the ratio raises here: the layer reads
+None as "this frame does not use the recent test" and would silently fall back
+to range_used, the rule this replaced.
 """
 
 import logging
@@ -116,6 +125,14 @@ def classify_snapshot(fno, session_bars, vix_baseline, now):
     bar = scored_bar(fno)
     spot = float(fno["spot"])
     vix = fno.get("vix")
+    recent = fno.get("recent_range_vs_normal")
+    if recent is None:
+        raise RuntimeError(
+            f"snapshot {fno.get('snapshot_ts')}: the measurement row carries no "
+            f"recent_range_vs_normal - refusing to judge volatility without it "
+            f"(intraday-market-sentiment raised for this run too; check "
+            f"daily-market-sentiment's 09:35 width-profile build)"
+        )
     day_range = None
     if fno.get("day_high") is not None and fno.get("day_low") is not None:
         day_range = float(fno["day_high"]) - float(fno["day_low"])
@@ -132,6 +149,7 @@ def classify_snapshot(fno, session_bars, vix_baseline, now):
         vwap=fno.get("vwap"),
         session_elapsed=elapsed,
         structure_bars=len(session_bars),
+        recent_range_ratio=float(recent),
     )
     logger.info(
         "classified snapshot %s on %d session bars, %.1f%% elapsed",

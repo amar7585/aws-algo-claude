@@ -12,7 +12,7 @@ derives the futures-OI buildup, writes `algo.intraday_sentiments`, and invokes
 |---|---|
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 6 modules |
-| Layers | `neon-db-driver` + `neon-access` + `market-classifier` (v2, the scoring rules) |
+| Layers | `neon-db-driver` + `neon-access` + `market-classifier` (the scoring rules — **v3** since 2026-11-13 12:31 IST, the 30-minute volatility test, see [Volatility](#volatility); v2 before) |
 | Schedule | **none** — invoked by `intraday-market-sentiment`, once per snapshot (25×/day) |
 | Reads | **nothing from the database** — the measurement row arrives in the payload |
 | Writes | `algo.intraday_sentiments` (one judgement row per snapshot) |
@@ -48,9 +48,69 @@ scale. See [inputs.py](inputs.py) and the [layer README](../layers/market-classi
   (handed over in the payload). structure is a classification answer, so the
   swing read lives here, not on the measurement side.
 - the **volatility inputs** — `vix`, the `vix_baseline` (previous snapshot's
-  VIX), `day_range`, the VIX-implied `expected_move`, and `session_elapsed` from
-  the **run clock** (at a 09:45 run the bar stamped 09:45 has zero elapsed time,
-  so 30 minutes have passed, not 35).
+  VIX), the row's `recent_range_vs_normal` (the range test, see
+  [Volatility](#volatility)), and — reported, no longer voting — `day_range`,
+  the VIX-implied `expected_move` and `session_elapsed` from the **run clock**
+  (at a 09:45 run the bar stamped 09:45 has zero elapsed time, so 30 minutes
+  have passed, not 35).
+
+## Volatility
+
+`regime` is volatile-expansion when either test fires; otherwise it is the
+swing read (trending, else sideways).
+
+| Test | Fires when | Since |
+|---|---|---|
+| VIX | VIX moved ≥ 5% against the previous snapshot | unchanged |
+| Range | the **last six closed 5-min candles** were ≥ **2.0×** as wide as normal for their clock slots (`recent_range_vs_normal`, measured by `intraday-market-sentiment` against `algo.intraday_width_profile`) | 2026-11-13 12:31 IST |
+
+**Why it changed (agreed with Amar 2026-11-12).** The range test was the day's
+range since 09:15 against the VIX-implied move × √(time elapsed). That assumes
+volatility is spread evenly through the session, and it is not: the median
+09:15 candle is 4.7× a midday one. At 09:45 only 8% of the session has elapsed,
+so the opening range alone tripped it — the 09:45 row read volatile-expansion
+on 82% of 34 sessions, and on 2026-11-12, an inside day, until 11:30. The
+opening range already has its own levels (ORH/ORL); what the veto should catch
+is a burst **now**.
+
+Measured on 936 stored snapshots (2026-09-15 → 11-12), read-only:
+
+| | Range since open (old) | Last 30 min vs normal (new) |
+|---|---|---|
+| Runs reading volatile-expansion | 40% | 8% |
+| at 09:45 | 82% | 21% |
+| each later hour | 28–62% | 2–10% |
+| Confirmed sweeps passing the sweep playbook's own gate (of 7) | 1 | 4 |
+| No-trend alerts reaching `sideways\|range-bound` (of 173) | 27 | 43 |
+
+Six candles rather than three because three switched the test off and straight
+back on within 30 minutes 16 times, six twice, with the same routing result;
+recomputing it every 5 minutes instead of every 15 changed one alert's route in
+173. 2.0 is about the top 10% of runs, what 1.5 meant for the old test.
+
+- `range_used` is still computed and stored; it no longer votes on this frame.
+  The **daily** frame keeps it as its range test (plan choice D1) — on a daily
+  candle "the day's range against the VIX move" already is "the latest candle
+  against normal".
+- **A row without `recent_range_vs_normal` raises** before scoring (plan choice
+  B2): the layer reads a missing ratio as "this frame does not use the recent
+  test" and would silently fall back to `range_used`.
+- Rows written before 2026-11-13 12:31 IST keep the old test's regime (not
+  backfilled). 2026-11-13 itself is split: 09:45 → 12:30 on the old test, 12:45
+  on the new one.
+- Rolled out in two steps (plan choice C1). Step 1, 2026-11-12 21:28 IST: the
+  table and columns, and the two measuring functions. Step 2, 2026-11-13
+  12:31:58 IST: layer `market-classifier:3` (CodeSha256 `XyZLZzZW…`; previous
+  `:2`, `JnpOUYX4…`) attached to this function only, then this function's code
+  (`0+M7spXq…`; previous `PuU8qJzU…`). The layer went first: v3 without a ratio
+  behaves exactly like v2, so no run could land on new code with the old layer.
+
+Verified offline 2026-11-12, old vs new code on all 936 snapshots: every column
+other than `regime`, `volatility_expanding` and `confidence` identical;
+`volatility_expanding` equals the measurement on 936 of 936; `regime` on 928 —
+the 8 others are rows where the replay's swing read differs from the live one
+(the replay reads finished candles where the live run saw the newest still
+forming), not the volatility test.
 
 ## buildup is derived here
 

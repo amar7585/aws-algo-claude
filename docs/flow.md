@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph SESSION["09:15-15:30"]
-        DAILY["daily-market-sentiment<br/><i>cron, 09:35</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment")]
+        DAILY["daily-market-sentiment<br/><i>cron, 09:35</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment<br/>intraday_width_profile")]
         DAILY --> TG1{{"Telegram"}}
 
         CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>09:45-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
@@ -82,7 +82,7 @@ Read in clock order, a weekday looks like this:
 |---|---|---|---|
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
 | 07:30 Mon, 15 min later each day to 08:30 Fri | `auth-dhan-broker` | cron | `/algo/dhan/token` |
-| 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram |
+| 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram, `intraday_width_profile` (today's normal 5-min width per slot, since 2026-11-12) |
 | 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
@@ -268,6 +268,10 @@ flowchart TD
     SMA -->|no| RAISE
     SMA -->|yes| WRITE[("daily_market_sentiment")]
     WRITE --> TG(["Telegram"])
+    TG --> WFETCH["fetch 45 days of 5-min bars<br/><i>one call, LAST so it never costs the read</i>"]
+    WFETCH --> WBUILD{"20 weekday sessions before today,<br/>every slot in &ge; 15 of them?"}
+    WBUILD -->|no| RAISE
+    WBUILD -->|yes| WP[("intraday_width_profile<br/><i>75 rows: median width per slot</i>")]
 
     IM[("instrument_master<br/><i>monthly, separate</i>")] -.read.-> RESOLVE
     CD -.read.-> READ
@@ -275,7 +279,15 @@ flowchart TD
     style SKIP fill:#78350f,color:#fff
     style RAISE fill:#7f1d1d,color:#fff
     style TG fill:#14532d,color:#fff
+    style WP fill:#14532d,color:#fff
 ```
+
+**The width profile is built here, last (2026-11-12).** The median 5-min candle
+width, (high − low) / close × 100, at each clock slot over the previous 20
+weekday sessions — the yardstick `intraday-market-sentiment` judges its last 30
+minutes against from 09:45. Last in the run so a failure never costs the daily
+read or the brief; it still raises, so error-notifier reports it ten minutes
+before it is needed.
 
 Three things in that diagram are load-bearing and each was learned the hard way:
 
@@ -392,12 +404,14 @@ flowchart TD
     FETCH --> NEWEST["<b>snapshot_ts = newest bar returned</b><br/><i>the FORMING one included</i>"]
     NEWEST --> CHAIN["expiries, future, VIX, both option chains"]
     CHAIN --> DREAD["read daily_market_sentiment<br/><b>newest row stamped BEFORE today</b>"]
-    DREAD --> MEAS["decorate: sma9/50/100/200, RSI<br/><i>MEASUREMENT only now</i>"]
+    DREAD --> WREAD["read today's intraday_width_profile<br/><i>built 09:35; width of the last 6 CLOSED<br/>candles &divide; normal for their slots</i>"]
+    WREAD --> MEAS["decorate: sma9/50/100/200, RSI<br/><i>MEASUREMENT only now</i>"]
     MEAS -->|"< 200 bars, or an SMA absent"| RAISE(["raise"])
     MEAS --> WRITE[("intraday_fno_data<br/>+ option_chain_snapshot")]
 
     WRITE --> CLSF["<b>market-classifier</b> - Event invoke<br/><i>row + today's bars + VIX baseline + run clock</i>"]
-    CLSF --> SCORE["<b>market-classifier layer</b>, 5-min frame<br/>structure read, SMA alignment, RSI,<br/>VWAP term, time-scaled volatility, buildup"]
+    WRITE -->|"no width ratio: written + dispatched, THEN"| RAISE
+    CLSF --> SCORE["<b>market-classifier layer</b>, 5-min frame<br/>structure read, SMA alignment, RSI,<br/>VWAP term, buildup; volatility = VIX move<br/>or the last 30 min &ge; 2.0&times; normal"]
     SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, bias, buildup</i>")]
 
     WRITE2 --> PD["<b>pattern-detector</b> - Event invoke<br/><i>reads the future's candle_5min</i>"]
@@ -438,7 +452,7 @@ flowchart TD
     style TOUT fill:#14532d,color:#fff
 ```
 
-Eight things in that diagram are load-bearing:
+Nine things in that diagram are load-bearing:
 
 **`snapshot_ts` is the newest bar returned, forming one included.** At a 10:00
 run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
@@ -457,6 +471,18 @@ the frames are still not on one *total* — the 5-minute frame carries a VWAP te
 the daily frame cannot. The intraday classification now lives on
 `intraday_sentiments`, written by `market-classifier`; `intraday-market-sentiment`
 only measures (`intraday_fno_data`), and the two join on `snapshot_ts`.
+
+**Volatility is the last 30 minutes, not the day so far (2026-11-12).** The
+5-minute frame's range test is `recent_range_vs_normal` — the last six closed
+candles' width over the normal for their clock slots — at ≥ 2.0. It replaced
+the day's range against the VIX move × √(time elapsed), which the opening range
+alone tripped on 82% of 09:45 runs. Measured on 936 snapshots: 8% of runs
+volatile-expansion instead of 40%, flat through the day. The daily frame keeps
+the day-range test. A row without the ratio is still written (its option chain
+cannot be fetched again) and the run then raises; `market-classifier` will not
+classify it. The ratio is written since 2026-11-12 21:28 IST and judged by the
+classifier since 2026-11-13 12:31 IST. See the
+[market-classifier README](../market-classifier/README.md#volatility).
 
 **The daily lookup is "newest row before today", not "today's row".** A daily
 row is stamped with the session it *describes*, which is yesterday, because

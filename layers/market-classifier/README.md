@@ -102,8 +102,36 @@ the notes on them in `thresholds.py`:
 |---|---|---|---|
 | `STRUCTURE_LOOKBACK_DAILY` | 10 | **40** | over the 204 real daily bars, a k=2 fractal finds two swings of each kind only at 40 bars; 10, 15, 20, 25 and 30 all leave structure permanently undetermined |
 | `RANGE_EXPANSION_MULTIPLE` | 1.0 | **1.5** | over 203 sessions, full-day range ÷ expected move has median 0.95 and p90 1.59, so 1.0 calls 44.8% of ordinary days an expansion; 1.5 keeps 11.8% |
+| `RECENT_RANGE_MULTIPLE` | — | **2.0** | added 2026-11-12 (v3). Over 936 stored 5-min snapshots the last-six-candles ratio has median 1.2 and p90 about 2.3; 2.0 calls 8% of runs an expansion |
 
-## The range-expansion test is time-scaled
+## Two range tests, chosen by what the caller measured (v3, 2026-11-12)
+
+`classify()` takes an optional `recent_range_ratio` — the last six closed 5-min
+candles' width over the normal width for their clock slots (see
+[intraday-market-sentiment](../../intraday-market-sentiment/README.md) and
+`algo.intraday_width_profile`).
+
+- **Given** (the 5-minute frame, from rollout step 2): the range test is
+  `recent_range_ratio >= RECENT_RANGE_MULTIPLE`; `range_used` is still computed
+  and returned, but does not vote. `volatility_tests_run` reads
+  `recent_range`.
+- **Not given** (the daily frame, and every other caller): exactly the v2
+  behaviour below. Verified 2026-11-12: v3 without a ratio returns what v2
+  returns on 5,000 random inputs across both frames.
+
+A missing ratio therefore means "this frame does not use the recent test", and
+a 5-minute caller that **could not measure** it must raise rather than pass
+`None` — `market-classifier` does. Why the 5-minute frame moved: the time-scaled
+test below assumes volatility is even through the session, and at the 09:45 run
+(`f` 0.083) the opening range alone tripped it on 82% of sessions. Numbers are in
+the [market-classifier README](../../market-classifier/README.md#volatility).
+
+Only `market-classifier` attaches v3. `daily-market-sentiment` and
+`intraday-market-sentiment` stay on v2 and `strategy-range-liquidity-sweep` on
+v1 (it uses only `wilder_atr`), as attached on 2026-11-12; v3 changes nothing
+they call.
+
+## The range-expansion test is time-scaled (the daily frame since v3)
 
 `expected_move` is a whole-session figure; the day's range at 10:00 covers 45
 minutes. Compared raw, the ratio climbs mechanically through the session — the
@@ -126,8 +154,11 @@ The raw row climbs monotonically — it is measuring the clock. The scaled row
 has no trend in the hour.
 
 The scaling is sensitive when almost no session has elapsed: the 09:15 bar
-alone reads 2.30×. The first run of the day is 10:00, where `f` is 0.13 and the
-reading is 0.77, so that region is never sampled in production.
+alone reads 2.30×. This note used to say the first run is 10:00 (`f` 0.13), so
+that region is never sampled. That stopped being true on 2026-09-18, when the
+first run moved to 09:45 (`f` 0.083) — the 09:45 row then read
+volatile-expansion on 82% of 34 sessions — which is why the 5-minute frame
+moved to the recent test above in v3.
 
 ## Revisit once sessions have accumulated
 

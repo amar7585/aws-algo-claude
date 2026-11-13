@@ -65,3 +65,19 @@ HTTP_TIMEOUT_SECONDS = int(os.environ.get("HTTP_TIMEOUT_SECONDS", "60"))
 # 8 bind parameters per row against Postgres's 65,535 cap is a hard ceiling of
 # 8,191 rows per statement; this sits well under it.
 UPSERT_BATCH_SIZE = int(os.environ.get("UPSERT_BATCH_SIZE", "5000"))
+
+# --------------------------------------------------------------------------
+# The morning width profile (2026-11-12) - see width_profile.py
+# --------------------------------------------------------------------------
+# Sessions the normal width is the median over. 20 was measured against "every
+# stored session" on 936 snapshots (09-15 .. 11-12): the longer window sat
+# below this autumn's market and a 2.0 line fired on 20% of runs, not 8%.
+PROFILE_SESSIONS = int(os.environ.get("PROFILE_SESSIONS", "20"))
+# Calendar days fetched to find them. 45 days is about 32 weekdays, room for a
+# month of holidays; Dhan's intraday cap is 90 days per call (see dhan.py), so
+# this is one call.
+PROFILE_LOOKBACK_DAYS = int(os.environ.get("PROFILE_LOOKBACK_DAYS", "45"))
+# A slot must have a candle in at least this many of the sessions, or the
+# build raises rather than store a median over a handful.
+PROFILE_MIN_SAMPLES = int(os.environ.get("PROFILE_MIN_SAMPLES", "15"))
+PROFILE_INTERVAL_MINUTES = 5

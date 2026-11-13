@@ -155,3 +155,51 @@ def upsert_sentiment(conn, row):
     cursor = conn.cursor()
     cursor.execute(SENTIMENT_UPSERT, tuple(row[f] for f in SENTIMENT_FIELDS))
     conn.commit()
+
+
+PROFILE_FIELDS = (
+    "security_id", "instrument_type", "slot_ts", "trade_date",
+    "normal_width_pct", "samples", "sessions", "first_session", "last_session",
+    "created_at",
+)
+PROFILE_KEY = ("security_id", "instrument_type", "slot_ts")
+
+PROFILE_UPSERT = """
+INSERT INTO algo.intraday_width_profile ({columns})
+VALUES {{values}}
+ON CONFLICT ({key}) DO UPDATE SET
+{updates}
+""".format(
+    columns=", ".join(PROFILE_FIELDS),
+    key=", ".join(PROFILE_KEY),
+    updates=",\n".join(
+        f"    {f} = EXCLUDED.{f}" for f in PROFILE_FIELDS if f not in PROFILE_KEY
+    ),
+)
+
+
+def upsert_width_profile(conn, instrument, trade_date, rows, used_midnights, created_at):
+    """
+    One session's 75 slot rows in ONE statement (10 params a row, 750 in all).
+
+    An upsert, so a re-run on the same morning rewrites the identical rows -
+    the inputs are completed past sessions, which do not change.
+    """
+    if not rows:
+        raise RuntimeError("width profile has no rows - refusing an empty write")
+    params = []
+    for row in rows:
+        params.extend([
+            instrument["security_id"], instrument["instrument_type"],
+            int(row["slot_ts"]), int(trade_date),
+            row["normal_width_pct"], int(row["samples"]),
+            len(used_midnights), int(used_midnights[0]), int(used_midnights[-1]),
+            int(created_at),
+        ])
+    placeholders = ", ".join(
+        ["(" + ", ".join(["%s"] * len(PROFILE_FIELDS)) + ")"] * len(rows)
+    )
+    cursor = conn.cursor()
+    cursor.execute(PROFILE_UPSERT.format(values=placeholders), params)
+    conn.commit()
+    return len(rows)

@@ -106,9 +106,14 @@ class DhanClient:
             },
         )
 
-    def intraday_candles(self, instrument, interval, day):
+    def intraday_candles(self, instrument, interval, day, from_day=None):
         # 00:00:00, not 09:15:00 - fromDate is exclusive and 09:15 would drop
         # the opening-range candle.
+        #
+        # `from_day` widens the window backwards (the width profile wants the
+        # weeks before `day`); it defaults to `day`, so the single-session call
+        # is unchanged. Keep the span under the 90-day intraday cap.
+        start = from_day or day
         return self._post(
             "intraday",
             {
@@ -117,7 +122,7 @@ class DhanClient:
                 "instrument": instrument["instrument_type"],
                 "interval": int(interval),
                 "oi": False,
-                "fromDate": f"{day.isoformat()} 00:00:00",
+                "fromDate": f"{start.isoformat()} 00:00:00",
                 "toDate": f"{day.isoformat()} 23:59:00",
             },
         )

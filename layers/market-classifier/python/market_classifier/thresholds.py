@@ -93,10 +93,25 @@ _DEFAULTS = {
     # 0.27 -> 1.24 climb to a 0.77 - 1.34 band with no trend in the hour.
     #
     # The scaling is very sensitive when almost no session has elapsed - the
-    # 09:15 bar alone reads 2.30x. The first run of the day is 10:00, by which
-    # point f is 0.13 and the reading is 0.77, so the sensitive region is
-    # never sampled in production.
+    # 09:15 bar alone reads 2.30x. The note here used to say the first run is
+    # 10:00 (f 0.13), so that region is never sampled. That stopped being true
+    # on 2026-09-18, when the first run moved to 09:45 (f 0.083): the 09:45 row
+    # then read volatile-expansion on 82% of 34 sessions. So since 2026-11-12
+    # THIS TEST VOTES ONLY ON THE DAILY FRAME; the 5-min frame uses
+    # RECENT_RANGE_MULTIPLE below and only reports range_used.
     "RANGE_EXPANSION_MULTIPLE": 1.5,
+
+    # Expansion, test two on the 5-MINUTE frame (agreed with Amar 2026-11-12):
+    # the last six closed 5-min candles' width / the normal width for those
+    # clock slots over the previous 20 sessions (intraday-market-sentiment's
+    # recent_range_vs_normal; the normal is algo.intraday_width_profile).
+    #
+    # 2.0, MEASURED. On 936 snapshots (2026-09-15 .. 11-12) the ratio's median
+    # is 1.2 (a sum of widths runs above a sum of medians) and its p90 about
+    # 2.3; 2.0 calls 8% of runs an expansion, roughly what 1.5 was meant to
+    # mean for range_used ("the top ~10% of days"). The 09:45 run still reads
+    # it on 21% of sessions - opens that are wide even for an open.
+    "RECENT_RANGE_MULTIPLE": 2.0,
 
     # ---- confidence --------------------------------------------------------
     # |score|/max_score scaled to 100, then multiplied by the regime's factor.

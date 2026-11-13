@@ -150,12 +150,16 @@ in its [README](../auth-dhan-broker/README.md).
 
 Fetches daily candles for NIFTY and INDIA VIX into `algo.candle_daily`, computes
 the daily read into `algo.daily_market_sentiment`, and pushes it to Telegram.
-Three Dhan calls, ~12 s.
+Since 2026-11-12 it then builds **today's width profile** into
+`algo.intraday_width_profile` — the median 5-min candle width at each clock slot
+over the previous 20 sessions, the yardstick `intraday-market-sentiment` judges
+its last 30 minutes against. Four Dhan calls (12.9 s before the fourth, measured
+2026-11-12).
 
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 7 modules |
+| Runtime | Python 3.14, zip package, 8 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Schedule | `cron(35 9 ? * MON-FRI *)`, `Asia/Kolkata` |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
@@ -254,7 +258,7 @@ option legs behind it.
 | Runtime | Python 3.14, zip package, 11 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
 | Schedule | **none** — invoked by `intraday-data-loader` after it commits, 25×/day |
-| Reads | `algo.instrument_master`, `algo.index_constituents` (breadth rosters), its own previous row, `algo.daily_market_sentiment` |
+| Reads | `algo.instrument_master`, `algo.index_constituents` (breadth rosters), its own previous row, `algo.daily_market_sentiment`, `algo.intraday_width_profile` (today's, since 2026-11-12) |
 | Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` (the classification now lives on `algo.intraday_sentiments`, written by `market-classifier`) |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` — no environment variables required |
 
@@ -278,6 +282,13 @@ day. The primary key still makes a re-run idempotent.
 stay a router with no database. The lookup is the newest row stamped *before*
 today, not today's row: a daily row describes the previous session, so a row
 stamped today never exists.
+
+**It measures the last 30 minutes' width for the classifier's volatility test**
+(2026-11-12): the last six closed 5-min candles' width, and that over today's
+`intraday_width_profile` normal for those slots, as `recent_range_pct` /
+`recent_range_vs_normal` / `recent_range_from_ts`. Without the ratio the row is
+still written and dispatched — its option chain cannot be fetched again — and
+the run then raises.
 
 Two strike widths, not interchangeable: aggregates over ATM ±20, raw legs
 stored for ATM ±2 (10 rows a snapshot). Both expiries sit on one row as

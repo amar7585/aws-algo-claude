@@ -3,7 +3,9 @@
 -- Target: Neon project "AI Trader APP" (nameless-mountain-15353651),
 --         database Algo, schema algo.
 --
--- One table. candle_daily already exists and is written by this function too.
+-- Two tables. candle_daily already exists and is written by this function too.
+-- intraday_width_profile was added 2026-11-12 (migrations/2026-11-12-recent-
+-- range-volatility.sql); it is at the end of this file.
 --
 -- Conventions (see CLAUDE.md):
 --   * every time value is epoch seconds, bigint. No timestamptz, ever.
@@ -113,6 +115,51 @@ CREATE TABLE IF NOT EXISTS algo.daily_market_sentiment (
     created_at        bigint  NOT NULL,
 
     PRIMARY KEY (security_id, instrument_type, trade_date),
+    FOREIGN KEY (security_id, instrument_type)
+        REFERENCES algo.instrument_master (security_id, instrument_type)
+);
+
+-- ---------------------------------------------------------------------------
+-- intraday_width_profile : what a 5-min candle's width NORMALLY is at each
+-- clock slot, over the previous 20 sessions. Built once each morning (09:35) by
+-- this function for that day's session; intraday-market-sentiment reads it on
+-- every 15-min run to judge its last six closed candles against it, and
+-- market-classifier's volatility test reads the result (agreed with Amar
+-- 2026-11-12).
+--
+-- WHY PER CLOCK SLOT. A 5-min candle is not equally wide all day. Over 103
+-- sessions (2026-06-15 .. 11-11) the median 09:15 candle was 4.7x a midday
+-- one, 09:20-09:35 1.6-1.9x, 15:00 1.5x. Against one flat average every
+-- morning would read as volatile.
+--
+-- WHY THE LAST 20 SESSIONS, NOT ALL OF THEM. A normal taken from every session
+-- since June sat below this autumn's market: the median snapshot read 1.45x it
+-- and a 2.0 line fired on 20% of rows. From the last 20 the median reads 1.2x
+-- and 2.0 fires on 8% (measured 2026-11-12, 936 snapshots, 09-15 .. 11-12).
+--
+-- GRAIN. 75 rows per session, 09:15 .. 15:25. slot_ts is the slot's epoch ON
+-- THE SESSION THE ROW IS FOR (that day's candle_ts), so a reader joins today's
+-- candles to it directly and no clock-of-day value is stored. The window is
+-- weekday sessions strictly before trade_date; a weekend special session (the
+-- 2026-11-08 Muhurat Sunday) is not a normal session and is left out.
+--
+-- FROZEN ONCE WRITTEN. The row records what normal WAS for that session, so a
+-- stored snapshot can be replayed against exactly the yardstick it was judged
+-- by, even if candle history is later refilled.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS algo.intraday_width_profile (
+    security_id        text     NOT NULL,
+    instrument_type    text     NOT NULL,
+    slot_ts            bigint   NOT NULL,   -- this slot on trade_date (= that day's candle_ts)
+    trade_date         bigint   NOT NULL,   -- IST midnight of the session it is for
+    normal_width_pct   numeric  NOT NULL,   -- median of (high - low) / close x 100 at this slot
+    samples            integer  NOT NULL,   -- sessions that had a bar at this slot
+    sessions           integer  NOT NULL,   -- sessions in the window (20)
+    first_session      bigint   NOT NULL,   -- IST midnight of the oldest session used
+    last_session       bigint   NOT NULL,   -- IST midnight of the newest (the previous session)
+    created_at         bigint   NOT NULL,
+
+    PRIMARY KEY (security_id, instrument_type, slot_ts),
     FOREIGN KEY (security_id, instrument_type)
         REFERENCES algo.instrument_master (security_id, instrument_type)
 );

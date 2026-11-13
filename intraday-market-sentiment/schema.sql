@@ -99,6 +99,15 @@ CREATE TABLE IF NOT EXISTS algo.intraday_fno_data (
                                                 -- (near-empty - see sentiment.py)
     volume_vs_avg          numeric,            -- last_bar_volume / avg of every
                                                 -- closed bar so far today
+    -- the last 30 minutes' width, for market-classifier's volatility test
+    -- (added 2026-11-12, migrations/2026-11-12-recent-range-volatility.sql).
+    -- NULL = written before the columns existed, or the measurement could not
+    -- be made (no width profile for today) - that run raised.
+    recent_range_pct       numeric,            -- sum of (high-low)/close x 100 over the
+                                                -- last six CLOSED 5-min candles of today
+    recent_range_vs_normal numeric,            -- that / the six slots' normal_width_pct
+                                                -- (algo.intraday_width_profile)
+    recent_range_from_ts   bigint,             -- candle_ts of the first of the six
 
     -- ---- current-month future ---------------------------------------------
     fut_security_id        text    NOT NULL,

@@ -34,6 +34,10 @@ SNAPSHOT_COLUMNS = SNAPSHOT_KEY + (
     "captured_at", "prev_snapshot_ts",
     "spot", "chain_spot", "spot_change_pct", "day_high", "day_low", "vwap",
     "orb_high", "orb_low", "last_bar_volume", "volume_vs_avg",
+    # The last 30 minutes' width against the normal for those clock slots
+    # (2026-11-12) - the input to market-classifier's volatility test. See
+    # sentiment.recent_range and width_profile() below.
+    "recent_range_pct", "recent_range_vs_normal", "recent_range_from_ts",
     "fut_security_id", "fut_symbol", "fut_price", "fut_oi", "basis", "basis_pct",
     "fut_price_change_pct", "fut_oi_change_pct",
     # buildup MOVED to algo.intraday_sentiments (the classifier derives it).
@@ -301,6 +305,41 @@ def daily_sentiment(conn, instrument, session_midnight):
             row["trade_date"], row["created_at"],
         )
     return row
+
+
+PROFILE_TABLE = "algo.intraday_width_profile"
+
+
+def width_profile(conn, instrument, session_midnight):
+    """
+    Today's normal 5-min width per slot: {slot_ts: normal_width_pct}, or None.
+
+    Built at 09:35 by daily-market-sentiment for this session (plan choice A2).
+    slot_ts is the slot's epoch ON THIS SESSION, the same value as the candle's
+    own ts, so the caller looks a candle up by its ts. None when this morning's
+    build did not land - the caller still writes the row, then fails the run
+    (plan choice B2), so the option-chain capture is kept and the miss is loud.
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT slot_ts, normal_width_pct FROM {PROFILE_TABLE} "
+        "WHERE security_id = %s AND instrument_type = %s "
+        "AND slot_ts >= %s AND slot_ts < %s",
+        (
+            str(instrument["security_id"]),
+            str(instrument["instrument_type"]),
+            int(session_midnight),
+            int(session_midnight) + 86400,
+        ),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        logger.warning(
+            "no %s rows for the session starting %d - daily-market-sentiment's "
+            "09:35 build did not land", PROFILE_TABLE, int(session_midnight),
+        )
+        return None
+    return {int(r[0]): float(r[1]) for r in rows}
 
 
 def write_snapshot(conn, row, legs):

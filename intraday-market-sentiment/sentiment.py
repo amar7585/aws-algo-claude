@@ -113,6 +113,63 @@ def bar_volume_stats(candles, now_epoch, interval_seconds):
     }
 
 
+def recent_range(candles, now_epoch, interval_seconds, profile, bars):
+    """
+    How wide the last `bars` CLOSED candles were, against what is normal for
+    their clock slots. The input to market-classifier's volatility test
+    (agreed with Amar 2026-11-12; it replaces "the day's range since 09:15 vs
+    the VIX-implied move x sqrt(time)", which the opening range alone tripped
+    on 82% of 09:45 runs).
+
+    candles    today's bars, the forming one included - it is dropped here by
+               the same closed test as everywhere else in this plane
+               (candle_ts + interval <= now), so the 10:00 run judges 09:30..09:55.
+    profile    {slot_ts: normal_width_pct} for today, or None (see db.width_profile).
+
+    Width is (high - low) / close x 100 per candle; recent_range_pct is the sum
+    over the window and recent_range_vs_normal that sum over the sum of the
+    same slots' normals - 1.0 is an ordinary half hour for that time of day.
+
+    Returns the three columns plus `reason`. The width is stored whenever the
+    window is complete; the ratio is None, with a reason, when the profile is
+    missing or lacks one of the window's slots - the caller then fails the run.
+    """
+    closed = sorted(
+        (c for c in candles if c["ts"] + interval_seconds <= now_epoch),
+        key=lambda c: c["ts"],
+    )
+    window = closed[-bars:]
+    out = {
+        "recent_range_pct": None,
+        "recent_range_vs_normal": None,
+        "recent_range_from_ts": None,
+        "reason": None,
+    }
+    if len(window) < bars:
+        out["reason"] = f"only {len(window)} closed candle(s) today, need {bars}"
+        return out
+    width = sum(
+        (float(c["high"]) - float(c["low"])) / float(c["close"]) * 100 for c in window
+    )
+    out["recent_range_pct"] = width
+    out["recent_range_from_ts"] = int(window[0]["ts"])
+    if not profile:
+        out["reason"] = "no width profile for today"
+        return out
+    missing = [c["ts"] for c in window if c["ts"] not in profile]
+    if missing:
+        out["reason"] = (
+            f"the width profile has no slot for "
+            f"{', '.join(ist_datetime(t).strftime('%H:%M') for t in missing)}"
+        )
+        return out
+    normal = sum(profile[c["ts"]] for c in window)
+    out["recent_range_vs_normal"] = width / normal if normal else None
+    if not normal:
+        out["reason"] = "the window's normal width sums to zero"
+    return out
+
+
 def pct_change(current, previous):
     """
     Percentage change, or None when there is nothing to compare against.

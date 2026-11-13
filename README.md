@@ -78,8 +78,9 @@ aws-algo-claude/
 │   ├── config.py params.py       tunables; the Dhan and Telegram parameters
 │   ├── dhan.py db.py             charts client; Neon upserts
 │   ├── indicators.py sentiment.py  SMA/RSI/ATR; regime, score, the read
+│   ├── width_profile.py          the normal 5-min width per clock slot
 │   ├── notify.py                 Telegram
-│   ├── schema.sql                algo.daily_market_sentiment
+│   ├── schema.sql                algo.daily_market_sentiment, algo.intraday_width_profile
 │   └── README.md
 ├── error-notifier/               Lambda: failures from every function to Telegram
 │   ├── handler.py                decode, loop guard, suppression, formatting
@@ -153,7 +154,8 @@ Two planes on different clocks, deliberately uncoupled:
   nothing is invoked on a holiday at all.
 - **Each weekday at 09:35** — `daily-market-sentiment` fetches daily candles for
   NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
-  Telegram.
+  Telegram. Then it builds today's `intraday_width_profile` — the normal 5-min
+  candle width at each clock slot over the previous 20 sessions (2026-11-12).
 - **Every 15 minutes from 09:45 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
   for NIFTY and the current-month future. 25 invocations a trading day, and
@@ -167,6 +169,8 @@ Two planes on different clocks, deliberately uncoupled:
 - **Then `market-classifier`** scores that measurement with the shared layer
   and writes the **judgement** — regime, structure, bias, buildup — to
   `intraday_sentiments` (including `day_trend`), and invokes `pattern-detector`.
+  Its volatility test judges the last 30 minutes against the morning's width
+  profile (2026-11-12; see its README).
 - **Then `pattern-detector`** applies the two-clock turn rule (an abnormal-volume
   reversal on the future, confirmed a tick later by futures buildup or option
   OI). **Since 2026-11-09 16:04 it is log-only:** it decides and logs, but sends

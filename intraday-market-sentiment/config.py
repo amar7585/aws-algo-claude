@@ -112,6 +112,15 @@ LAST_RUN = datetime.time(15, 35)
 # and are unaffected.
 CANDLE_INTERVAL_MINUTES = 5
 
+# The last-30-minutes width for market-classifier's volatility test (agreed
+# with Amar 2026-11-12): the last six CLOSED 5-min candles of today against the
+# normal width at those clock slots (algo.intraday_width_profile, built at 09:35
+# by daily-market-sentiment). Six, not three: measured on 936 snapshots, three
+# candles switched the test off and straight back on within 30 minutes 16
+# times, six candles twice, with the same routing result. At the 09:45 run the
+# six are 09:15..09:40.
+RECENT_RANGE_BARS = int(os.environ.get("RECENT_RANGE_BARS", "6"))
+
 # --------------------------------------------------------------------------
 # Classification
 #

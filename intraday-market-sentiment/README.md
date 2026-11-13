@@ -13,7 +13,7 @@ store (regime, structure, bias, buildup) is no longer here: it moved to
 | Schedule | **none** — invoked by `intraday-data-loader` once its candles are committed, 25×/day |
 | Invocations | **25** per trading day |
 | Writes | `algo.intraday_fno_data`, `algo.option_chain_snapshot` |
-| Reads | `algo.instrument_master`, `algo.index_constituents`, and its own previous row |
+| Reads | `algo.instrument_master`, `algo.index_constituents`, its own previous row, today's daily read, and today's `algo.intraday_width_profile` (since 2026-11-12) |
 | Instruments | NIFTY (`13`/`INDEX`), INDIA VIX (`21`/`INDEX`), the current-month future, and the NIFTY 500 roster for breadth |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
 
@@ -30,7 +30,10 @@ stalled loader cannot quietly feed this one stale inputs.
 The exception is **its own previous row**. Dhan serves only a *live* option
 chain — there is no historical-chain endpoint — so an intraday OI delta cannot
 be computed any other way. That one read back is what `prev_snapshot_ts`
-records.
+records. Two other reads are of morning tables written for this session by
+`daily-market-sentiment` at 09:35: the daily read (carried to the strategy
+manager) and, since 2026-11-12, the width profile the last 30 minutes are
+judged against.
 
 ## The five-minute offset is the point
 
@@ -166,6 +169,41 @@ chart.**
 This classifies; it does not forecast. `daily-market-sentiment` already records
 that its own score is not predictive of forward return — treat this the same
 way.
+
+## The last 30 minutes' width (2026-11-12)
+
+Every run measures how wide the **last six closed** 5-min candles of today
+were, against what is normal for those clock slots, and stores it on the row.
+It is the input to `market-classifier`'s volatility test, which until
+2026-11-12 compared the day's range since 09:15 with the VIX-implied move ×
+√(time elapsed) — a test the opening range alone tripped on 82% of 09:45 runs
+(agreed with Amar 2026-11-12; see the
+[market-classifier README](../market-classifier/README.md#volatility)).
+
+| Column | |
+|---|---|
+| `recent_range_pct` | Σ (high − low) / close × 100 over the six candles |
+| `recent_range_vs_normal` | that ÷ the same six slots' `normal_width_pct` in `algo.intraday_width_profile` — 1.0 is an ordinary half hour for that time of day |
+| `recent_range_from_ts` | `candle_ts` of the first of the six |
+
+- **Closed candles only**, by the same test as the volume read
+  (`candle_ts + 300 <= run clock`): the 10:00 run judges 09:30 → 09:55, the
+  09:45 run 09:15 → 09:40, the 15:35 sweep 15:00 → 15:25.
+- **The normal is built at 09:35** by `daily-market-sentiment` (median width per
+  slot over the previous 20 sessions). It is the third thing this function reads
+  back from the database, after its previous row and the daily read.
+- **Six candles, not three**: measured on 936 snapshots, three switched the test
+  off and straight back on within 30 minutes 16 times, six twice, with the same
+  routing result.
+- **When the ratio cannot be made — the profile is missing, or lacks a slot —
+  the row is still written and dispatched, then the run raises** (plan choice
+  B2). The option chain cannot be fetched again later, so it is kept; the raise
+  makes error-notifier report it; and `market-classifier` refuses to classify a
+  row without the ratio. The run is asynchronous with Lambda's default two
+  retries, so a missing profile reports three times per run.
+
+Verified offline 2026-11-12: the stored ratio equals the measurement's on all
+936 snapshots 09-15 → 11-12.
 
 ## Market breadth — advance/decline
 
@@ -322,6 +360,7 @@ session**, not a settled one.
 | `FUTURES_SYMBOL_TEMPLATE` | `NIFTY-{month}{year}-FUT` | the `NIFTY-` prefix is load-bearing |
 | `HISTORY_DAYS` | `10` | generous on purpose — `MIN_BARS_TO_CLASSIFY` is what is actually checked, because holidays make calendar days a poor proxy for sessions |
 | `MIN_BARS_TO_CLASSIFY` | `200` | below this the run **raises** rather than classifying on partial inputs — sma200 on the 5-minute frame needs 200 closed bars |
+| `RECENT_RANGE_BARS` | `6` | closed 5-min candles in the volatility window (30 min); measured against 3, see above |
 | `EXPECTED_MOVE_K` | `1.0` | as in `daily-market-sentiment`, where the coverage was fitted |
 | `UPSERT_BATCH_SIZE` | `500` | lower than the other loaders' 5000: 24 bind parameters per `option_chain_snapshot` row caps a statement at 2,730 rows, and a snapshot writes 10 |
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | asynchronous, so a slow playbook cannot fail this run |

@@ -93,7 +93,7 @@ def _alignment_score(bar):
 
 
 def _volatility(vix, vix_baseline, day_range, expected_move, frame,
-                session_elapsed=1.0):
+                session_elapsed=1.0, recent_range_ratio=None):
     """
     The volatility read: a level, and whether it is expanding.
 
@@ -102,8 +102,33 @@ def _volatility(vix, vix_baseline, day_range, expected_move, frame,
       * VIX has moved VIX_EXPANSION_PCT against its baseline - the previous
         snapshot intraday, the previous close daily. Direction is not filtered:
         a VIX collapsing that fast is also not a day whose structure holds.
-      * The day's range has already covered RANGE_EXPANSION_MULTIPLE of the
-        expected move FOR THE PART OF THE SESSION THAT HAS HAPPENED.
+      * A RANGE test, one of two - which one depends on what the caller measured:
+          - `recent_range_ratio` given (the 5-minute frame since 2026-11-12):
+            the last six closed 5-min candles were RECENT_RANGE_MULTIPLE times
+            as wide as normal for their clock slots. See below.
+          - otherwise (the daily frame): the day's range has already covered
+            RANGE_EXPANSION_MULTIPLE of the expected move FOR THE PART OF THE
+            SESSION THAT HAS HAPPENED.
+        range_used is computed and reported either way; it only VOTES when no
+        recent ratio was given.
+
+    WHY THE 5-MINUTE FRAME MOVED OFF range_used (agreed with Amar 2026-11-12).
+    "Range since 09:15 against sqrt(time)" assumes volatility is spread evenly
+    through the session; it is not - the median 09:15 candle is 4.7x a midday
+    one. At the 09:45 run only 8% of the session has elapsed, so the opening
+    range alone tripped the test: the 09:45 row read volatile-expansion on 82%
+    of 34 sessions, and the verdict then held until the allowance caught up
+    with a range made in the first hour. The opening range is already carried
+    by its own levels (ORH/ORL); what the veto should catch is a burst NOW, so
+    the 5-min frame judges the last half hour against what is normal for that
+    time of day. Measured on 936 snapshots (09-15 .. 11-12): volatile-expansion
+    on 8% of runs - 21% at 09:45, 2-10% in each later hour - against 40% / 82% /
+    28-62% for range_used.
+
+    THE CALLER OWNS "WAS IT MEASURED". A 5-min caller that could not measure the
+    ratio must raise rather than pass None - None here means "this frame does
+    not use the recent test", and would quietly fall back to range_used.
+    market-classifier raises before calling.
 
     THE SECOND TEST IS TIME-SCALED, AND IT HAS TO BE. `expected_move` is a
     whole-session figure, while `day_range` at 10:00 covers 45 minutes. Compared
@@ -147,8 +172,14 @@ def _volatility(vix, vix_baseline, day_range, expected_move, frame,
         fraction = min(max(float(session_elapsed), 1e-6), 1.0)
         scaled_move = float(expected_move) * math.sqrt(fraction)
         range_used = round(float(day_range) / scaled_move, 4)
-        tests["range_used"] = range_used >= thresholds.get(
-            "RANGE_EXPANSION_MULTIPLE", frame
+        if recent_range_ratio is None:
+            tests["range_used"] = range_used >= thresholds.get(
+                "RANGE_EXPANSION_MULTIPLE", frame
+            )
+
+    if recent_range_ratio is not None:
+        tests["recent_range"] = float(recent_range_ratio) >= thresholds.get(
+            "RECENT_RANGE_MULTIPLE", frame
         )
 
     return {
@@ -156,6 +187,9 @@ def _volatility(vix, vix_baseline, day_range, expected_move, frame,
         "vix": round(float(vix), 2) if vix is not None else None,
         "vix_move_pct": vix_move_pct,
         "range_used": range_used,
+        "recent_range_ratio": (
+            round(float(recent_range_ratio), 4) if recent_range_ratio is not None else None
+        ),
         "session_elapsed": round(float(session_elapsed), 4),
         "expected_move_scaled": round(scaled_move, 2) if scaled_move else None,
         "expanding": any(tests.values()),
@@ -165,7 +199,8 @@ def _volatility(vix, vix_baseline, day_range, expected_move, frame,
 
 def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
              day_range=None, expected_move=None, vwap=None, gap_pct=None,
-             session_elapsed=1.0, bars_considered=None, structure_bars=None):
+             session_elapsed=1.0, bars_considered=None, structure_bars=None,
+             recent_range_ratio=None):
     """
     Classify one already-measured bar. SCORES FROM SCALARS, TOUCHES NO ARRAY.
 
@@ -190,8 +225,12 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
                       to the result unscored.
     session_elapsed   fraction of the trading session already elapsed,
                       0 < f <= 1. The range-expansion test scales the expected
-                      move by sqrt(f) so the test means the same thing at 09:45
-                      as at 15:15. Daily passes 1.0.
+                      move by sqrt(f). Daily passes 1.0.
+    recent_range_ratio  the last six closed 5-min candles' width over the
+                      normal width for their clock slots (intraday-market-
+                      sentiment's recent_range_vs_normal). Given, it is the
+                      range test and range_used is only reported; None (the
+                      daily frame) keeps range_used as the test. See _volatility.
     bars_considered   diagnostic counts for the log and result - the history
     structure_bars    depth and the structure window - since this function no
                       longer holds the arrays to measure them itself.
@@ -253,7 +292,7 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
     # with no directional playbook attached, which is the right default for a
     # day that has not chosen.
     vol = _volatility(vix, vix_baseline, day_range, expected_move, frame,
-                      session_elapsed)
+                      session_elapsed, recent_range_ratio)
     if vol["expanding"]:
         regime = VOLATILE_EXPANSION
     elif struct["structure"] == structure_lib.TRENDING:
@@ -295,6 +334,7 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
         "vix": vol["vix"],
         "vix_move_pct": vol["vix_move_pct"],
         "range_used": vol["range_used"],
+        "recent_range_ratio": vol["recent_range_ratio"],
         "session_elapsed": vol["session_elapsed"],
         "expected_move_scaled": vol["expected_move_scaled"],
         "volatility_expanding": vol["expanding"],

@@ -1,13 +1,16 @@
 """
 Daily Market Sentiment - AWS Lambda function
 
-Runs once each trading morning at 10:00 IST:
+Runs once each trading morning at 09:35 IST:
 
   1. daily candles for NIFTY and INDIA VIX  -> algo.candle_daily
   2. the daily sentiment read for NIFTY     -> algo.daily_market_sentiment
   3. pushes the read to Telegram
+  4. the width profile for today's session  -> algo.intraday_width_profile
+     (the normal 5-min candle width at each clock slot over the previous 20
+     sessions; intraday-market-sentiment reads it from 09:45 - 2026-11-12)
 
-Three Dhan calls per run. Writes only to Neon project "AI Trader APP"
+Four Dhan calls per run. Writes only to Neon project "AI Trader APP"
 (nameless-mountain-15353651), database Algo, schema algo.
 
 It does NOT populate candle_5min / candle_15min / candle_1hr; the separate
@@ -22,6 +25,7 @@ Modules:
     db.py          Neon access and the upserts
     indicators.py  SMA / RSI / ATR, pure Python
     sentiment.py   regime, score, bias, the daily read
+    width_profile.py  the normal 5-min width per clock slot, pure
     notify.py      Telegram
 
 Epoch/IST handling, the Neon connection and the shared connection-string read
@@ -32,12 +36,24 @@ import datetime
 import logging
 import time
 
-from neon_access import connect, ist_datetime, read_neon_connection_string, today_ist
+from neon_access import (
+    connect,
+    ist_datetime,
+    ist_midnight_epoch,
+    now_epoch,
+    read_neon_connection_string,
+    today_ist,
+)
 
+import width_profile
 from config import (
     COLD_START_DAYS,
     NIFTY_INSTRUMENT_TYPE,
     NIFTY_SECURITY_ID,
+    PROFILE_INTERVAL_MINUTES,
+    PROFILE_LOOKBACK_DAYS,
+    PROFILE_MIN_SAMPLES,
+    PROFILE_SESSIONS,
     SESSION_START,
     VIX_INSTRUMENT_TYPE,
     VIX_SECURITY_ID,
@@ -48,6 +64,7 @@ from db import (
     resolve_instrument,
     upsert_daily_candles,
     upsert_sentiment,
+    upsert_width_profile,
 )
 from dhan import DhanClient, session_candles, to_candles
 from notify import format_brief, send_telegram
@@ -76,6 +93,38 @@ def refresh_daily_candles(conn, client, instrument, today):
         instrument["trading_symbol"], mode, len(candles), written,
     )
     return written
+
+
+def refresh_width_profile(conn, client, instrument, today):
+    """
+    Today's width profile: one fetch of the weeks before today, the medians,
+    one upsert. Raises on anything short - see width_profile.build().
+
+    Runs LAST in the handler, after the daily row and the brief, so a failure
+    here never costs the daily read; it still fails the run, so error-notifier
+    reports it before intraday-market-sentiment's first run at 09:45 needs it.
+    """
+    candles = to_candles(
+        client.intraday_candles(
+            instrument, PROFILE_INTERVAL_MINUTES, today,
+            from_day=today - datetime.timedelta(days=PROFILE_LOOKBACK_DAYS),
+        )
+    )
+    rows, used = width_profile.build(
+        candles, today, sessions=PROFILE_SESSIONS, min_samples=PROFILE_MIN_SAMPLES
+    )
+    written = upsert_width_profile(
+        conn, instrument, ist_midnight_epoch(today), rows,
+        [ist_midnight_epoch(day) for day in used], now_epoch(),
+    )
+    by_slot = {ist_datetime(r["slot_ts"]).strftime("%H:%M"): r["normal_width_pct"] for r in rows}
+    logger.info(
+        "width profile for %s: %d slots from %d sessions %s..%s (%d candles "
+        "fetched); normal 09:15 %.3f%%, 12:00 %.3f%%, 15:25 %.3f%%",
+        today, written, len(used), used[0], used[-1], len(candles),
+        by_slot["09:15"], by_slot["12:00"], by_slot["15:25"],
+    )
+    return written, used
 
 
 def lambda_handler(event, context):
@@ -151,6 +200,10 @@ def lambda_handler(event, context):
         else:
             send_telegram(brief)
 
+        # Last, so a failure here never costs the daily read or the brief.
+        profile_rows, profile_sessions = refresh_width_profile(conn, client, nifty, today)
+        rows += profile_rows
+
         elapsed = time.monotonic() - started
         logger.info(
             "done in %.1fs: %s, %d rows, %d api calls, regime=%s",
@@ -165,6 +218,12 @@ def lambda_handler(event, context):
             "api_calls": client.calls,
             "regime": sentiment["regime"],
             "score": sentiment["score"],
+            "width_profile": {
+                "slots": profile_rows,
+                "sessions": len(profile_sessions),
+                "from": profile_sessions[0].isoformat(),
+                "to": profile_sessions[-1].isoformat(),
+            },
             "elapsed_seconds": round(elapsed, 2),
         }
     finally:

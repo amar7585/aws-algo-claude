@@ -6,9 +6,9 @@ pushes it to Telegram.
 | | |
 |---|---|
 | Schedule | `cron(35 9 ? * MON-FRI *)`, `Asia/Kolkata`, flexible window off |
-| Writes | `algo.candle_daily`, `algo.daily_market_sentiment` |
+| Writes | `algo.candle_daily`, `algo.daily_market_sentiment`, `algo.intraday_width_profile` (since 2026-11-12) |
 | Reads | `algo.instrument_master` |
-| Dhan calls | 3 per run |
+| Dhan calls | 4 per run |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
 
 It does **not** populate `candle_5min` / `candle_15min` / `candle_1hr`. The
@@ -25,6 +25,37 @@ is not persisted as a series.
    was computed from, and the VIX-implied expected move →
    `algo.daily_market_sentiment`, one row per session.
 3. **Telegram push** of that read.
+4. **The width profile for today's session** → `algo.intraday_width_profile`,
+   75 rows: the median 5-min candle width, (high − low) / close × 100, at each
+   clock slot 09:15 … 15:25 over the previous 20 weekday sessions. One Dhan
+   call for 45 days of 5-min bars. Runs **last**, so a failure never costs the
+   daily read or the brief, and it still fails the run so error-notifier reports
+   it before the first intraday run at 09:45 needs it. See below.
+
+## The width profile (2026-11-12)
+
+`intraday-market-sentiment` judges its last six closed 5-min candles against
+this table on every 15-minute run, and `market-classifier`'s volatility test
+reads the ratio (agreed with Amar 2026-11-12: plan choice A2 put the build
+here, at 09:35, ten minutes before it is first needed). See
+[width_profile.py](width_profile.py) and the
+[market-classifier README](../market-classifier/README.md#volatility).
+
+- **Per clock slot**, because the day is not flat: over 103 sessions
+  (2026-06-15 → 11-11) the median 09:15 candle was 4.7× a midday one,
+  09:20–09:35 1.6–1.9×, 15:00 1.5×.
+- **The last 20 weekday sessions before today.** Today is never in it. The
+  2026-11-08 Muhurat Sunday is not a normal session and is left out. A normal
+  from every session since June sat below this autumn's market (the median run
+  read 1.45× it); from the last 20 it reads 1.2×.
+- **Fails loudly**: fewer than 20 sessions in the fetched window, or a slot that
+  fewer than 15 of them have a candle at, raises.
+- **Frozen once written**: `slot_ts` is the slot on that session (that day's
+  `candle_ts`), so every stored snapshot can be replayed against exactly the
+  yardstick it was judged by, even if candle history is later refilled.
+
+Verified offline 2026-11-12: the builder equals the measurement's normal on all
+75 slots of all 40 sessions 09-15 → 11-12.
 
 ## Layout
 
@@ -36,6 +67,7 @@ dhan.py          charts API client, and the measured facts about it
 db.py            Neon access and the upserts
 indicators.py    SMA / RSI / ATR, pure Python
 sentiment.py     regime, score, bias, the daily read
+width_profile.py the normal 5-min width per clock slot, pure
 notify.py        Telegram
 ```
 
@@ -269,6 +301,9 @@ same question.
 | `UPSERT_BATCH_SIZE` | no | `5000` |
 | `DHAN_CHARTS_BASE` | no | `https://api.dhan.co/v2/charts/` |
 | `HTTP_TIMEOUT_SECONDS` | no | `60` |
+| `PROFILE_SESSIONS` | no | `20` — sessions the normal width is the median over |
+| `PROFILE_LOOKBACK_DAYS` | no | `45` — calendar days fetched to find them (one call; Dhan caps intraday at 90) |
+| `PROFILE_MIN_SAMPLES` | no | `15` — a slot needs a candle in this many sessions, or the build raises |
 
 No credentials in environment variables. `/algo/telegram/brief` is a
 `SecureString` holding `{"bot_token": "...", "chat_id": "..."}`.
