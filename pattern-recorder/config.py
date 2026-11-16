@@ -46,5 +46,14 @@ SESSION_END = datetime.time(15, 30)   # exclusive: the last bar starts at 15:25
 ALERTS_ENABLED = os.environ.get("ALERTS_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
 # Unset = Telegram only, no manager dispatch, even with alerts on.
 STRATEGY_MANAGER_FUNCTION_NAME = os.environ.get("STRATEGY_MANAGER_FUNCTION_NAME", "")
+
+# ---- every-tick hand-off (Amar 2026-11-14) -------------------------------------
+# On: EVERY tick (once today's first 15-min row exists) is also handed to
+# strategy-manager - not just the ticks with an alert - with today's closed index
+# candles, so the sweep playbook can follow a trade candle by candle (entry,
+# exit, watch, re-entry). The manager sends these ticks to its TICK_PLAYBOOKS
+# whatever the regime. Independent of ALERTS_ENABLED. Unset = off.
+TICK_HANDOFF_ENABLED = os.environ.get("TICK_HANDOFF_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
+TICK_SOURCE = "pattern-recorder-tick"
 TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
 TELEGRAM_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_TIMEOUT_SECONDS", "8"))

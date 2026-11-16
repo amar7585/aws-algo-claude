@@ -6,10 +6,11 @@ sharing it would mean the neon-access layer, which pulls in pg8000, and this
 playbook already carries that layer for connect() but keeps the notifier
 separate so it stays a pure urllib call with no extra dependency.
 
-WHY A NOTIFIER IN A PLAYBOOK THAT "WRITES NOTHING". It still writes nothing - no
-table, no order. A Telegram message is not persistence; it is the same log
-output pushed to where it is seen. It fires ONLY on a qualifying candidate (a
-real signal), never on a rejection, so the chat is not spammed with the
+WHY A NOTIFIER IN A PLAYBOOK. A Telegram message is not persistence; it is the
+same log output pushed to where it is seen (the one table this function writes
+is its alert register, register.py - a record, not a signal). It fires ONLY on
+entries and trade steps (since 2026-11-14, each tagged with the rule set that
+produced it), never on a rejection, so the chat is not spammed with the
 stand-down days that are most of them.
 
 Reads /algo/telegram/brief (bot_token + chat_id), the same parameter the daily

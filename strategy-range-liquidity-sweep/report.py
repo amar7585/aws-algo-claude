@@ -145,11 +145,10 @@ def stand_down_block(failures, details):
     lines = ["NO SCAN - the regime gate did not pass:"]
     lines += [f"  - {failure}" for failure in failures]
     lines.append(
-        "  window {window}, regime {regime}/{bias}, adr {adr}, atr14 {atr14}, "
+        "  window {window}, regime {regime}, adr {adr}, atr14 {atr14}, "
         "opening range {orb_range} ({orb_range_pct}%)".format(
             window=details.get("window"),
             regime=details.get("regime"),
-            bias=details.get("bias"),
             adr=details.get("adr"),
             atr14=details.get("atr14"),
             orb_range=details.get("orb_range"),

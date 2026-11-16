@@ -68,13 +68,23 @@ CREATE TABLE IF NOT EXISTS algo.session_observations (
     notes                    text,
     created_at               bigint  NOT NULL,
 
+    -- Amar's own marks on the day's snapshot chart (added 2026-11-14,
+    -- migrations/2026-11-14-session-observations-marking.sql). 5-min candle
+    -- START epochs - the same convention as algo.playbook_alerts, so the two
+    -- line up directly. NULL when not marked; never inferred.
+    alert_ts                 bigint,             -- the candle he marks as the alert candle
+    entry_ts                 bigint,             -- the candle he marks as the entry candle
+    entry_price              numeric,            -- his entry price
+
     PRIMARY KEY (security_id, instrument_type, event_ts, pattern_type),
     FOREIGN KEY (security_id, instrument_type)
         REFERENCES algo.instrument_master (security_id, instrument_type),
     CONSTRAINT session_observations_outcome
         CHECK (outcome IN ('reversal', 'continuation', 'no_signal')),
     CONSTRAINT session_observations_agreement
-        CHECK (signal_agreement IS NULL OR signal_agreement IN ('confirmed', 'contradicted', 'no_data'))
+        CHECK (signal_agreement IS NULL OR signal_agreement IN ('confirmed', 'contradicted', 'no_data')),
+    CONSTRAINT session_observations_alert_before_entry
+        CHECK (alert_ts IS NULL OR entry_ts IS NULL OR entry_ts >= alert_ts)
 );
 
 COMMIT;

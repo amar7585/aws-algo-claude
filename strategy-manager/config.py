@@ -114,6 +114,15 @@ TREND_PLAYBOOKS = [x.strip() for x in os.environ.get("TREND_PLAYBOOKS", "").spli
 # error-notifier reports its failures directly. A synchronous invoke would put
 # every strategy's runtime inside this function's timeout and let one slow
 # playbook delay the rest.
+# EVERY-TICK PLAYBOOKS (Amar 2026-11-14). pattern-recorder hands every 5-min
+# tick here (source TICK_SOURCE) so a playbook can follow a trade candle by
+# candle. Those ticks go to these playbooks WHATEVER the regime - a trade that
+# is open must keep being watched after the day's context changes - and each
+# applies its own entry cell. The same playbooks are left out of alert routing,
+# so a tick with an alert does not run them twice. Unset = no tick routing.
+TICK_PLAYBOOKS = [x.strip() for x in os.environ.get("TICK_PLAYBOOKS", "").split(",") if x.strip()]
+TICK_SOURCE = "pattern-recorder-tick"
+
 INVOCATION_TYPE = os.environ.get("INVOCATION_TYPE", "Event")
 
 # Lambda caps an asynchronous invocation payload at 256 KB. The v2 context is

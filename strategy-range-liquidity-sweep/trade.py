@@ -26,10 +26,12 @@ playbook's 1:2.15, and Example 2 grades 1:1.81 against its 1:2.79. Both still
 clear the 1.5 floor, which is the useful part - applying the rule the playbook
 states does not invalidate the setups it illustrates.
 
-(Example 2's 1:1.81 also reflects _cluster() targeting the cluster's far edge
-at 24,132.13 rather than the playbook's quoted 24,134.45, which sits a little
-beyond every level it names. Against that quoted target the figure would be
-1:1.91.)
+(Example 2's 1:1.81 reflected the playbook's bias-adjusted "cluster" target.
+That rule is gone since 2026-11-14 - the sweep uses no bias (Amar) - so T2 is
+always the opposite side of the opening range. The rule had never fired live
+anyway: it compared the classifier's bias against "BULLISH"/"BEARISH" while
+the classifier writes lower case, from 2026-09-13 on. Measured with it fixed,
+it would have removed 3 winners and no losers on 41 sessions.)
 ---------------------------------------------------------------------------
 """
 
@@ -68,41 +70,7 @@ def stop_buffer(bars, upto_index, level):
     return round(buffer_points, 2), round(fixed, 2), round(mean_range, 2)
 
 
-def _cluster(entry, short, vwap, orb_mid, sma100, opposite):
-    """
-    The FAR edge of the bias-adjusted cluster - through it, not to its first level.
-
-    The playbook names three members: session VWAP, the 100-period MA and the
-    mid-range shelf. On a trade running against the day's drift the cluster
-    replaces the full opposite extreme, because that extreme asks the market to
-    travel the whole range in the unfavourable direction.
-
-    THE FAR EDGE, AND THE PLAYBOOK'S EXAMPLE IS WHY. Example 2 is a long with a
-    bearish bias whose target is 24,134.45, quoted as "overhead cluster: VWAP
-    24,123.82 + MA100 24,130.02" - above BOTH named members, not at the nearer
-    one. Taking the nearest instead put that example's target at 24,123.82 and
-    its risk-reward at 1:1.44, which fails the 1.5 floor and would have thrown
-    out a setup the playbook presents as a good one. A target at the first
-    obstacle is not really a target.
-
-    Clamped to `opposite` so the "shorter than the full range" intent cannot be
-    inverted by a cluster member sitting beyond the range itself.
-    """
-    candidates = [value for value in (vwap, orb_mid, sma100) if value is not None]
-    if short:
-        below = [value for value in candidates if value < entry]
-        if not below:
-            return None
-        far = min(below)
-        return far if opposite is None else max(far, opposite)
-    above = [value for value in candidates if value > entry]
-    if not above:
-        return None
-    far = max(above)
-    return far if opposite is None else min(far, opposite)
-
-
-def build(event, bars, orb, vwap, sma100, bias, stacked, previous_day=None):
+def build(event, bars, orb, vwap, stacked, previous_day=None):
     """
     Turn a confirmed sweep into a candidate with prices, or say why not.
 
@@ -143,17 +111,11 @@ def build(event, bars, orb, vwap, sma100, bias, stacked, previous_day=None):
     else:
         t1_name, t1 = None, None
 
-    # ---- T2: the opposite side of the range, adjusted for the bias axis ---
+    # ---- T2: the opposite side of the opening range - no bias adjustment ---
+    # (the bias-adjusted cluster target was removed 2026-11-14; see the module
+    # docstring)
     opposite = (orb["low"] if short else orb["high"]) if orb else None
-    against_drift = (short and bias == "BULLISH") or (not short and bias == "BEARISH")
-    if against_drift:
-        clustered = _cluster(entry, short, vwap, orb_mid, sma100, opposite)
-        if clustered is not None:
-            t2, t2_name = clustered, "bias-adjusted cluster (VWAP/MA100/mid-range)"
-        else:
-            t2, t2_name = opposite, "opposite side of the opening range"
-    else:
-        t2, t2_name = opposite, "opposite side of the opening range"
+    t2, t2_name = opposite, "opposite side of the opening range"
 
     if t2 is None:
         return None, "no opposite range level to target - opening range unknown"
@@ -232,8 +194,7 @@ def _grade(event, candidate, stacked):
     return GRADE_B, "single pool, clean reclaim"
 
 
-def re_entry(event, bars, orb, vwap, sma100, bias, stacked, original_t2,
-             previous_day=None):
+def re_entry(event, bars, orb, vwap, stacked, original_t2, previous_day=None):
     """
     The Case B re-entry, checked against the original target.
 
@@ -243,9 +204,7 @@ def re_entry(event, bars, orb, vwap, sma100, bias, stacked, original_t2,
     describes as the arithmetic quietly saying the edge is gone. Recomputing
     the target too would let the setup move its own goalposts and pass.
     """
-    candidate, reason = build(
-        event, bars, orb, vwap, sma100, bias, stacked, previous_day
-    )
+    candidate, reason = build(event, bars, orb, vwap, stacked, previous_day)
     if candidate is None:
         return None, reason
 

@@ -46,7 +46,7 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Pattern recording + alerts (v2.1) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
 | Strategy routing | on each v2.1 alert, once | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). Routes on the alert's `day_trend` first: up/down → the trend playbook, `none` → the `regime\|bias` registry (since 2026-11-09 22:37) |
 | Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) |
-| Range sweep playbook | on a no-trend alert, `sideways\|range-bound` | invoke from `strategy-manager` | **built** |
+| Range sweep playbook | on every 5-min tick since 2026-11-14 (before that on a no-trend `sideways\|range-bound` alert); entries when price is within the levels (PDH/PDL, 15-min high/low) and the regime is not `volatile-expansion` — no bias, no trend test (since 2026-11-15 09:33) | invoke from `strategy-manager` (`TICK_PLAYBOOKS`) | **built, running** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -129,25 +129,30 @@ the cost of a wake-up on the first connection of each run.
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 920 | intraday-market-sentiment |
 | `index_constituents` | `index_name, security_id, instrument_type, exchange_segment, symbol, updated_at` — the NIFTY 50 / NIFTY 500 rosters for breadth, maintained by hand | 548 (NIFTY50 50, NIFTY500 498) | seeded by hand |
 | `pattern_events` | v2 pattern events: one per (`rules_version`, trigger bar, family, subtype, direction) — level, candles, volume flags. **No OI, no outcome** (both joined at read time). [schema](../pattern-recorder/schema.sql) | created 2026-11-06; written from the 09:45 run that day (2 rows) | pattern-recorder |
+| `playbook_alerts` | the **alert register**: one row per alert — a level a playbook watched, touched on one side, under one rule set (`current` / `new`) — with its retests (`touch_log`: per touch, why it did or did not give an entry), its `status` (watching / entered / blocked / missed / invalid / ended / covered) and, when entered or blocked by the gate, the trade and its steps. Candle times are 5-min candle starts. Rebuilt and upserted on every run; **nothing reads it back**. `derived_through_ts` (the newest candle of the run that wrote a row) stops a late, older tick from overwriting a newer register (since 2026-11-14 23:08). [schema](../strategy-range-liquidity-sweep/schema.sql) | created 2026-11-14, just before 22:01 IST; 9 rows (2026-11-13, from the deploy's smoke runs) | strategy-range-liquidity-sweep, when `REGISTER_ENABLED=on` (on since 2026-11-14 22:01) |
+| `session_observations` | hand-logged ground truth: one row per pattern Amar flags — event candle, `pattern_type`, outcome, signal agreement, notes — and, since 2026-11-14, his own marks: `alert_ts` / `entry_ts` (5-min candle starts, the same convention as `playbook_alerts`) and `entry_price`. [schema](../observations/schema.sql) · [runbook](session-observation-runbook.md) | 11 (none marked yet) | by hand, on Amar's sign-off — never a function |
 
-**`pattern-recorder` is the one writer in the strategy plane.** It records what the v2
-rules recognise to `pattern_events`, and it never writes the hand-logged
+**The strategy plane has two writers.** `pattern-recorder` records what the v2
+rules recognise to `pattern_events`; since 2026-11-14 `strategy-range-liquidity-sweep`
+records its alert register to `playbook_alerts`. Neither ever writes the hand-logged
 `session_observations`. Since v2.1 (live 2026-11-09 16:04) it also sends the alerts:
 each event that passes the alert rule goes to Telegram and to strategy-manager, once
 each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the sends.
 
 **Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
-opens no connection at all. `strategy-range-liquidity-sweep` reads its own bars
-— `candle_5min`, `candle_15min`, `candle_1hr`, `candle_daily` and
-`instrument_master` — because a playbook knows which bars it needs.
+opens no connection at all. `strategy-range-liquidity-sweep` runs on every 5-min
+tick since 2026-11-14: it takes today's closed index candles from the tick payload
+and reads `candle_daily` for ATR and today's 15-min rows (`intraday_fno_data` +
+`intraday_sentiments`, each as in force at the candle it judges).
 `strategy-trend-pullback` reads nothing: the payload `pattern-recorder` builds and
 the manager passes through carries the alert, today's closed index candles and the
-daily read. None of the three
-writes anything. The
+daily read. The manager and the trend playbook write nothing; the sweep writes
+only its alert register, a record rebuilt whole on every run that nothing reads
+back. The
 regime the manager classifies travels in the invocation payload and each
 strategy records it in its own log alongside what it found, so the decision is
-recoverable from the consumer rather than duplicated by the producer. Nothing
-either function computes can therefore go stale in a table.
+recoverable from the consumer rather than duplicated by the producer. Nothing a
+strategy decides on can therefore go stale in a table.
 
 Two things they need are deliberately **not** stored and are recomputed instead
 — daily `atr_14`, and the pivot levels, which `daily_market_sentiment`'s schema

@@ -18,9 +18,9 @@
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
-| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns → `pattern_events`, alerts to Telegram and strategy-manager once each | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
-| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → the `regime\|bias` registry | **built, running** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | on a no-trend alert, `sideways\|range-bound` | **built, running** | [README](../strategy-range-liquidity-sweep/README.md) |
+| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns → `pattern_events`, alerts to Telegram and strategy-manager once each; since 2026-11-14 also hands **every** tick to strategy-manager | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
+| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → the `regime\|bias` registry; on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — two rule sets, trade follow-up, alert register → `playbook_alerts` | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
 | `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
 
 Everything above the divider exists and runs. See
@@ -318,7 +318,7 @@ them. It evaluates no playbook, emits no signal and writes nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Trigger | **asynchronous invoke from `pattern-recorder`**, once per v2.1 alert (since 2026-11-09 16:04; before that from `pattern-detector` on a confirmed turn) - no schedule |
+| Trigger | **asynchronous invoke from `pattern-recorder`**, once per v2.1 alert (since 2026-11-09 16:04; before that from `pattern-detector` on a confirmed turn), and on **every 5-min tick** since 2026-11-14 18:28 - no schedule |
 | Writes | **nothing** |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` |
 
@@ -347,6 +347,13 @@ a range playbook and `regime|bias` lags the trend read. `none`, or no `detection
 routes as below. `detection`, `index_bars` and `source` pass through to the
 playbooks; `context_version` stays 2.
 
+**Every tick goes to `TICK_PLAYBOOKS`** (since 2026-11-14 18:28). `pattern-recorder`
+hands each tick over (`TICK_HANDOFF_ENABLED=on`, unset = off) and the manager sends it
+to `strategy-range-liquidity-sweep` whatever the regime, so an open sweep trade keeps
+being followed after the context changes; the playbook applies the entry cell itself.
+A playbook in `TICK_PLAYBOOKS` is taken out of alert routing, so it is never invoked
+twice for one candle — which leaves the registry's one filled cell routing nothing.
+
 **On a no-trend alert, routing is on `regime|bias`, and every one of the nine
 cells is listed.** A key present and mapping to `[]` is a deliberate "no playbook
 today"; a key *missing* means the classifier and the registry have drifted apart,
@@ -363,24 +370,34 @@ fails to hold, closes back inside, and rotates back across the range.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules |
+| Runtime | Python 3.14, zip package, 12 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` - the last for Wilder ATR only |
-| Trigger | asynchronous invoke from `strategy-manager` |
-| Reads | `algo.instrument_master` and the candle tables - no broker API |
-| Writes | **nothing** - its log is its only output |
+| Trigger | asynchronous invoke from `strategy-manager` - on **every 5-min tick** since 2026-11-14 (before that, on a no-trend `sideways\|range-bound` alert) |
+| Reads | today's closed 5-min index candles from the payload, `candle_daily` for ATR, today's 15-min rows (`intraday_fno_data` + `intraday_sentiments`) - no broker API |
+| Writes | `playbook_alerts` - the alert register (on since 2026-11-14 22:01, `REGISTER_ENABLED=on`). Its other output is Telegram and its log |
 | Secrets | `/algo/neon/connection` |
 
-The regime context arrives in the payload, but the bars do not: a playbook knows
-which bars it needs, so this function reads its own from Neon. It still calls no
-broker API - a sweep is confirmed by a *closed* bar, so a live tick is exactly
-what it must not act on - and it writes nothing, because the manager's decision
-is recorded in the consumer's log rather than duplicated into a `signal` table.
+The regime context arrives in the payload, and on every-tick runs so do today's
+closed candles; the 15-min rows it judges each candle by are read from Neon. It
+still calls no broker API - a sweep is confirmed by a *closed* bar, so a live tick
+is exactly what it must not act on. There is still no `signal` table: the one table
+it writes is its **alert register** - every level it watched today, each touch,
+and whether it was entered, blocked by the gate, missed, invalid or ended - rebuilt
+on every run and never read back (Amar, 2026-11-14: "re-derive and record").
 `error-notifier` is the one function here that genuinely carries no layers.
 
 **It has no memory and needs none.** The playbook caps attempts at one re-entry
 per side per session, which looks like cross-invocation state; a candidate is a
 deterministic function of the bars, so re-deriving the day's whole sweep sequence
 each run reproduces the attempt count exactly and a re-run cannot double-count.
+
+**Two rule sets, and the trade after entry** (since 2026-11-14). `current` is the
+playbook's rules as built; `new` adds a 2+ close push judged structurally at its
+close back inside (with one more look on the next candle since 2026-11-16),
+one live idea per side, and an exit / watch / re-entry after
+entry. Every Telegram message says which produced it. On the same 14 entries over
+104 sessions the new trade management made +11.20R with 1 full loss against
++9.36R with 6; its extra entries are not yet proven (see the playbook's README).
 
 Its README records three places where the playbook's explicit rules and its
 worked examples disagree - the sweep-band floor, the stop buffer, and the
@@ -430,6 +447,30 @@ calibration. The rules, the replay and the reference session are in its
 
 Nothing is currently planned. The obvious next pieces, neither agreed nor
 designed:
+
+- **Retire the sweep's old pieces once the new build has run some live
+  sessions** (backlog, Amar 2026-11-14; when is Amar's call, after he has seen
+  the sessions):
+  - delete `strategy-range-liquidity-sweep` Lambda versions 1–6 (the
+    2026-11-14/15 restore points: `HsOac…`, `IBg6OIzl…`, `YLhNk…`,
+    `M3fvb4DI…`, `+4qimC9c…`, `CkCH…`; `$LATEST` is `RaMJeVy2…`) — they only
+    hold rollback copies;
+  - remove the old ("current") rule set, leaving only the new logic: drop
+    `walk_current` and its tags from the messages, and the `current` rows from
+    the alert register (its `logic` column then reads `new` only). Decide from
+    the live current-vs-new comparison the tagged messages and the register
+    record.
+- **Remove the bias logic system-wide** (backlog, Amar 2026-11-14 — not designed).
+  Measured 2026-11-14: as an entry gate or target rule bias made the sweep worse,
+  and for trend trades "bias agrees" was the worst group (22 trades, −195 pts) —
+  so it is gone from the sweep (2026-11-14 22:58). It is still calculated by the
+  `market-classifier` layer (a cheap score: SMA alignment, RSI, swing, VWAP side)
+  and used by: `strategy-manager`'s `regime|bias` alert routing (routes nothing
+  since the sweep moved to every tick), `pattern-detector`'s required inputs, the
+  Telegram text of `pattern-recorder` and `strategy-trend-pullback`,
+  `intraday_sentiments.bias`, `daily_market_sentiment.bias` and the 09:35 brief.
+  Needs a plan: which consumers drop it, what happens to the two columns and to
+  `score`/`confidence`, and whether the brief keeps it.
 
 - **Backtesting** the playbooks under this architecture. `trading-algo/backtest/`
   is its own runner, position tracker and report builder, and folding it in

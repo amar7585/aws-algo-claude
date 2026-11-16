@@ -36,6 +36,10 @@ WHAT IT DOES NOT DO. It does not place orders, hold position state, size
 anything, or decide whether a setup is worth taking. The regime-and-bias gate
 is the whole of its judgement.
 
+SINCE 2026-11-14 pattern-recorder also hands over EVERY tick (source
+"pattern-recorder-tick"); those go to TICK_PLAYBOOKS whatever the regime, and
+alert routing leaves the TICK_PLAYBOOKS out.
+
 SINCE 2026-11-09 the caller is pattern-recorder (v2), once per v2 alert, and the
 payload adds v2's alert (`detection`, carrying day_trend) and today's closed
 index candles (`index_bars`). ROUTING: day_trend up/down -> TREND_PLAYBOOKS
@@ -52,7 +56,7 @@ import time
 
 from neon_access import ist_datetime, now_epoch
 
-from config import CONTEXT_VERSION
+from config import CONTEXT_VERSION, TICK_PLAYBOOKS, TICK_SOURCE
 from registry import TREND_STATES, dispatch, routing_key, shortlist, trend_shortlist
 
 logger = logging.getLogger()
@@ -133,12 +137,15 @@ def read_event(event):
     index_bars = event.get("index_bars")
     if index_bars is not None and not isinstance(index_bars, list):
         raise RuntimeError(f"`index_bars` must be a list, got {type(index_bars).__name__}")
-    return snapshot, instrument, daily, detection, index_bars, event.get("source")
+    tick = event.get("tick")
+    if event.get("source") == TICK_SOURCE and not isinstance(tick, dict):
+        raise RuntimeError("a tick hand-off must carry its `tick` object")
+    return snapshot, instrument, daily, detection, index_bars, event.get("source"), tick
 
 
 def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     started = time.monotonic()
-    snapshot, instrument, daily, detection, index_bars, source = read_event(event)
+    snapshot, instrument, daily, detection, index_bars, source, tick = read_event(event)
 
     snapshot_ts = int(snapshot["snapshot_ts"])
     regime, bias = snapshot["regime"], snapshot["bias"]
@@ -172,14 +179,28 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     if index_bars is not None:
         dispatch_context["index_bars"] = index_bars
 
-    # ROUTING. A trend day (v2's day_trend up/down) goes to the trend
+    # ROUTING. An every-tick hand-off (2026-11-14) goes to TICK_PLAYBOOKS
+    # whatever the regime - they apply their own entry cell and keep following
+    # an open trade. A trend day (v2's day_trend up/down) goes to the trend
     # playbooks, never to the regime|bias registry - see config.TREND_PLAYBOOKS.
-    if day_trend in TREND_STATES:
-        route = f"day trend {day_trend}"
-        eligible = trend_shortlist(day_trend)
+    # Alert routing leaves the tick playbooks out: the tick already ran them.
+    if source == TICK_SOURCE:
+        dispatch_context["source"] = source
+        dispatch_context["tick"] = tick
+        route = "every tick"
+        eligible = list(TICK_PLAYBOOKS)
+        logger.info("tick: eligible %s", ", ".join(eligible) or "none (TICK_PLAYBOOKS unset)")
     else:
-        route = routing_key(regime, bias)
-        eligible = shortlist(regime, bias)
+        if day_trend in TREND_STATES:
+            route = f"day trend {day_trend}"
+            eligible = trend_shortlist(day_trend)
+        else:
+            route = routing_key(regime, bias)
+            eligible = shortlist(regime, bias)
+        skipped = [f for f in eligible if f in TICK_PLAYBOOKS]
+        if skipped:
+            logger.info("%s: %s left out - it runs on every tick", route, ", ".join(skipped))
+            eligible = [f for f in eligible if f not in TICK_PLAYBOOKS]
     dispatched = dispatch(dispatch_context, eligible)
 
     elapsed = time.monotonic() - started

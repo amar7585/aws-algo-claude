@@ -1,16 +1,18 @@
 """
 The fine gate.
 
-THE GATE IS NOT A FORMALITY, and the playbook says why: the identical candle
-pattern on a trending day is a breakout retest, and fading it is how this
-setup loses. So a failed check stops the scan. It does not become a
+THE GATE IS NOT A FORMALITY. The playbook's own reason was that the identical
+candle pattern on a trending day is a breakout retest; since 2026-11-15 the
+regime is checked for volatility only (Amar: a sweep within the levels does
+not depend on the trend, it depends on high volatility), and session.py checks
+that price is within the levels. A failed check stops the scan. It does not become a
 lower-confidence candidate, it does not get averaged with the checks that
 passed, and nothing below reports a near miss as a pass.
 
-strategy-manager has already applied the coarse gate - this function is
-only invoked for the regime/bias combinations its registry allows.
-Everything here is the part
-the manager cannot know: what THIS playbook needs of the VIX, of how
+Since 2026-11-14 every tick arrives whatever the regime, so this gate (with
+the cell in session.py) is the only one, and it uses no bias - a sweep is a
+level-and-volatility event (Amar). Everything here is the part an upstream
+router cannot know: what THIS playbook needs of the VIX, of how
 much range the day has already spent, of the opening range's width, and of the
 clock. Re-checking the regime as well is deliberate; a strategy that trusts an
 upstream gate it cannot see will fire on a bad day the moment that gate moves.
@@ -19,7 +21,6 @@ upstream gate it cannot see will fire on a bad day the moment that gate moves.
 import logging
 
 from config import (
-    ALLOWED_BIASES,
     ALLOWED_REGIMES,
     LATE_END,
     MAX_RANGE_USED_VS_ATR,
@@ -69,17 +70,12 @@ def evaluate(snapshot, classification, daily_atr14, orb, snapshot_ts):
 
     # ---- regime -----------------------------------------------------------
     regime = classification.get("regime")
-    bias = classification.get("bias")
     details["regime"] = regime
-    details["bias"] = bias
     if regime not in ALLOWED_REGIMES:
         failures.append(
-            f"regime is {regime}, and this playbook is valid only in "
-            f"{'/'.join(sorted(ALLOWED_REGIMES))} - the same pattern on a "
-            f"trending day is a breakout retest"
+            f"regime is {regime} - high volatility; this playbook runs only in "
+            f"{'/'.join(sorted(ALLOWED_REGIMES))}"
         )
-    if bias not in ALLOWED_BIASES:
-        failures.append(f"bias {bias} is not in {'/'.join(sorted(ALLOWED_BIASES))}")
 
     # ---- india vix --------------------------------------------------------
     # The snapshot's vix_change_pct is measured against its previous snapshot,

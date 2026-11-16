@@ -6,12 +6,13 @@ value it has. The playbook is explicit that these are starting values rather
 than laws - so each one is an environment override, and the ones that are NOT
 from the playbook are marked as such.
 
-IT READS, BUT IT STILL WRITES NOTHING. The two sentiment rows arrive in the
-invocation payload from strategy-manager, which is a pure router; the bars and
-the daily series this playbook scans it reads from Neon itself, because a
-playbook knows which bars it needs and the manager was guessing on its behalf.
-What it finds goes to its own log and nowhere else - no table, no signal, no
-order.
+IT READS, AND WRITES ONE RECORD. The snapshot and daily rows arrive in the
+invocation payload from strategy-manager, which is a pure router; on every-tick
+runs (since 2026-11-14) so do today's closed candles, and the 15-min rows and
+the daily series it reads from Neon itself. What it finds goes to its log and
+to Telegram, and - when REGISTER_ENABLED is on - its alert register goes to
+algo.playbook_alerts (register.py), a record nothing reads back. No signal
+table, no order.
 
 There is no Dhan client here and no token. The only thing the manager ever
 called Dhan for was a live price, and this playbook never read it: a sweep is
@@ -67,16 +68,29 @@ FIRST_HOUR_END = datetime.time(10, 15)
 # --------------------------------------------------------------------------
 # The regime gate
 #
-# The coarse gate already happened: strategy-manager only invokes this
-# function for the regime/bias combinations its registry allows. This is the
-# fine gate, and it exists because the manager's registry cannot know what this
-# playbook needs - and because a strategy that trusts an upstream gate it
-# cannot see fires on a bad day the moment that gate changes.
+# Since 2026-11-14 every 5-min tick arrives here whatever the regime, so this
+# fine gate - with the cell in session.py - is the only gate. It exists because
+# a strategy that trusts an upstream gate it cannot see fires on a bad day the
+# moment that gate changes.
 # --------------------------------------------------------------------------
-# The playbook allows neutral range, bullish sideways and bearish sideways.
-# The shared classifier expresses exactly those three as regime `sideways`
-# with any bias, so every bias is allowed here and the regime does the work.
-# Held as a set rather than assumed so a future regime value cannot quietly
+# NO BIAS (Amar 2026-11-14): "sweep is not part of any bias - it can happen
+# within levels, not based on bias; it is mostly related to volatility." The
+# playbook's neutral range / bullish sideways / bearish sideways is regime
+# `sideways` with any bias, so only the regime is checked. Measured before the
+# change on 41 sessions as live: taking the bias half out of the entry cell
+# added 5 entries and removed none (new rules +1.04R -> +1.62R, full losses
+# 1 -> 1).
+#
+# WITHIN LEVELS, NOT HIGH VOLATILITY (Amar 2026-11-15): "if price is within
+# levels then why it matters - depends on high volatility." So the regime is
+# checked for VOLATILITY only: `sideways` and `trending` both pass,
+# `volatile-expansion` (the classifier's high-volatility read: the last 30 min
+# >= 2x normal, or the VIX move) does not. Trending no longer blocks, and the
+# day trend is no longer part of the gate (session.py checks price within the
+# levels instead). Replayed before the change on 41 sessions as live: +4
+# entries (10-01 short, 10-30 long, each under both rule sets - all reached T2;
+# 10-30 is Amar's logged trade), none removed; new rules +1.62R -> +4.40R, full
+# losses 1 -> 1. Held as an allow-list so a future regime value cannot quietly
 # become eligible.
 #
 # THE VALUES ARE LOWER CASE NOW, and that is the taxonomy change rather than a
@@ -85,10 +99,7 @@ FIRST_HOUR_END = datetime.time(10, 15)
 # Comparing against the old strings would fail every check silently-ish - the
 # gate would stand down on every session and look merely cautious.
 ALLOWED_REGIMES = frozenset(
-    os.environ.get("ALLOWED_REGIMES", "sideways").split(",")
-)
-ALLOWED_BIASES = frozenset(
-    os.environ.get("ALLOWED_BIASES", "bullish,bearish,range-bound").split(",")
+    os.environ.get("ALLOWED_REGIMES", "sideways,trending").split(",")
 )
 
 # --------------------------------------------------------------------------
@@ -265,3 +276,53 @@ NO_FOLLOW_THROUGH_BARS = int(os.environ.get("NO_FOLLOW_THROUGH_BARS", "8"))
 NO_FOLLOW_THROUGH_RISK_FRACTION = float(
     os.environ.get("NO_FOLLOW_THROUGH_RISK_FRACTION", "0.5")
 )
+
+# --------------------------------------------------------------------------
+# Every-tick runs, both rule sets, and the trade after entry (2026-11-14)
+#
+# Since 2026-11-14 pattern-recorder hands EVERY 5-min tick to strategy-manager,
+# and the manager sends each tick here whatever the regime, so a trade that is
+# open keeps being watched even after the day's context changes. New entries
+# (and re-entries) are taken only when price is within the levels and the
+# regime is not volatile-expansion - no bias, no day trend (Amar 2026-11-14 /
+# 11-15; see ALLOWED_REGIMES above and session.context_at).
+#
+# BOTH RULE SETS RUN on the same candles, so every Telegram message can say
+# which produced it (Amar: "send all messages with note from which it came
+# from" - "from which logic, current or new"):
+#   current  today's playbook rules - first-candle detection, 2 closes beyond
+#            the opening range = range broke, 2 attempts per side
+#   new      + a 2+ close push judged structurally at its close back inside,
+#            with one more look on the next candle (2026-11-16,
+#            sweep.push_sweeps), one live idea per side, and the exit / watch
+#            / re-entry rule (manage.py)
+# --------------------------------------------------------------------------
+# When a 15-min row counts as in force for a candle: written (created_at) by the
+# candle's close plus this - pattern-recorder runs about 100 s after the close.
+ROW_VISIBLE_LAG_SECONDS = int(os.environ.get("ROW_VISIBLE_LAG_SECONDS", "100"))
+
+# The source tag of an every-tick payload (pattern-recorder sets it).
+TICK_SOURCE = "pattern-recorder-tick"
+
+# Telegram stays on, as today (unset = on). "off" stops every send (logged as
+# WOULD SEND) without a redeploy - a kill switch, not a shadow mode.
+TELEGRAM_ENABLED = os.environ.get("TELEGRAM_ENABLED", "on").strip().lower() not in ("0", "off", "false", "no")
+
+# --------------------------------------------------------------------------
+# The alert register (Amar 2026-11-14, "re-derive and record") - register.py
+#
+# Every run rebuilds today's alerts - each level touched, its retests, and
+# whether it was entered, blocked by the gate, missed, invalid, ended or covered
+# - and writes them to algo.playbook_alerts AFTER the messages are sent, on the
+# connection the reads already opened. Nothing is read back: the next run
+# rewrites the day. A failed write raises (Lambda's automatic retry may then
+# resend that run's messages - preferred over turning retries off, which would
+# lose a signal for good).
+#
+# UNSET = OFF, so the code can be deployed before the table is relied on, and
+# turned off again without a redeploy. "on" to write.
+# --------------------------------------------------------------------------
+REGISTER_ENABLED = os.environ.get("REGISTER_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
+REGISTER_TABLE = "algo.playbook_alerts"
+# This playbook's name in the register's `playbook` column - the function name.
+REGISTER_PLAYBOOK = "strategy-range-liquidity-sweep"

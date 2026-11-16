@@ -60,6 +60,17 @@ detector's turn) is itself the trigger.
 playbook succeeded. Each has its own log group and `error-notifier` reports
 from all of them.
 
+## Every-tick playbooks (2026-11-14)
+
+pattern-recorder hands over every 5-min tick as well as its alerts. A tick payload carries `source`
+`pattern-recorder-tick`, a `tick` object and today's closed index candles.
+
+- **Ticks go to `TICK_PLAYBOOKS` whatever the regime.** Today that is `strategy-range-liquidity-sweep`. A
+  playbook that follows a trade after entry must keep running after the day's regime or trend changes, so it
+  applies its own entry cell.
+- **Alert routing leaves the `TICK_PLAYBOOKS` out.** A tick with an alert does not run them twice.
+- **Unset `TICK_PLAYBOOKS` restores the old routing** at once.
+
 ## Trend days route on `day_trend`, not on the registry (2026-11-09)
 
 Since 2026-11-09 the caller is `pattern-recorder` (v2), once per alert, and its
@@ -172,6 +183,7 @@ fires. See CLAUDE.md.
 | Variable | Default | Why |
 |---|---|---|
 | `STRATEGY_REGISTRY` | the 9-cell map above | filling a cell is configuration, not a redeploy |
+| `TICK_PLAYBOOKS` | *(unset)* | comma-separated; the playbooks every tick goes to, whatever the regime, and which alert routing then leaves out. Unset = no tick routing |
 | `TREND_PLAYBOOKS` | *(unset)* | comma-separated; where a trend-day (`day_trend` up/down) alert goes. Unset = nowhere. Each name needs its ARN in `invoke-playbooks` |
 | `INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
 | `MAX_PAYLOAD_BYTES` | 262144 | Lambda's asynchronous cap |

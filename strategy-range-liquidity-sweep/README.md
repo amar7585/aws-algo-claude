@@ -12,14 +12,199 @@ targets and risk-reward.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules |
+| Runtime | Python 3.14, zip package, 12 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
-| Trigger | asynchronous invoke from `strategy-manager` |
-| Reads | `algo.instrument_master` and the candle tables — **no broker API** |
-| Writes | **nothing** — its log is its only output |
+| Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
+| Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `0NUOBVS0…` since the one-more-look push test, 2026-11-16 19:14; versions kept: 7 = `RaMJeVy2…` (Amar's within-levels gate), 6 = `CkCH//Y3…` (signal price), 5 = `+4qimC9c…` (out-of-order fix), 4 = `M3fvb4DI…` (no bias), 3 = `YLhNk/U9…`, 2 = `IBg6OIzl…`, 1 = the pre-register `HsOac/jT…`). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
 
-## It writes nothing, and calls no broker API
+## Since 2026-11-14: every tick, two rule sets, and the trade after entry
+
+Decided by Amar on 2026-11-14 after a measurement on 104 sessions (06-16 .. 11-13):
+
+- **The 2-close count does not tell a break from a sweep.** Once a push closes back inside, about 2 in 3 are
+  sweeps however many closes it made beyond.
+- **What does tell them apart needs no number:** the candle back inside closes beyond the push's *whole*
+  range (below every push candle's low, for an up push). 91% of those pushes were sweeps, against 50% without it.
+  - **One more look** (Amar 2026-11-16, option B): when that first close back inside is not past the whole push,
+    the next candle may still be — it must close inside, print no new extreme and close past the same line. Those
+    pushes swept 72% (n 25; the rest that fail both looks 45%). See the 2026-11-16 deploy note below.
+- **Every exit on elapsed time lost to holding** on no-trend days.
+- **The exit that held up is structural:** exit when a candle closes back beyond the swept level, then re-enter
+  on a new best close.
+
+**When it runs.** pattern-recorder hands every tick to the manager, and the manager sends it here *whatever the
+regime*, so an open trade keeps being watched. Each run re-derives the session candle by candle. At every candle
+it uses only the candles up to it and the 15-min row in force then — written by the candle's close plus
+`ROW_VISIBLE_LAG_SECONDS`. That makes every run reach the same answer, so each step is announced once: on the run
+whose newest candle it is.
+
+**When it may enter** (Amar's gate, live since 2026-11-15 09:33, `RaMJeVy2…`): **price within the levels** — the
+entry candle's close between min(PDL, 15-min low) and max(PDH, 15-min high) — and **volatility not high**: regime
+`sideways` or `trending`, not `volatile-expansion`, plus the fine gate below. Amar: "if price is within levels then
+why it matters — depends on high volatility." No trend test and no bias. Replayed before the change (41 sessions
+as live): +4 entries (10-01 short and 10-30 long, each under both rule sets — all reached T2; 10-30 is Amar's
+logged trade, blocked before only because the regime read trending), none removed; new rules +1.62R → +4.40R,
+full losses 1 → 1; current −0.50R → +2.84R. The within-levels test is what keeps the losers out: without it the
+11-03 short against an up-trend enters and loses; on all 21 gate-off trades over 104 sessions it excludes 3 (all
+losers, all against the day trend) and keeps all 9 winners — two of those three by under 2 points, so the edge is
+sharp. Verified after the change: old vs new differ on exactly those 4 entries; send-once 41/41.
+
+Before 2026-11-15 09:33 the cell was regime `sideways` + `day_trend` `none`. **No bias**
+since 2026-11-14 22:58 (Amar: a sweep happens within the levels whatever the day's bias; it is a level-and-volatility
+event). Before 2026-11-14 the manager's registry decided the cell; until 22:58 that day the cell also required bias
+`range-bound`. Measured before removing it (41 sessions as live): +5 entries on 09-25, 10-07, 10-28 (all longs on a
+bearish bias), none removed; new rules 2 → 5 entries, +1.04R → +1.62R, full losses 1 → 1; current rules 1 → 3,
+−1.00R → −0.50R. Verified after the change: old vs new code differ on exactly those 5 entries (blocked → entered in
+the register) plus the bias wording dropped from 6 reasons; send-once 41/41.
+
+**Two rule sets, side by side.** Every Telegram message ends with which one produced it: `current logic only`,
+`new logic`, or `current + new logic`.
+
+| | current logic (today's rules, `session.walk_current`) | new logic |
+|---|---|---|
+| a push with 2+ closes beyond | never a sweep | a sweep if the candle back inside closes past the whole push — or, failing that, the next candle closes inside, prints no new extreme and closes past it (one more look, since 2026-11-16; it is then the sweep candle) — the push is in the band and the candle after prints no new extreme (`sweep.push_sweeps`) |
+| "the range broke" | 2 closes beyond the opening range | a 2+ close push at the opening range that failed that test (both looks), or has not come back yet (`sweep.range_broke_at`) |
+| attempts | 2 per side, a re-entry only after Case B | one live idea per side |
+| after entry | — | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT. One exit and one re-entry per trade, as measured |
+
+**Messages.** All of them go to Telegram (`TELEGRAM_ENABLED` is a kill switch, on by default). That is entries
+from either rule set plus the new logic's steps.
+
+**The SIGNAL carries the price at the signal** (Amar 2026-11-15, live since 09:26 that day, `CkCH//Y3…`). The
+playbook's entry is the close of the candle back inside; the message can only arrive after the NEXT (confirming)
+candle closes, so a market order fills near that close. The SIGNAL now says so, with the risk-reward at that price
+against the same stop and T2:
+
+```
+SWEEP SIGNAL SHORT 15min high - 2026-11-13 11:05
+sweep 10:40+, entry 25199.65 stop 25259.45
+at the signal 25189.1 (11:00 candle close) - enter at market, RR there 1:1.59
+T1 25175.42 T2 25077.55 RR 2.04 (C)
+from: sweep playbook, new logic
+```
+
+On the replayed entries the two can differ a lot (09-25: 1:2.85 at the playbook's entry, 1:1.56 at the signal). The
+register already stores that price as `signal_close`. Verified: send-once 41/41, every other message and outcome
+identical to before; handler checks 9/9 + 8/8; deploy smoke (11-13 full day) rewrote the same 9 rows, nothing sent.
+
+**Verified offline, 2026-11-14** (session 9eae7046 scratchpad, real handler, every tick of 41 stored sessions,
+option-4 regime and `day_trend` recomputed):
+- **Send-once:** on 41 of 41 days, the messages sent across the ticks equal the final tick's derivation, each once.
+- **Current logic:** 1 entry (11-09 long, stopped), the same as the 11-14 replay of today's rules.
+- **New logic:** 2 entries (11-09, and 11-13 trade 2 short 25199.65, which reached T2 25077.55 at 14:05), the same
+  as the structural replay.
+- **The exit / re-entry code** equals the step-1 measurement on all 113 measured ideas (+22.67R both ways).
+
+**A fixed hole.** Run on a 15-min snapshot (an alert hand-off), this function used to skip announcing the first
+candle of each 15-minute window. It compared against `prev_snapshot_ts` instead of one candle earlier. Fixed; the
+every-tick path never had it.
+
+## The alert register (live since 2026-11-14 22:01 IST, `REGISTER_ENABLED=on`; first live session 2026-11-16)
+
+Amar's design: price touches a level → that **alert candle** is recorded; later scans know the condition was met
+and look for the **entry**; a touch that goes away waits for a retest, and with no retest the trade is marked
+**missed**. He chose how it is kept: **re-derive and record** — every run rebuilds the whole session's register
+from the closed candles ([register.py](register.py)) and upserts it into `algo.playbook_alerts`
+([migration](../migrations/2026-11-14-playbook-alerts.sql)). **Nothing reads it back**, so a failed or retried run
+cannot leave a wrong state: the next run rewrites the day. It changes no entry, exit or message.
+
+**One row per alert** — a level touched on one side, under one rule set (`current` / `new`). Retests of the same
+level while it is watching are counted in `touches`, and `touch_log` says, per touch, in the playbook's own words,
+why it did or did not give an entry ("wick 0.02% through: too shallow", "push of 3 closes beyond … -> ENTRY").
+
+| status | meaning |
+|---|---|
+| `watching` | touched, no entry yet, nothing has ended it |
+| `entered` | the playbook took the trade — `outcome` / `steps` say how it went |
+| `blocked` | the structure qualified but the gate or the cell refused it — followed in shadow, same fields |
+| `missed` | no entry, and price reached **T2** (the opposite side of the opening range) without us — the full move |
+| `invalid` | no entry, and the level was accepted through, the range broke for good (no new alerts after that), or — new rules — a push was still beyond the level at 15:00 |
+| `ended` | no entry, and 15:00 came first |
+| `covered` | no entry here because a trade on the same side was taken (or blocked) at another level |
+
+The two definitions Amar approved after the replay: missed = T2, not T1 (a T1 can sit on the level — 11-13, PDL,
+0.75 pt away while PDL broke), and a push still beyond at 15:00 = invalid (34 of 38 new-rule "ended" alerts were
+exactly that).
+
+**The write** goes on the connection the reads opened, **after the messages**, as one statement (an upsert that also
+counts, against the pre-statement snapshot, any stored row this run did not re-derive), then a commit. A stored row
+not re-derived, or a session with stored rows and none derived, raises and rolls back — a touch on closed candles
+cannot un-happen, so that means the derivation changed under the data. A failed write raises after the messages
+are out; Lambda's automatic retry may then repeat them (a duplicate is visible, a lost signal is not).
+
+**Verified offline 2026-11-14** (scratchpad eac892bd, 104 sessions, 41 with stored 15-min rows):
+- the production module equals the replay prototype on every row, apart from the agreed 15:00 rule (35 alerts
+  `ended` → `invalid`); every tick of 41 sessions (2,796 ticks): rows never shrink, every row seen is in the final
+  register, a closed alert never changes
+- the known trades are `entered`: 11-09 09:45 long (both rule sets, stop hit), 11-13 11:00 short (new rules, T2)
+- with the register off, the pre-deploy tick harness output is identical, line for line
+- the real handler against a fake connection, 13/13: one statement, written after every send, 28 parameters per
+  row, one commit; a lost row and "none derived, some stored" both raise and roll back; off = no SQL at all
+- the real statement, rendered from 11-13 rows, run on Neon against a temp table dropped at commit: insert, then
+  update in place (first_seen_at kept), and the planted stale row counted
+
+**Deployed 2026-11-14 ~22:00 IST** (Amar: "deploy now, we will test on Monday's session"): the live code was kept
+as Lambda version 1 (`HsOac/jT…`), the table created (migration applied), the zip deployed (`IBg6OIzl…`),
+`REGISTER_ENABLED=on`. Smoke-invoked with real 11-13 data: register off → as before (24 rows, trade 2, nothing
+sent); on → the 09:25 tick wrote 2 rows, the full day 9 (both earlier rows re-derived), a second full-day run
+rewrote the same 9; nothing sent, no error. **The 9 stored 11-13 rows equal the offline replay row for row.** A
+full-day run takes ~1.9 s with the register (~1.4 s without), 102 MB of 256. Those 11-13 rows stay in the table
+as that session's record.
+
+**Docstring-only redeploy, ~22:19 IST** (`YLhNk/U9…`, `IBg6OIzl…` kept as version 2): `config.py` and `notify.py`
+still said the function "writes nothing". Code identical apart from docstrings (checked module by module, AST with
+docstrings stripped); the folder zip now equals the deployed code byte for byte. Smoke: the 11-13 full day rewrote
+the same 9 rows, first_seen_at kept, nothing sent, no error.
+
+**No-bias deploy, 22:58 IST** (`M3fvb4DI…`, `YLhNk/U9…` kept as version 3): bias removed from the sweep (see "When
+it may enter"). Smoke with real 11-13 data: the full day rewrote the same 9 rows (no bias in any reason), nothing
+sent, no error.
+
+**Out-of-order ticks - found by that smoke, FIXED 23:08 IST (`+4qimC9c…`, option A, Amar).** The 09:25 tick of 11-13,
+replayed AFTER the full day's register was stored, raised `7 stored row(s) were not re-derived`: the "never shrink"
+check could not tell an OLDER tick arriving late (an async retry, a delayed invoke) from a derivation that lost rows.
+Now every row carries `derived_through_ts`, the newest candle of the run that wrote it
+([migration](../migrations/2026-11-14-playbook-alerts-derived-through.sql)); an update applies only when the
+incoming run is derived through the same candle or later, and only rows derived through the incoming run's candle
+or earlier count as lost. Checked: offline 8/8 (fake connection, including an older run after a newer one and the
+empty-register paths); on Neon against a temp table - newer run 3 written, OLDER run 0 written / 0 lost / 3 newer
+kept with the table unchanged, retry 3 written, a planted stale row counted lost; live, the same sequence that failed
+at 22:58 (full day → 09:25 → full day): 9 written, then 0 written with `newer_kept` 9, then 9 - no error.
+
+**One more look, deployed 2026-11-16 19:14 IST** (`0NUOBVS0…`, `RaMJeVy2…` kept as version 7; Amar: "Plan B", then
+"Yes, build + deploy"). Found on the first live day: both of Amar's 11-16 trades were pushes that failed the
+whole-push test on their first close back inside — the ORH short by 2.70 pts (10:00 close 25299.9 vs the push's low
+25297.2), the ORL long by 13.25 pts (14:15 close 25195.55 vs 25208.8) — so the playbook called the ORH push a break
+and stood down for the day. Three options were replayed (A as live; B one more look on the next candle; C the line
+from the push's closes, which always passes, i.e. no test). B was chosen:
+
+| new rules | gate as deployed (42 sessions) | gate off (105 sessions, 06-16 .. 11-16) |
+|---|---|---|
+| A (before) | 7 entries, +4.40R, 1 full loss | 21 entries, +9.44R, 2 full losses |
+| **B (now)** | **9, +6.67R, 1** — adds the 11-13 long signalled at the 14:40 tick (open at the close, +0.75R) and the 11-16 short at the 10:15 tick (T2, +1.53R), loses none | 24, +11.53R, 2 |
+| C (not taken) | 20, +14.94R, 2 (≈4.2R of it open trades marked to the 15:25 auction close) | 61, +18.67R, 11 |
+
+Price-only labels (X 0.20%, pushes of 2+ closes): first look passes 91% swept (n 43), second look only 72% (n 25),
+both fail 45% (n 84). B catches the 11-16 short one candle after Amar's entry (signal 10:15 tick, at the signal
+25302.0); it does not catch the 11-16 long. Current rules unchanged. A break on the second look is recorded on that
+candle (the register's `status_ts` and the stand-down move one candle later on such pushes; 48 register rows across
+25 sessions change only that and the wording "…, nor did the next candle"). Verified before deploy: repo == the
+replayed variant on every trade field (52/52); register vs A: new entries on 11-13 and 11-16, on 10-05 the range no
+longer stands down (the ORH alert reads `missed`, two later alerts appear), on 10-27 / 11-06 a retest lands on the
+existing alert because the break is now decided a candle later — nothing else; send-once 42/42 every tick,
+handler/register checks 9/9. Smoke (the 11-13 full day, real
+Neon): 9 rows, the 11-13 long now `entered`, 2 new-logic ideas, nothing sent, no error. The 11-16 rows in the table
+stay as the live A code wrote them.
+
+**Rollback, cheapest first:** unset `REGISTER_ENABLED` (no redeploy; the register is then not written). The previous
+code is version 7 (`RaMJeVy2…`, Amar's gate without the one more look) — same table and columns, a code-only
+rollback (`aws lambda get-function --qualifier 7` gives its zip). Older code:
+version 4 (no bias, before `derived_through_ts`) needs the column dropped or given a default first - it does not
+name the column, and it is NOT NULL; versions 1–3 likewise. The table can stay - nothing reads it.
+
+## It writes nothing but the register, and calls no broker API
 
 The regime context arrives in the invocation payload: the snapshot, the daily
 read. It does NOT hand over candles — this function reads its own bars from
@@ -30,8 +215,8 @@ Neon, because a playbook knows which bars it needs. That is why it carries
 There is still **no Dhan client and no token** — the only thing the manager
 ever called Dhan for was a live price, and this playbook never reads it: a
 sweep is confirmed by a *closed* bar reclaiming a level, so an unconfirmed live
-tick is exactly what the setup must not act on. The reads are all SELECTs;
-`db.py` contains no INSERT, no UPDATE and no upsert.
+tick is exactly what the setup must not act on. The reads are all SELECTs; the
+one write is the alert register's upsert (above), when `REGISTER_ENABLED` is on.
 
 `config.py` keeps its own `IST` constant and `levels.py` its own
 `ist_datetime`/`ist_time`, from when this function held no layers at all;
@@ -40,7 +225,8 @@ else. `error-notifier` is the one function here that genuinely carries no
 layers.
 
 The consequence worth knowing: **reading this function's log is how a session's
-candidates are recovered.** There is no `signal` table. The manager's
+candidates are recovered.** There is no `signal` table — the alert register
+(when on) records each alert and its trade for analysis, and nothing reads it. The manager's
 regime decision is recorded here, in the consumer, rather than duplicated by
 the producer.
 
@@ -56,14 +242,15 @@ reaches the same answer instead of double-counting an attempt.
 
 ## The gate
 
-The coarse gate already happened — `strategy-manager` invokes this
-function only for the `regime|bias` combinations its registry allows — today
-that is `sideways|range-bound`. Everything in `gate.py` is
-the part the manager cannot know.
+Since 2026-11-14 every 5-min tick arrives here whatever the regime, so `gate.py`
+plus the within-levels test in `session.py` is the only gate. **It uses no bias**
+(since 2026-11-14 22:58) **and no trend test** (since 2026-11-15 09:33). Before that the manager's `regime|bias` registry
+applied a coarse gate first.
 
 | Check | Threshold | Source |
 |---|---|---|
-| Regime | `sideways`, any bias | the playbook's "neutral range / bullish sideways / bearish sideways" is exactly `sideways` × the three biases. Lower case since the shared classifier replaced the old `RANGE`/`TREND` pair |
+| Regime | `sideways` or `trending` — **not** `volatile-expansion` | volatility only (Amar 2026-11-15); `volatile-expansion` is the classifier's high-volatility read (the last 30 min ≥ 2× normal, or the VIX move). Until 2026-11-15 only `sideways` passed |
+| Price within the levels | close between min(PDL, 15-min low) and max(PDH, 15-min high) | Amar 2026-11-15 — beyond all of them on one side, the day has broken out. A missing level fails |
 | India VIX | within ±5% | playbook |
 | Range already spent | `adr` < **0.78** × true ATR14 | **re-scaled — see below** |
 | Opening-range width | ≥ 0.15% of price | playbook |
@@ -142,7 +329,14 @@ checked against, since they quote no surrounding bars:
 Both still clear the 1.5 floor, which is the useful part: applying the rule the
 playbook states does not invalidate the setups it illustrates.
 
-### 3. The bias-adjusted target — the one that was a real bug
+### 3. The bias-adjusted target — REMOVED 2026-11-14
+
+**Removed** with the rest of the sweep's bias (Amar, 2026-11-14): T2 is always the opposite side
+of the opening range. It had never fired live — it compared the classifier's bias against
+`"BULLISH"` / `"BEARISH"` while the classifier writes lower case, from 2026-09-13 on — and with
+the comparison fixed it would have removed 3 winners and no losers on 41 sessions (10-01, 10-07,
+10-19: the cluster target pulled risk-reward to 0.72–0.82, under the 1.5 floor). `sma100`, used
+only here, went with it. The history below is kept for the record.
 
 The playbook says a trade running against the day's drift should target the
 overhead cluster — VWAP, the 100-period MA, the mid-range shelf — rather than
@@ -269,7 +463,7 @@ playbook are marked.
 
 | Variable | Default | Source |
 |---|---|---|
-| `EXPECTED_CONTEXT_VERSION` | 1 | asserted against the manager |
+| `EXPECTED_CONTEXT_VERSION` | 2 | asserted against the manager |
 | `MIN_PENETRATION_PCT` | 0.04 | playbook — but see disagreement 1 |
 | `MAX_PENETRATION_PCT` | 0.30 | playbook |
 | `MIN_RISK_REWARD` | 1.5 | playbook |
@@ -281,9 +475,9 @@ playbook are marked.
 | `STOP_BUFFER_LOOKBACK_BARS` | 6 | playbook |
 | `STACKED_POOL_PCT` | 0.08 | **not in the playbook** — set from its Example 2 |
 | `NO_FOLLOW_THROUGH_RISK_FRACTION` | 0.5 | **not in the playbook** — "back around the entry" has no number |
-| `MAX_ATTEMPTS_PER_SIDE` | 2 | playbook |
+| `MAX_ATTEMPTS_PER_SIDE` | 2 | playbook — **current logic only** since 2026-11-14 |
 | `ACCEPTANCE_CLOSES` | 2 | playbook |
-| `NO_FOLLOW_THROUGH_BARS` | 8 | playbook |
+| `NO_FOLLOW_THROUGH_BARS` | 8 | playbook — **current logic only**, labels history |
 
 The rest are not thresholds — they decide when this playbook runs at all, and
 what it reads:
@@ -291,18 +485,22 @@ what it reads:
 | Variable | Default | Source |
 |---|---|---|
 | `ALLOWED_REGIMES` | `sideways` | the gate. This is a range playbook; firing it on a trend day is the main way it loses money |
-| `ALLOWED_BIASES` | `bullish,bearish,range-bound` | the gate — direction is not the constraint, regime is |
 | `CANDLE_INTERVAL_MINUTES` | 5 | which candle table the bars come from |
 | `HISTORY_5MIN_BARS` | 120 | how many 5-minute bars are read |
 | `HISTORY_DAILY_BARS` | 40 | enough for the ATR period with room to spare |
 | `ATR_PERIOD` | 14 | Wilder ATR, from the `market-classifier` layer |
+| `ROW_VISIBLE_LAG_SECONDS` | 100 | a 15-min row is in force for a candle once written by the candle's close + this |
+| `TELEGRAM_ENABLED` | `on` | kill switch: `off` logs every message as `WOULD SEND` instead of sending |
+| `REGISTER_ENABLED` | unset (= off) | `on` writes the alert register to `algo.playbook_alerts` after the messages; unset again to stop without a redeploy |
 
 ## Deployment shape
 
-Zip the eight modules at the **zip root**. Handler `handler.lambda_handler`,
+Zip the twelve modules at the **zip root**. Handler `handler.lambda_handler`,
 set under Code → Runtime settings → Edit. **Three layers:** `neon-db-driver`,
-`neon-access` and `market-classifier`. No environment variables are required —
-every tunable has a default in `config.py`.
+`neon-access` and `market-classifier`. **One environment variable is set:
+`REGISTER_ENABLED=on`** — without it the register is not written (unset = off).
+Every other tunable has a default in `config.py`. The register needs no IAM
+change: it writes through the same `/algo/neon/connection` the reads use.
 
 **Its own execution role**, with two inline policies: `lambda-logs`
 (`logs:CreateLogStream` + `logs:PutLogEvents` on this function's own log group)
@@ -318,6 +516,6 @@ Subscribe its log group to `error-notifier`.
 
 ## What it does not do
 
-No orders, no position sizing, no strike selection, no database write, no
-recommendation to take the trade. The playbook is explicit: "This is analysis of
+No orders, no position sizing, no strike selection, no database write other
+than the alert register (a record nothing reads back), no recommendation to take the trade. The playbook is explicit: "This is analysis of
 what price has already done."

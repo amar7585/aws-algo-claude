@@ -13,8 +13,11 @@ captured data + futures OI, then hand-log it to `algo.session_observations`.
 - Its v2, `pattern-recorder` (live since 2026-11-06), records candle
   patterns at levels to `algo.pattern_events`. That is **the machine's** read,
   useful as a cross-check in step 4.
-- `session_observations` is hand-curated ground truth. Neither function may ever
-  write it.
+- The sweep playbook records its own alert register to `algo.playbook_alerts` (live since
+  2026-11-14 22:01): every level it watched, each touch, and whether it was entered,
+  blocked, missed, invalid or ended. That is **the machine's alert → entry read** — compare
+  Amar's marked candles with it (query 3).
+- `session_observations` is hand-curated ground truth. No function may ever write it.
 Deep lineage is in the memory note `pattern-detector-futures-oi-design`.
 
 ---
@@ -44,6 +47,7 @@ Deep lineage is in the memory note `pattern-detector-futures-oi-design`.
 | `algo.intraday_fno_data` | 15-min | `fut_price`, `fut_oi`, `fut_oi_change_pct`, `basis`, `near_pcr_oi`, `near_pe/ce_oi_change_pct`, `orb_high/low`, `day_high/low`, `near_max_oi_call/put`, `near_max_pain`, `sma*`, `rsi`, `vix`, `fut_security_id`. |
 | `algo.intraday_sentiments` | 15-min | `buildup`, `regime`, `bias`, `structure`, `volatility`, `swing_high/low`, `score`. |
 | `algo.daily_market_sentiment` | daily | previous-day levels (`pd_high`/`pd_low`) when needed. |
+| `algo.playbook_alerts` | per alert | the sweep playbook's alert register — alert candle, touches, status, entry candle (query 3). |
 | `algo.session_observations` | per event | **write target** (see schema below). |
 
 `buildup` and `fut_oi` live in **different** tables — join them. The 15-min snapshot grid
@@ -51,10 +55,11 @@ runs **09:45 → 15:25** (24/day, post-retime); candles are 5-min.
 
 `session_observations` columns: `security_id, instrument_type, event_ts,
 nearest_snapshot_ts, pattern_type, price_at_event, resolved_ts, resolved_price,
-forward_return_pct, outcome, signal_agreement, notes, created_at`. PK
-`(security_id, instrument_type, event_ts, pattern_type)`. `outcome IN
+forward_return_pct, outcome, signal_agreement, notes, created_at, alert_ts, entry_ts,
+entry_price`. PK `(security_id, instrument_type, event_ts, pattern_type)`. `outcome IN
 (reversal|continuation|no_signal)`. `signal_agreement IN (confirmed|contradicted|no_data)`
-or NULL.
+or NULL. `entry_ts >= alert_ts` when both are set (added 2026-11-14,
+`migrations/2026-11-14-session-observations-marking.sql`).
 
 ## Pull queries (replace `DATE`, e.g. `2026-09-22`; `<FUT_ID>` from query 1)
 
@@ -79,6 +84,22 @@ or NULL.
     WHERE security_id IN ('13','<FUT_ID>')
       AND to_timestamp(candle_ts) AT TIME ZONE 'Asia/Kolkata' BETWEEN 'DATE HH:MM' AND 'DATE HH:MM'
     ORDER BY candle_ts, security_id;
+
+**3) The sweep playbook's alert register for the day** (both rule sets; candle times are STARTS):
+
+    SELECT logic, level_name, side, level_price,
+      to_char(to_timestamp(alert_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') alert_candle, touches,
+      status, to_char(to_timestamp(status_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') status_candle,
+      direction, to_char(to_timestamp(entry_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') entry_candle,
+      entry_price, outcome, reason, touch_log
+    FROM algo.playbook_alerts
+    WHERE security_id = '13' AND instrument_type = 'INDEX'
+      AND session_start = extract(epoch FROM ('DATE'::date::timestamp AT TIME ZONE 'Asia/Kolkata'))::bigint
+    ORDER BY alert_ts, logic;
+
+`touch_log` says, per touch, why the playbook did or did not enter. Read it next to Amar's marks;
+there is no fixed matching window — say in `notes` which register row (if any) is the same alert,
+and where the two disagree.
 
 ## Analysis method — the "two-clock" read
 
@@ -113,8 +134,16 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 - `signal_agreement` — did the stored `buildup`/PCR/OI **at `nearest_snapshot_ts`** agree with the
   outcome (`confirmed|contradicted|no_data`)? Use the state **at the nearest snapshot** for the
   label (keeps rows comparable); put any +1-tick flip in `notes`. `no_data` before 09:45.
-- `notes` — the full two-clock read, levels + distances, raw numbers, and any live
-  pattern-detector cross-check.
+- `alert_ts` / `entry_ts` — **Amar's own marks** on the day's snapshot: the 5-min candle he marks as
+  the alert candle and the one he marks as the entry candle, each as its **START** epoch (the same
+  convention as `candle_5min.candle_ts` and `algo.playbook_alerts`). NULL when he has not marked
+  one (e.g. a move too quick to have an alert candle). **Never infer them** — if a mark is unclear
+  on the chart, ask.
+- `entry_price` — Amar's entry price. If he marks only the candle, propose that candle's close and
+  confirm before INSERT.
+- `notes` — the full two-clock read, levels + distances, raw numbers, any live
+  pattern-detector cross-check, and how Amar's alert / entry candles compare with the sweep
+  register (query 3).
 
 ## Pattern vocabulary logged so far
 
@@ -153,19 +182,23 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 3. Two-clock read + level proximity for each pattern.
 4. Cross-check the live pattern-detector's decision if useful, and, once pattern-recorder is
    live, what v2 recorded around the event: `algo.pattern_events` for that day,
-   `trigger_ts` within ~15 min of `event_ts`.
+   `trigger_ts` within ~15 min of `event_ts`. Run query 3 and line Amar's marked alert / entry
+   candles up with the sweep register's rows.
 5. **Propose** the `session_observations` row(s), values filled, and **surface the judgment calls**
-   (pattern_type name, entry/event candle, resolution point, signal_agreement).
+   (pattern_type name, entry/event candle, resolution point, signal_agreement, and the
+   alert / entry marks as read from the chart).
 6. On Amar's OK, INSERT; then update the memory note `pattern-detector-futures-oi-design` with
    the session's result and the new row count.
 
 ## State so far
 
-`session_observations` has **9 rows**, all NIFTY INDEX, counted 2026-11-06:
-- 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04;
-- verified against Dhan REST where noted.
+`session_observations` has **11 rows**, all NIFTY INDEX, counted 2026-11-14:
+- 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04, 2× 2026-11-13;
+- verified against Dhan REST where noted;
+- none carries `alert_ts` / `entry_ts` / `entry_price` yet (the columns were added 2026-11-14;
+  nothing was backfilled).
 
 Standing plan: keep hand-logging each session until the rules are clear enough to automate.
 - The detector is deployed log-only.
-- Its v2 recorder is live and is checked against these rows: 7 of 9 matched in the replay
-  (`pattern-recorder/v2-phase-a-replay.md`).
+- Its v2 recorder is live and is checked against these rows: 7 of the first 9 matched in the
+  replay (`pattern-recorder/v2-phase-a-replay.md`).

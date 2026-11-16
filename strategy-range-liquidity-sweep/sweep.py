@@ -231,6 +231,165 @@ def acceptance_at(bars, level, side, closes=None):
     return None
 
 
+# --------------------------------------------------------------------------
+# THE NEW RULES (2026-11-14): a push that CLOSED beyond, judged structurally
+#
+# The count rule above treats 2 consecutive closes beyond the opening range as
+# "the range broke" and never judges such a push as a sweep. Measured on 104
+# sessions, the count does not separate a break from a sweep: after a push
+# closes back inside, about 2 in 3 are sweeps however many closes it made.
+# What does separate them needs no number - the candle back inside closing
+# beyond the push's WHOLE range (below every push candle's low for an up push):
+# 91% swept against 50% without it, for pushes of 2+ closes.
+#
+# So a push with ACCEPTANCE_CLOSES+ closes beyond is judged at its first close
+# back inside: a sweep if that close is beyond the push's whole range, the
+# furthest point is inside the sweep band, and the next candle prints no new
+# extreme (the same no-extension check as today). Otherwise it is a break.
+# A push that has not come back inside yet still counts as the range broken.
+#
+# ONE MORE LOOK (Amar 2026-11-16, option B). When the first close back inside
+# is NOT past the whole push, the next candle may still be: it must close
+# inside the level, print no new extreme, and close past the same line (the
+# push = the candles that closed beyond). That candle is then the sweep candle
+# - entry at its close, confirmed by the candle after, the same shape as above.
+# If it fails too, the push is a break, decided on that second candle; while it
+# is awaited the push is pending (the range counts as broken for that tick).
+# Found live 2026-11-16: Amar's ORH short failed the first look by 2.70 pts and
+# passed on the next candle. Replayed before the change (scratchpad abc_*):
+# pushes passing the second look only swept 72% (n 25, X 0.20) against 91%
+# for the first look and 51% for the rest; trades, new rules, gate as
+# deployed (42 sessions) 7 / +4.40R -> 9 / +6.67R, full losses 1 -> 1, none
+# lost; gate off (105 sessions) 21 / +9.44R -> 24 / +11.53R, full losses 2 -> 2.
+# --------------------------------------------------------------------------
+PUSH_SWEEP = "push sweep"
+PUSH_BROKE = "push broke"
+PUSH_PENDING = "push still beyond"
+
+
+def push_sweeps(bars, pool):
+    """
+    Every run of ACCEPTANCE_CLOSES+ consecutive closes beyond `pool`, resolved.
+
+    Returns one dict per run: kind PUSH_SWEEP (with a confirmed `event` shaped
+    like _evaluate's), PUSH_BROKE (with `why`) or PUSH_PENDING. `accepted_at`
+    is the index of the close that completed the acceptance, `back_inside` the
+    first close back inside. When the first close back inside was not past the
+    whole push, `second_look` is the next candle's index: the sweep candle if it
+    passed, and `decided_at` = that index when the push broke on it. A pending
+    push waiting for that next candle carries `awaiting` = "next candle".
+    """
+    side, level = pool["side"], pool["price"]
+    toward = 1 if side == HIGH else -1
+    n, i, out = len(bars), 0, []
+    while i < n:
+        if not _beyond(side, bars[i]["close"], level):
+            i += 1
+            continue
+        k0 = i
+        while i < n and _beyond(side, bars[i]["close"], level):
+            i += 1
+        if i - k0 < ACCEPTANCE_CLOSES:
+            continue
+        accepted_at = k0 + ACCEPTANCE_CLOSES - 1
+        start = k0
+        while start > 0 and _beyond(side, _extreme(side, bars[start - 1]), level):
+            start -= 1
+        j = i
+        while True:
+            if j >= n:
+                out.append({"kind": PUSH_PENDING, "accepted_at": accepted_at})
+                i = n
+                break
+            far_index = max(range(start, j + 1), key=lambda x: toward * _extreme(side, bars[x]))
+            far = _extreme(side, bars[far_index])
+            pct = abs(far - level) / level * 100
+            push = bars[k0:j]
+            past_push = (
+                bars[j]["close"] < min(bar["low"] for bar in push)
+                if side == HIGH
+                else bars[j]["close"] > max(bar["high"] for bar in push)
+            )
+            info = {"accepted_at": accepted_at, "push_start": k0, "back_inside": j,
+                    "closes": j - k0, "penetration_pct": round(pct, 4), "past_push": past_push}
+            if pct > MAX_PENETRATION_PCT:
+                out.append({"kind": PUSH_BROKE, "why": BREAKOUT, **info})
+                i = j + 1
+                break
+            if pct < MIN_PENETRATION_PCT:
+                out.append({"kind": PUSH_BROKE, "why": TOO_SHALLOW, **info})
+                i = j + 1
+                break
+            if not past_push:
+                # One more look: the next candle may still close past the whole push.
+                second = j + 1
+                if second >= n:
+                    out.append({"kind": PUSH_PENDING, "awaiting": "next candle", **info})
+                    i = n
+                    break
+                nb = bars[second]
+                line = min(bar["low"] for bar in push) if side == HIGH else max(bar["high"] for bar in push)
+                if (_beyond(side, nb["close"], level) or _beyond(side, _extreme(side, nb), far)
+                        or not ((nb["close"] < line) if side == HIGH else (nb["close"] > line))):
+                    out.append({"kind": PUSH_BROKE, "second_look": second, "decided_at": second,
+                                "why": "closed back inside, but not past the whole push, nor did the next candle",
+                                **info})
+                    i = j + 1
+                    break
+                info = dict(info, second_look=second, past_push=True)
+                j = second
+            if j + 1 >= n:
+                out.append({"kind": PUSH_PENDING, **info})
+                i = n
+                break
+            if _beyond(side, _extreme(side, bars[j + 1]), far):
+                # The next candle printed a new extreme: the push goes on, and
+                # its next close back inside is judged again.
+                m = j + 1
+                while m < n and _beyond(side, bars[m]["close"], level):
+                    m += 1
+                if m - (j + 1) >= ACCEPTANCE_CLOSES:
+                    k0 = j + 1
+                j = m
+                continue
+            event = {
+                "pool": pool,
+                "sweep_index": j,
+                "sweep_ts": bars[j]["ts"],
+                "sweep_time": ist_datetime(bars[k0]["ts"]).strftime("%H:%M") + "+",
+                "sweep_extreme": far,
+                "level": level,
+                "side": side,
+                "penetration": round(abs(far - level), 2),
+                "penetration_pct": round(pct, 4),
+                "reject_reason": None,
+                "rejection_bar": j,
+                "rejection_on_next": True,
+                "entry_price": bars[j]["close"],
+                "reclaim_ts": bars[j]["ts"],
+                "reclaim_time": ist_datetime(bars[j]["ts"]).strftime("%H:%M"),
+                "confirmed": True,
+                "confirm_index": j + 1,
+                "confirm_ts": bars[j + 1]["ts"],
+                "push_closes": info["closes"],
+            }
+            out.append({"kind": PUSH_SWEEP, "event": event, **info})
+            i = j + 1
+            break
+    return out
+
+
+def range_broke_at(bars, level, side):
+    """
+    NEW RULES: where an opening-range level was accepted through and the push
+    did NOT resolve as a structural sweep - or has not resolved yet. None when
+    every acceptance so far ended as a sweep (or there was none).
+    """
+    pool = {"name": "_range", "price": level, "side": side, "priority": 0}
+    broke = [r["accepted_at"] for r in push_sweeps(bars, pool) if r["kind"] != PUSH_SWEEP]
+    return min(broke) if broke else None
+
+
 def outcome(bars, event, trade):
     """
     What became of an attempt: WORKED, CASE_A, CASE_B, CASE_C or OPEN.

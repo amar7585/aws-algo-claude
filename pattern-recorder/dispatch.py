@@ -22,7 +22,7 @@ import logging
 
 import boto3
 
-from config import STRATEGY_MANAGER_FUNCTION_NAME
+from config import STRATEGY_MANAGER_FUNCTION_NAME, TICK_SOURCE
 
 logger = logging.getLogger()
 
@@ -52,6 +52,22 @@ def manager_payload(instrument, snapshot, daily, event, day_trend, rules_version
             "vol_z": event["vol_z"],
             "rvol_tod": event["rvol_tod"],
         },
+    }
+
+
+def tick_payload(instrument, snapshot, daily, index_bars, snapshot_ts, closed_by):
+    """
+    The every-tick hand-off (2026-11-14): no alert, just this tick - the latest
+    15-min row, the daily read and today's CLOSED index candles. The manager
+    recognises it by `source` and sends it to its TICK_PLAYBOOKS.
+    """
+    return {
+        "source": TICK_SOURCE,
+        "instrument": instrument,
+        "snapshot": snapshot,
+        "daily": daily,
+        "index_bars": [{k: b[k] for k in ("ts", "open", "high", "low", "close")} for b in index_bars],
+        "tick": {"snapshot_ts": int(snapshot_ts), "closed_by": int(closed_by)},
     }
 
 

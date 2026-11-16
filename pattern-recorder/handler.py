@@ -7,6 +7,10 @@ rule (alerts.py) go to Telegram and strategy-manager, ONCE each. Invoked
 asynchronously by intraday-fno-poller right after it writes its 5-min row:
 
     intraday-fno-poller (every 5 min) -> this -> Telegram + strategy-manager
+
+SINCE 2026-11-14 (TICK_HANDOFF_ENABLED on) every tick - not just an alert - is
+also handed to strategy-manager with today's closed index candles, so the sweep
+playbook can follow a trade candle by candle.
     loader -> sentiment -> market-classifier (day_trend) -> pattern-detector (v1, log only)
 
 PLAN V3, step 4 (approved 2026-11-09). What changed from v2.0:
@@ -59,6 +63,7 @@ from config import (
     CANDLE_INTERVAL_MINUTES,
     HISTORY_DAYS,
     STRATEGY_MANAGER_FUNCTION_NAME,
+    TICK_HANDOFF_ENABLED,
 )
 from dhan import DhanClient, session_candles, to_candles
 from params import read_client_id, read_token_record
@@ -197,6 +202,22 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
                                                session["index_bars"])
             if db.claim_and_mark(conn, row, "manager_sent_at", lambda: dispatch.invoke_manager(payload), now):
                 sent_manager += 1
+
+        # ---- every tick to the manager (2026-11-14), the LAST thing this run does -----
+        # So the sweep playbook can follow a trade candle by candle. No claim
+        # mark: the playbook re-derives the session and announces only what is
+        # on the newest candle. Last, so nothing after it can fail and make
+        # Lambda's retry hand the same tick over twice.
+        tick_handoff = False
+        if TICK_HANDOFF_ENABLED and STRATEGY_MANAGER_FUNCTION_NAME:
+            if fifteen is None:
+                logger.info("tick %s: no 15-min row yet today - tick not handed to the manager", stamp)
+            else:
+                if daily is None:
+                    daily = db.read_daily(conn, security_id, instrument_type, day_start)
+                dispatch.invoke_manager(dispatch.tick_payload(index, fifteen, daily, session["index_bars"],
+                                                              snapshot_ts, closed_by))
+                tick_handoff = True
     finally:
         try:
             conn.close()
@@ -205,10 +226,10 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
 
     logger.info(
         "tick %s: %d fresh, %d alerts (%s, day trend %s), %d sent to Telegram, %d to the manager; "
-        "%d in session, %d rows upserted (%s, future %s, %d bars, %d Dhan calls)",
+        "%d in session, %d rows upserted (%s, future %s, %d bars, %d Dhan calls), tick handed to the manager: %s",
         stamp, len(fresh), len(alert_events), "LIVE" if ALERTS_ENABLED else "shadow", day_trend,
         sent_telegram, sent_manager, len(events), written, pt.RULES_VERSION, contract,
-        len(session["session_bars"]), client.calls)
+        len(session["session_bars"]), client.calls, tick_handoff)
     return {
         "status": "success",
         "tick": stamp,
@@ -219,6 +240,7 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "alerts": len(alert_events),
         "sent_telegram": sent_telegram,
         "sent_manager": sent_manager,
+        "tick_handoff": tick_handoff,
         "events_in_session": len(events),
         "rows_upserted": written,
         "elapsed_seconds": round(time.monotonic() - started, 2),
