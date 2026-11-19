@@ -13,15 +13,19 @@ def _p(x):
 def render(candidate, detection, snapshot, stamp):
     c, d = candidate, detection
     up = c["side"] == "LONG"
-    word, beyond = ("below", "min") if up else ("above", "max")
-    pair = "PDH / ORH" if up else "PDL / ORL"
+    word = "below" if up else "above"
     lv = c["levels"]
-    pair_values = f"{_p(lv['pdh'])} / {_p(lv['orh'])}" if up else f"{_p(lv['pdl'])} / {_p(lv['orl'])}"
-    if c.get("gap"):
+    reason = c["off_line_reason"]
+    rng = f"{_p(lv['orl'])} - {_p(lv['orh'])}"
+    if reason == "inside":
+        why = (f"PDH, inside the opening range {rng}" if up
+               else f"PDL, inside the opening range {rng}")
+    elif reason == "gap":
         why = (f"ORL - gap day, opening range wholly above PDH {_p(lv['pdh'])}" if up
                else f"ORH - gap day, opening range wholly below PDL {_p(lv['pdl'])}")
     else:
-        why = f"{beyond} of {pair} {pair_values}"
+        why = (f"ORL - PDH {_p(lv['pdh'])} is above the opening range" if up
+               else f"ORH - PDL {_p(lv['pdl'])} is below the opening range")
     sub = f"/{d['subtype']}" if d.get("subtype") else ""
     lines = [
         f"TREND PULLBACK {c['side']} - {stamp}",

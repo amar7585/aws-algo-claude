@@ -15,12 +15,13 @@ THE RULES, all on the INDEX (the chart the levels are drawn on):
           at PDH/PDL/ORH/ORL (its own level, or one within NEAR of it)
   window  trigger candle closes 09:45-14:30
   entry   the index close of the trigger candle
-  stop    S3 - exit on a 5-min close below min(PDH, ORH) for a long (above
-          max(PDL, ORL) for a short): the line where the day trend turns off.
-          On a GAP day - the whole opening range above PDH (below PDL) - that
-          line is the opening-range low (high) instead: max(min(PDH, ORH), ORL)
-          for a long, min(max(PDL, ORL), ORH) for a short. The same line as
-          market-classifier's day_trend off line (Amar, 2026-11-11, option C).
+  stop    S3 - exit on a 5-min close beyond the line where the day trend turns
+          off - market-classifier's day_trend off line, so "trend off" means
+          one thing in both (Amar, 2026-11-19, option F). For a long: below PDH
+          when PDH lies inside the opening range, otherwise below the
+          opening-range low - PDH above the range, or a gap day with the whole
+          range above PDH. For a short: above PDL when PDL lies inside the
+          range, otherwise above the opening-range high.
           Nominal stop for the risk figure = that line minus the buffer.
   T1      the session extreme before the trigger candle; then stop to
           break-even on the remainder. None when the entry is already beyond it.
@@ -35,7 +36,10 @@ stand-down would hide it.
 Replay (78 sessions, 88 holds): on days that ended as trends that way, S3 was
 never stopped before T1 (32 of 47 reached it); on days that did not, it lost.
 The trend read itself is right about half the time - that, not the stop, is
-this playbook's risk.
+this playbook's risk. Option F replay (86 sessions to 2026-11-19, the whole
+chain): 224 candidates, +2957 points (+0.36 R mean) against 99 / +1963 under
+option C; median risk 77 vs 61 - the range-low stop is wide when PDH is above
+the range.
 """
 
 import statistics
@@ -128,8 +132,15 @@ def evaluate(detection, index_bars, daily):
     last = bars[max(0, i + 1 - STOP_BUFFER_LOOKBACK_BARS):i + 1]
     buffer = max(entry * STOP_BUFFER_PCT / 100,
                  STOP_BUFFER_RANGE_FACTOR * statistics.fmean(b["high"] - b["low"] for b in last))
-    gap = lv["orl"] > lv["pdh"] if up else lv["orh"] < lv["pdl"]
-    off_line = max(min(lv["pdh"], lv["orh"]), lv["orl"]) if up else min(max(lv["pdl"], lv["orl"]), lv["orh"])
+    # The day trend's off line (market-classifier trend.off_lines, option F): PDH
+    # (PDL) when it lies inside the opening range, else the range's far side.
+    prev_level = lv["pdh"] if up else lv["pdl"]
+    if lv["orl"] <= prev_level <= lv["orh"]:
+        reason, off_line, off_name = "inside", prev_level, ("PDH" if up else "PDL")
+    else:
+        gap_side = prev_level < lv["orl"] if up else prev_level > lv["orh"]
+        reason = "gap" if gap_side else "beyond"
+        off_line, off_name = (lv["orl"], "ORL") if up else (lv["orh"], "ORH")
     nominal = off_line - sign * buffer
     risk = (entry - nominal) * sign
     if risk <= 0:
@@ -149,9 +160,9 @@ def evaluate(detection, index_bars, daily):
         "key_price": lv[key],
         "levels": lv,
         "off_line": off_line,
-        "gap": gap,
-        "off_line_name": (("ORL" if gap else "PDH" if lv["pdh"] <= lv["orh"] else "ORH") if up
-                          else ("ORH" if gap else "PDL" if lv["pdl"] >= lv["orl"] else "ORL")),
+        "gap": reason == "gap",
+        "off_line_name": off_name,
+        "off_line_reason": reason,   # inside | beyond (PDH above / PDL below the range) | gap
         "buffer": buffer,
         "stop_nominal": nominal,
         "risk": risk,

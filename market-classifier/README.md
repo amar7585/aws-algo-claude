@@ -123,19 +123,21 @@ is built from stay on the fno row.
 ## The day trend (added 2026-11-08)
 
 `day_trend` — `up` / `down` / `none` — answers one question beside the three
-classification answers: *has today become a trend day yet, and which way?* It is
-not an input to the score. pattern-recorder reads it to decide which patterns to
+classification answers: *which way has today's opening range broken, and does
+the break still hold?* (Until option F, 2026-11-19: *has today become a confirmed
+trend day yet?* — see the note below.) It is not an input to the score. pattern-recorder reads it to decide which patterns to
 alert (plan v3, agreed with Amar 2026-11-07/08). See [trend.py](trend.py).
 
 The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
 
 | | on | off |
 |---|---|---|
-| `up` | a close above **both** PDH and the opening-range high | a close below both — on a **gap day** (the whole opening range above PDH), a close below the opening-range low |
-| `down` | a close below **both** PDL and the opening-range low | a close above both — on a **gap day** (the whole opening range below PDL), a close above the opening-range high |
+| `up` | a close above the opening-range high | a close below PDH when PDH lies inside the opening range; otherwise a close below the opening-range low |
+| `down` | a close below the opening-range low | a close above PDL when PDL lies inside the opening range; otherwise a close above the opening-range high |
 
-As one line: up off = max(min(PDH, ORH), ORL); down off = min(max(PDL, ORL), ORH).
-On every non-gap day that is exactly the lower (higher) of the two.
+As one line: up off = PDH if ORL ≤ PDH ≤ ORH, else ORL; down off = PDL if
+ORL ≤ PDL ≤ ORH, else ORH. This is option F (2026-11-19) — see the note below;
+the rule before it needed a close beyond **both** PDH and the range to turn on.
 
 - **PDH / PDL** — the daily read's `pd_high` / `pd_low` (already in the payload).
   After a weekend Muhurat session, that session is the previous one — nothing
@@ -167,6 +169,33 @@ snapshots (39 sessions) — equal on 904; the 8 that differ are 11-11 13:45 →
 handler writes identical values in every other column. Deployed 2026-11-11 18:53
 IST (CodeSha256 `PuU8qJzU…`, previous `vNi2RmBT…`); rows written before then keep
 the old rule's value (not backfilled).
+
+**Turning on at the opening-range break (Amar, 2026-11-19, option F).** On
+2026-11-19 PDH sat 135 points above the opening-range high. The range high broke
+at 09:45 and the index stayed above session VWAP all day, but "above both" turned
+`up` only on the 14:00 row — after 7 counter-trend short alerts from the
+no-trend branch. F turns on at the range break. When PDH (PDL) lies inside or
+beyond the far side of the range it is exactly option C; when PDH is above the
+range (PDL below it) the day turns on at the range high (low) and off at the
+range's far side. Chosen on outcomes over a full-chain replay
+([trend_rules_replay.md](../pattern-recorder/replay/out/trend_rules_replay.md),
+git-ignored; 86 clean sessions 07-01 → 11-19, this rule → v2.1 alerts → the trend
+playbook): on for 36 of 36 hindsight trend days (27 by 10:30) against 27 (17);
+trend playbook +994 points over every candidate and +803 over the first per
+session against option C, ahead in both Jul–Sep and Oct–Nov. Tighter off lines
+measured worse (the range high itself −701, session VWAP −813: they switch off on
+normal pullbacks). **The cost, accepted:** `day_trend` is on at 85% of classifier
+runs (46% under C) and in every session, so it reads "the last opening-range
+break", not "a confirmed trend day". pattern-recorder therefore sends fewer
+no-trend sweeps / rejections (about 90 fewer over the 86 sessions) and more breaks
+/ retests, and the playbook's stops are wider (median risk 77 against 61 points).
+Verified offline 2026-11-19: the new rule equals the replay's option F at all
+2,328 classifier runs (98 sessions); old vs new differ at 916 runs in 68
+sessions, every one a session with PDH above or PDL below the opening range; the
+other five modules in the zip are byte-identical to the deployed ones. Deployed
+2026-11-19 17:24:41 IST (CodeSha256 `1X/KWrz8…`, previous `0+M7spXq…`), together
+with strategy-trend-pullback's matching stop; rows written before then keep the
+old rule's value (not backfilled).
 
 ## No option term is scored yet
 

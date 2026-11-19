@@ -23,9 +23,10 @@ KEY_LEVELS = ("pdh", "pdl", "orh", "orl")
 WINDOW_FROM_MINUTE = int(os.environ.get("WINDOW_FROM_MINUTE", str(9 * 60 + 45)))
 WINDOW_TO_MINUTE = int(os.environ.get("WINDOW_TO_MINUTE", str(14 * 60 + 30)))
 
-# ---- the stop (S3, Amar 2026-11-09) ----------------------------------------------
-# Exit on a 5-min CLOSE beyond the day-trend's own off line: below min(PDH, ORH)
-# for a long, above max(PDL, ORL) for a short. The NOMINAL stop (for the risk
+# ---- the stop (S3, Amar 2026-11-09; option F 2026-11-19) -----------------------
+# Exit on a 5-min CLOSE beyond the day-trend's own off line: for a long, below PDH
+# when PDH lies inside the opening range, else below the range low (mirror for a
+# short) - see pullback.py. The NOMINAL stop (for the risk
 # figure) is that line minus a buffer - the sweep playbook's buffer rule:
 # max(STOP_BUFFER_PCT of price, STOP_BUFFER_RANGE_FACTOR x the mean range of the
 # last STOP_BUFFER_LOOKBACK_BARS candles).

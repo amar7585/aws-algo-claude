@@ -13,7 +13,7 @@ on no-trend days (Amar, 2026-11-09).
 
 | | |
 |---|---|
-| Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
+| Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). Option F stop (range low / high when PDH / PDL is beyond the range) deployed 2026-11-19 17:24:33 IST, CodeSha256 `MZZt7vDH…` (previous `kmBZxADI…`), with market-classifier's matching rule. strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 5 modules, **no layers** |
 | Trigger | asynchronous invoke from `strategy-manager`, for a v2 alert on a day whose `day_trend` is up or down |
@@ -52,7 +52,7 @@ All on the **index** — the chart the levels are drawn on.
 | Setup | v2's **C2** (retest / hold of a level broken this session in the trend's direction) or **R1** (hold candle), in the trend's direction, at PDH/PDL/ORH/ORL (its own level or one within NEAR) | breakout-and-hold only. C1 (the break itself) was weak in the replay; R2 sweeps belong to the sweep playbook |
 | Window | trigger candle closes 09:45–14:30 | Amar's short-into-liquidity window |
 | Entry | the index close of the trigger candle | the alert lands ~2 min after it |
-| Stop (S3) | exit on a 5-min **close** below min(PDH, ORH) for a long (above max(PDL, ORL) for a short) — the line where the day trend turns off. On a **gap day** (the whole opening range above PDH / below PDL) that line is the opening-range low / high instead — the same line as market-classifier's `day_trend` off line (2026-11-11, option C). Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the only stop that survived real trend days in the replay (0 of 47 stopped before T1); S1 (pullback low) and S2 (close back across the level) were shaken out on a quarter to a third of them |
+| Stop (S3) | exit on a 5-min **close** beyond the line where the day trend turns off — market-classifier's `day_trend` off line (option F, 2026-11-19). For a long: below PDH when PDH lies inside the opening range; otherwise below the opening-range low (PDH above the range, or a gap day with the whole range above PDH). Mirror for a short: above PDL when it lies inside the range, otherwise above the range high. Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the only stop that survived real trend days in the replay (0 of 47 stopped before T1); S1 (pullback low) and S2 (close back across the level) were shaken out on a quarter to a third of them |
 | T1 | the session high before the trigger candle (low for a short), then **stop to break-even** on the remainder | Amar's break-even rule from short-into-liquidity. None when the entry is already beyond it |
 | T2 | the remainder held to the 15:10 close | the index freezes for the closing auction from 15:15 |
 | RR gate | **none** | a 1.5 gate kept the worse setups in the replay |
@@ -108,6 +108,41 @@ Verified offline 2026-11-11: `pullback.evaluate()` equals that replay on all 92
 option-C candidates; on the 56 non-gap holds the old and new code agree on every
 field; on the 39 gap-day holds only the stop line moves (to ORL / ORH); the 68
 other with-trend alerts still stand down.
+
+## PDH above the range (2026-11-19, option F)
+
+On 2026-11-19 PDH sat 135 points above the opening-range high; the range broke at
+09:45 but the classifier's `day_trend` turned up only at 14:00, because it needed
+a close above both. Option F turns the day on at the range break and, when PDH is
+above the range (PDL below it), moves the off line — and this playbook's stop — to
+the far side of the opening range. Everywhere else it is option C unchanged.
+
+Full-chain replay ([trend_rules_replay.md](../pattern-recorder/replay/out/trend_rules_replay.md),
+git-ignored), 86 clean sessions 07-01 → 11-19, every candidate counted, index points:
+
+| Rule | candidates | total pts | mean R | won / lost | median risk | first per session |
+|---|---|---|---|---|---|---|
+| option C | 99 | +1963 | +0.67 | 63 / 36 | 61 | +305 (47) |
+| on at the range, off at the range high itself | 127 | +1262 | +0.15 | 64 / 63 | 30 | +796 (67) |
+| on at the range above VWAP, off at VWAP | 142 | +1150 | +0.16 | 87 / 55 | 52 | +883 (73) |
+| on at the range, option C's line | 150 | +2349 | +0.48 | 93 / 57 | 49 | +602 (67) |
+| **option F (chosen)** | 224 | +2957 | +0.36 | 147 / 77 | 77 | +1108 (76) |
+
+F against C: +994 (+597 without its best day), better in Jul–Sep and Oct–Nov,
+better on 32 days and worse on 17. The added trades are thin (mean +0.12 R) and
+the stop is wide on those days (2026-11-06: risk 221 against 70, same +231). The
+trend read is now on most of the time, so more candidates come from days that do
+not end as trends (157 of 224) — their losses are smaller (mean −0.06 R against
+−0.45) because the stop is wider.
+
+Verified offline 2026-11-19: `pullback.evaluate()` equals the replay's option F
+on all 259 candidates (entry, stop line, risk, T1; damaged SEP-future sessions
+included); on option C's 117 playbook alerts the old and new code agree on 89,
+and on the 28 where PDH / PDL is beyond the range only the stop line, its name,
+the nominal stop, risk and RR change. One known edge, older than F: when the
+trigger candle has itself closed past the off line but inside the buffer
+(2026-07-16 13:20, one case), the playbook still sends it and it exits on the next
+close (−8.5); the replay had stood it down.
 
 ## Configuration
 
