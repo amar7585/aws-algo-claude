@@ -123,21 +123,22 @@ is built from stay on the fno row.
 ## The day trend (added 2026-11-08)
 
 `day_trend` — `up` / `down` / `none` — answers one question beside the three
-classification answers: *which way has today's opening range broken, and does
-the break still hold?* (Until option F, 2026-11-19: *has today become a confirmed
-trend day yet?* — see the note below.) It is not an input to the score. pattern-recorder reads it to decide which patterns to
+classification answers: *is price trading outside today's opening range, and on
+which side?* Inside the range is no trend (rule G, Amar 2026-11-19). It is not an
+input to the score. pattern-recorder reads it to decide which patterns to
 alert (plan v3, agreed with Amar 2026-11-07/08). See [trend.py](trend.py).
 
 The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
 
 | | on | off |
 |---|---|---|
-| `up` | a close above the opening-range high | a close below PDH when PDH lies inside the opening range; otherwise a close below the opening-range low |
-| `down` | a close below the opening-range low | a close above PDL when PDL lies inside the opening range; otherwise a close above the opening-range high |
+| `up` | a close above the opening-range high | a close back below it — back inside the range |
+| `down` | a close below the opening-range low | a close back above it — back inside the range |
 
-As one line: up off = PDH if ORL ≤ PDH ≤ ORH, else ORL; down off = PDL if
-ORL ≤ PDL ≤ ORH, else ORH. This is option F (2026-11-19) — see the note below;
-the rule before it needed a close beyond **both** PDH and the range to turn on.
+As one line: up off = ORH, down off = ORL — rule G (2026-11-19, see the notes
+below). PDH / PDL no longer decide the trend; they stay levels for
+pattern-recorder's alerts and the sweep playbook. The daily read is still
+required (a missing or stale one raises), so a broken daily feed fails here.
 
 - **PDH / PDL** — the daily read's `pd_high` / `pd_low` (already in the payload).
   After a weekend Muhurat session, that session is the previous one — nothing
@@ -195,7 +196,28 @@ sessions, every one a session with PDH above or PDL below the opening range; the
 other five modules in the zip are byte-identical to the deployed ones. Deployed
 2026-11-19 17:24:41 IST (CodeSha256 `1X/KWrz8…`, previous `0+M7spXq…`), together
 with strategy-trend-pullback's matching stop; rows written before then keep the
-old rule's value (not backfilled).
+old rule's value (not backfilled). **Replaced the same evening, before any session
+ran on it** (next note).
+
+**Trend only outside the 15-min range (Amar, 2026-11-19, rule G).** F held the
+trend "on" with price back inside the opening range: 85% of classifier rows on,
+82 trend trades entered inside the range over 86 sessions, 10 trend trades on the
+no-trend day 2026-11-13. Amar: *"in no trend why we need to take trending trades …
+why you are forcefully taking trades if the price is inside 15min candle range"*.
+Rule G turns the trend off at the first close back inside the range. Full-ruleset
+replay from the deployed zips
+([validation-2026-11-19/](../pattern-recorder/replay/out/validation-2026-11-19/full_ruleset_report.md),
+git-ignored; trend chain + sweep playbook): trend side, 86 clean sessions — 165
+trades, +1556 points, profit factor 1.90, max drawdown −336 (F 273 / +3472 / 1.86
+/ −1340; C 99 / +1963 / 2.09 / −976); trend + sweep, 34 sessions 09-30 → 11-19 —
++1148, PF 2.11, drawdown −210 (F +1467 / 1.69 / −1252). Known cost: a dip that
+closes back inside the range turns the trend off, so a retest that reclaims the
+range high is judged on the no-trend branch (2026-11-19 10:30 is not taken).
+Verified offline 2026-11-19: equal to the replay's rule G at all 2,328 classifier
+runs (98 sessions); it differs from F at 582 runs in 69 sessions; the other five
+modules in the zip are byte-identical to the deployed ones. Deployed 2026-11-19
+18:29:32 IST (CodeSha256 `0KTbE8Ht…`, previous `1X/KWrz8…` = option F), together
+with strategy-trend-pullback's matching stop. First session on it: 2026-11-20.
 
 ## No option term is scored yet
 

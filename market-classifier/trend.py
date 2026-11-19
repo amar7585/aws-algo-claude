@@ -1,7 +1,6 @@
 """
-The day trend: which way today's opening range has broken, and whether that
-break still holds (since option F, 2026-11-19 - before it: "has today become a
-confirmed trend day yet").
+The day trend: is price trading OUTSIDE today's opening range, and which side.
+Inside the range is no trend (Amar, 2026-11-19, rule G).
 
 WHY IT EXISTS (plan v3, agreed with Amar 2026-11-07/08). The classifier decides
 the market type, and pattern-recorder alerts only in the trend's direction on a
@@ -11,23 +10,22 @@ volatile-expansion all day, bias went range-bound 10:45-11:30 (exactly the
 hold), and structure reached "trending" only at 14:15. Those three are
 unchanged; this is a separate answer stored beside them.
 
-THE RULE (option F, Amar 2026-11-19), on the index's CLOSED 5-minute candles
+THE RULE (rule G, Amar 2026-11-19), on the index's CLOSED 5-minute candles
 from the 09:30 candle on:
 
     up    on   a close above the opening-range high
-          off  a close below PDH when PDH lies inside the opening range;
-               otherwise a close below the opening-range low
+          off  a close back below it - back inside the range
     down  on   a close below the opening-range low
-          off  a close above PDL when PDL lies inside the opening range;
-               otherwise a close above the opening-range high
+          off  a close back above it - back inside the range
 
-As one line: up off = PDH if ORL <= PDH <= ORH else ORL;
-             down off = PDL if ORL <= PDL <= ORH else ORH.
+As one line: up off = ORH, down off = ORL. PDH / PDL no longer decide the
+trend; they stay levels for pattern-recorder's alerts and the sweep playbook.
 
-A close that switches one trend off can switch the other on in the same candle.
-Between "on" and "off" the state holds - a pullback that stays above PDH (when
-it is inside the range) or above the range low keeps an up day up, which is what
-lets the 2026-11-06 PDH hold be read as a with-trend long.
+A close below the range low switches an up day off and a down day on in the
+same candle. Inside the range there is no trend: the no-trend rules (the sweep
+playbook, pattern-recorder's sweeps and rejections) are the ones that apply.
+In Amar's words: "in no trend why we need to take trending trades ... why you
+are forcefully taking trades if the price is inside 15min candle range".
 
 HOW IT GOT HERE. T1 (2026-11-08) turned up on a close above BOTH PDH and the
 opening-range high and off below the lower of the two; option C (2026-11-11)
@@ -37,18 +35,22 @@ Option F (2026-11-19) drops PDH from the ON test: on 2026-11-19 PDH sat 135
 points above the range high, the range high broke at 09:45, and T1 turned up
 only on the 14:00 row. When PDH is above the range, F turns on at the range high
 and gives the trade the whole range - off at the range low. When PDH lies inside
-or below the range, F is exactly option C. strategy-trend-pullback uses the same
+or below the range, F is exactly option C. F was live 2026-11-19 17:24 ->
+rule G the same evening, before any session ran on it: it held the trend "on"
+with price back inside the range (85% of classifier rows on; 82 trend trades
+entered inside the range over 86 sessions; 10 trend trades on the no-trend day
+2026-11-13), which is what Amar rejected. strategy-trend-pullback uses the same
 line as its stop, so "trend off" means one thing in both.
 
-Replay (pattern-recorder/replay/out/trend_rules_replay.md, 86 clean sessions
-2026-07-01 -> 2026-11-19, the whole chain): T1/C turned on for 27 of 36
-hindsight trend days (17 by 10:30), F for 36 (27 by 10:30). Trend playbook
-+994 points over every candidate, +803 over the first per session, against
-T1/C; better in Jul-Sep and in Oct-Nov. The cost, accepted: day_trend is on at
-85% of classifier runs (46% under C) and in every session - it reads "the last
-opening-range break", not "a confirmed trend day" - so pattern-recorder sends
-fewer no-trend sweeps / rejections and more breaks / retests, and the playbook
-carries wider stops (median risk 77 vs 61 points).
+Full-ruleset replay (pattern-recorder/replay/out/validation-2026-11-19/, from the
+deployed zips; trend chain + sweep playbook): trend side, 86 clean sessions -
+rule G 165 trades, +1556 points, profit factor 1.90, max drawdown -336 (F:
+273 / +3472 / 1.86 / -1340; C: 99 / +1963 / 2.09 / -976); losses on days that
+did not end as trends -498 (F -1496, C -1516). Trend + sweep together, 34
+sessions 09-30 -> 11-19: +1148, PF 2.11, drawdown -210 (F +1467 / 1.69 / -1252).
+Known cost: a dip that closes back inside the range turns the trend off, so a
+retest that reclaims the range high is judged on the no-trend branch (2026-11-19
+10:30, +140 under F, not taken under G).
 
 THE LEVELS.
   PDH / PDL     the daily read's pd_high / pd_low - the previous session's
@@ -73,8 +75,9 @@ incomplete opening range once the 09:30 candle has closed, raises: a stale
 pd_high is a wrong level, not a missing one, and writing "none" would quietly
 turn a trend day into a no-trend day for every alert after it.
 
-On 2026-11-06 the first run, 09:45, already shows "up" under F (the 10:00 run
-under T1); on 2026-11-19 the 10:00 run (the 14:00 run under T1).
+THE DAILY READ is still required and still raises when missing or stale, although
+the rule no longer uses PDH / PDL: it is checked here so a broken daily feed
+fails at the classifier, before alerts and playbooks run on it.
 """
 
 UP = "up"
@@ -123,11 +126,9 @@ def _levels(opening, daily):
 
 
 def off_lines(lv):
-    """(up off, down off): PDH (PDL) when it lies inside the opening range, otherwise
-    the far side of the range - its low for up, its high for down (option F)."""
-    up_off = lv["pdh"] if lv["orl"] <= lv["pdh"] <= lv["orh"] else lv["orl"]
-    down_off = lv["pdl"] if lv["orl"] <= lv["pdl"] <= lv["orh"] else lv["orh"]
-    return up_off, down_off
+    """(up off, down off): the opening range itself - a close back inside it is no
+    trend (rule G, 2026-11-19)."""
+    return lv["orh"], lv["orl"]
 
 
 def day_trend(session_bars, daily, run_epoch):

@@ -76,11 +76,10 @@ CREATE TABLE IF NOT EXISTS algo.intraday_sentiments (
     volatility_expanding   boolean NOT NULL,
 
     -- ---- the day trend (added 2026-11-08) ----------------------------------
-    -- A level rule on the index's 5-min closes from 09:30 (option F, 2026-11-19):
-    -- a close above the opening-range high turns it up; a close below PDH (when
-    -- PDH lies inside the range) or below the range low turns it off; down is the
-    -- mirror. See market-classifier/trend.py. NULL only on rows written before
-    -- the column.
+    -- A level rule on the index's 5-min closes from 09:30 (rule G, 2026-11-19):
+    -- a close above the opening-range high turns it up and a close back below it
+    -- (back inside the range) turns it off; down is the mirror at the range low.
+    -- See market-classifier/trend.py. NULL only on rows written before the column.
     day_trend              text,               -- up | down | none
 
     created_at             bigint  NOT NULL,

@@ -13,7 +13,7 @@ on no-trend days (Amar, 2026-11-09).
 
 | | |
 |---|---|
-| Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). Option F stop (range low / high when PDH / PDL is beyond the range) deployed 2026-11-19 17:24:33 IST, CodeSha256 `MZZt7vDH…` (previous `kmBZxADI…`), with market-classifier's matching rule. strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
+| Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). Option F stop (range low / high when PDH / PDL is beyond the range) deployed 2026-11-19 17:24:33 IST, CodeSha256 `MZZt7vDH…` (previous `kmBZxADI…`), with market-classifier's matching rule. **Rule G** (stop = a close back inside the 15-min range; a trigger candle closed inside the range stands down) deployed 2026-11-19 18:29:28 IST, CodeSha256 `AhXhKHn7…` (previous `MZZt7vDH…`), before any session ran on F; first session 2026-11-20. strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 5 modules, **no layers** |
 | Trigger | asynchronous invoke from `strategy-manager`, for a v2 alert on a day whose `day_trend` is up or down |
@@ -52,7 +52,7 @@ All on the **index** — the chart the levels are drawn on.
 | Setup | v2's **C2** (retest / hold of a level broken this session in the trend's direction) or **R1** (hold candle), in the trend's direction, at PDH/PDL/ORH/ORL (its own level or one within NEAR) | breakout-and-hold only. C1 (the break itself) was weak in the replay; R2 sweeps belong to the sweep playbook |
 | Window | trigger candle closes 09:45–14:30 | Amar's short-into-liquidity window |
 | Entry | the index close of the trigger candle | the alert lands ~2 min after it |
-| Stop (S3) | exit on a 5-min **close** beyond the line where the day trend turns off — market-classifier's `day_trend` off line (option F, 2026-11-19). For a long: below PDH when PDH lies inside the opening range; otherwise below the opening-range low (PDH above the range, or a gap day with the whole range above PDH). Mirror for a short: above PDL when it lies inside the range, otherwise above the range high. Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the only stop that survived real trend days in the replay (0 of 47 stopped before T1); S1 (pullback low) and S2 (close back across the level) were shaken out on a quarter to a third of them |
+| Stop (S3) | exit on a 5-min **close back inside the opening range** — below the range high for a long, above the range low for a short: market-classifier's `day_trend` off line (rule G, 2026-11-19 — inside the 15-min range is no trend). A trigger candle that has itself closed back inside the range stands down. Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the trend's own off line, so the trade ends exactly where the trend does (rule G section below) |
 | T1 | the session high before the trigger candle (low for a short), then **stop to break-even** on the remainder | Amar's break-even rule from short-into-liquidity. None when the entry is already beyond it |
 | T2 | the remainder held to the 15:10 close | the index freezes for the closing auction from 15:15 |
 | RR gate | **none** | a 1.5 gate kept the worse setups in the replay |
@@ -143,6 +143,38 @@ the nominal stop, risk and RR change. One known edge, older than F: when the
 trigger candle has itself closed past the off line but inside the buffer
 (2026-07-16 13:20, one case), the playbook still sends it and it exits on the next
 close (−8.5); the replay had stood it down.
+
+**Replaced the same evening by rule G, before any session ran on F (next section).**
+
+## Trend only outside the 15-min range (2026-11-19, rule G)
+
+F kept the trend — and this playbook — on with price back inside the opening
+range: 82 of its 273 replayed trades were entered inside the range, 10 on the
+no-trend day 2026-11-13. Amar: inside the 15-min range is no trend, so no trend
+trade. Rule G: the stop is a close back inside the range (below the range high for
+a long, above the range low for a short), the classifier's off line; and a trigger
+candle that has itself closed back inside the range stands down (this also closes
+the 2026-07-16 edge above).
+
+Full-ruleset replay from the deployed zips
+([full_ruleset_report.md](../pattern-recorder/replay/out/validation-2026-11-19/full_ruleset_report.md),
+git-ignored), index points, every candidate:
+
+| Rule | trades | total pts | profit factor | max drawdown | entered inside the range | non-trend days |
+|---|---|---|---|---|---|---|
+| option C | 99 | +1963 | 2.09 | −976 | 19 | −1516 |
+| option F | 273 | +3472 | 1.86 | −1340 | 82 | −1496 |
+| **rule G (live)** | 165 | +1556 | 1.90 | −336 | 2 (now stood down) | −498 |
+
+With the sweep playbook, 34 sessions 09-30 → 11-19: rule G +1148, profit factor
+2.11, drawdown −210 (F +1467 / 1.69 / −1252). On the final code (the two
+inside-range entries stood down): trend side 163 trades, +1562, PF 1.91, drawdown
+−336, none inside the range; with the sweep +1155, PF 2.12, drawdown −210.
+Verified offline 2026-11-19: `pullback.evaluate()` equals the replay's rule G on
+all 185 candidates, and stands down the 2 whose trigger candle closed back inside
+the range. Known cost: a retest that dips back
+inside the range turns the trend off, so it is not this playbook's trade
+(2026-11-19 10:30).
 
 ## Configuration
 
