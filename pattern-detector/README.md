@@ -259,8 +259,10 @@ set, a turn is detected and logged and nothing is dispatched.
 Its own execution role (`pattern-detector-role`), not a borrowed one:
 `ssm:GetParameter` on `/algo/neon/connection` **and `/algo/telegram/brief`**
 (+ `kms:Decrypt` via SSM), `logs` on **its own** log group only, and
-`lambda:InvokeFunction` on `strategy-manager`'s ARN **and `pattern-recorder`'s ARN** —
-not a wildcard. A role
+`lambda:InvokeFunction` on `strategy-manager`'s ARN —
+not a wildcard. (Its `invoke-pattern-recorder` policy, for the v2.0 hand-off, was
+removed 2026-11-19 17:42 IST: v2.1 runs on intraday-fno-poller. The document is kept
+in [pattern-recorder/iam/](../pattern-recorder/iam/README.md).) A role
 missing the Telegram parameter does not fail at import: it raises on the first
 alert, after the detection has already run. See CLAUDE.md on the silent
 borrowed-role trap. `error-notifier` is subscribed to this function's log group.
@@ -271,7 +273,7 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 |---|---|---|
 | `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = off; set it to switch the manager gate on |
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
-| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2.0 (always `Event`). **Unset it when v2.1 goes on**: v2.1 runs on intraday-fno-poller and refuses this payload |
+| `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2.0 (always `Event`). **Unset it when v2.1 goes on**: v2.1 runs on intraday-fno-poller and refuses this payload. Since 2026-11-19 the role no longer allows this invoke, so setting it would raise on every run |
 | `VOLUME_Z_MIN` | `2.0` | z that counts as a volume spike (spikes only) — **provisional** |
 | `VOLUME_LOOKBACK` | `20` | bars for the z-score baseline, 09:15 bars left out |
 | `CANDIDATE_WINDOW_SECONDS` | `1800` | how far back the reversal candle is looked for |

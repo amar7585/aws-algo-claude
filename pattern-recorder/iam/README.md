@@ -11,7 +11,7 @@ the resources differ: this function's own log group, its parameters, and its tar
 | `pattern-recorder-role.lambda-logs.json` | inline policy **`lambda-logs`** on `pattern-recorder-role`: `CreateLogGroup`, plus `CreateLogStream`/`PutLogEvents` on **its own** group `/aws/lambda/pattern-recorder` only |
 | `pattern-recorder-role.invoke-strategy-manager.json` | **v2.1:** a **new** inline policy **`invoke-strategy-manager`** on `pattern-recorder-role`: `lambda:InvokeFunction` on `strategy-manager`'s ARN only. The same document as the detector's policy of that name |
 | `intraday-fno-poller-role.invoke-pattern-recorder.json` | **v2.1:** a **new** inline policy **`invoke-pattern-recorder`** on the existing **`intraday-fno-poller-role`**, beside its managed `intraday-fno-poller-access` (not edited into it): `lambda:InvokeFunction` on the recorder's ARN only |
-| `pattern-detector-role.invoke-pattern-recorder.json` | v2.0: inline policy **`invoke-pattern-recorder`** on `pattern-detector-role`. Unused once v2.1 runs on the poller (the detector's `PATTERN_RECORDER_FUNCTION_NAME` is unset); it can be removed later |
+| `pattern-detector-role.invoke-pattern-recorder.json` | v2.0: inline policy **`invoke-pattern-recorder`** on `pattern-detector-role`. Unused once v2.1 runs on the poller (the detector's `PATTERN_RECORDER_FUNCTION_NAME` is unset). **Removed from the live role 2026-11-19 17:42 IST** (Amar's cleanup; the live document equalled this file). Kept here as the record — re-create it with `put-role-policy` only if the detector is ever set to hand off to the recorder again |
 
 **No managed policies are attached** to `pattern-recorder-role` (the detector has none either).
 
