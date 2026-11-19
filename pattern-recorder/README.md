@@ -10,9 +10,16 @@ are candle patterns at levels, with volume recorded and OI joined at read time.
 **Telegram and strategy-manager, once each**. With `ALERTS_ENABLED` unset it runs in
 **shadow**: it decides the alerts and logs them as `WOULD SEND`, and sends nothing.
 
+**Rules v2.2 (Amar, 2026-11-19).** The one-retest-per-break filter (B1) is re-armed when
+price closes back through the level the other way, and through a key level the break
+names in `other_levels`. On 2026-11-19 B1 as it was dropped the 10:30 retest and the
+10:35 hold at the 15-min high — the trade Amar took. Only C2 events are added; every
+v2.1 event is still found. See `patterns._first_retest_only` and
+[replay/out/b1_variants_replay.md](replay/out/b1_variants_replay.md) (git-ignored).
+
 | | |
 |---|---|
-| Status | **v2.1 LIVE, sending, since 2026-11-09 16:04:08 IST** (`ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` set after the close; the first live tick is Wed 2026-11-11 09:15, since 11-10 is a holiday). Code since 13:50:40 IST: CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`, which ran in shadow 13:56 → 15:31 that day. The previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off. intraday-fno-poller's hand-off switched on at 13:52:21. Redeployed 2026-11-09 22:34 IST, CodeSha256 `iyIJsEeU…` (previous `t7TcsOAi…`): the manager payload adds today's closed index candles (`index_bars`) for strategy-trend-pullback; detection unchanged. See [Switching to v2.1](#switching-to-v21) |
+| Status | **v2.1 LIVE, sending, since 2026-11-09 16:04:08 IST** (`ALERTS_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` set after the close; the first live tick is Wed 2026-11-11 09:15, since 11-10 is a holiday). Code since 13:50:40 IST: CodeSha256 `t7TcsOAiqAMvNjnfXnyCdrIZSqa0DtYzouMieDs9e9s=`, which ran in shadow 13:56 → 15:31 that day. The previous v2.0 code, `NWQC5zzS…`, ran 2026-11-06 09:45 → 2026-11-09 13:45 on pattern-detector's 15-min hand-off. intraday-fno-poller's hand-off switched on at 13:52:21. Redeployed 2026-11-09 22:34 IST, CodeSha256 `iyIJsEeU…` (previous `t7TcsOAi…`): the manager payload adds today's closed index candles (`index_bars`) for strategy-trend-pullback; detection unchanged. **Rules v2.2** (B1 re-armed) deployed 2026-11-19 18:07:02 IST after the close, CodeSha256 `I7jHSS+O…` (previous `QUDQcd…`, 2026-11-14); only `patterns.py` changed (`handler`, `config` and `dispatch` differ from the old zip by line endings only). First v2.2 tick: Fri 2026-11-20 09:15. See [Switching to v2.1](#switching-to-v21) |
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 11 modules (`handler`, `config`, `db`, `dhan`, `params`, `inputs`, `structure`, `patterns`, `alerts`, `notify`, `dispatch`) |
 | Layers | `neon-db-driver` + `neon-access` |
@@ -37,7 +44,7 @@ are candle patterns at levels, with volume recorded and OI joined at read time.
 every 5 min:  intraday-fno-poller ─(writes its 5-min row, then)─Event─► pattern-recorder v2.1
                  today's index + future candles from Dhan · history from candle_5min
                  latest 15-min row (day_trend, regime|bias, walls) · daily read
-                 → upsert algo.pattern_events (rules v2.1)
+                 → upsert algo.pattern_events (rules v2.2 since 2026-11-19; v2.1 before)
                  → alert = new event at PDH/PDL/ORH/ORL that fits day_trend
                  → Telegram + strategy-manager, once each (claim, send, mark)
                    (the manager payload carries today's closed index candles as
@@ -207,12 +214,16 @@ a wildcard. See CLAUDE.md on the silent borrowed-role trap.
    `STRATEGY_MANAGER_FUNCTION_NAME` alone to stop only the dispatches, or
    `TICK_HANDOFF_ENABLED` alone to stop only the every-tick hand-off.
 2. Unset `PATTERN_RECORDER_FUNCTION_NAME` on `intraday-fno-poller`: v2.1 stops running.
-3. Back to v2.0:
+3. Back to rules v2.1 (B1 as it was): redeploy `QUDQcd…` (the zip at commit `c6e26f0`).
+   v2.2 rows stay in the table beside the v2.1 ones.
+4. Back to v2.0:
    - redeploy the v2.0 zip `NWQC5zzS…` (commit `00b09bf`);
-   - set the detector's `PATTERN_RECORDER_FUNCTION_NAME` again;
+   - re-create `invoke-pattern-recorder` on `pattern-detector-role` first (removed
+     2026-11-19; the document is in [iam/](iam/README.md)), then set the detector's
+     `PATTERN_RECORDER_FUNCTION_NAME` again;
    - set its `TELEGRAM_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME` again, so v1 sends
      as before.
-4. Delete this function and its role; `DROP TABLE algo.pattern_events`.
+5. Delete this function and its role; `DROP TABLE algo.pattern_events`.
 
-v2.0 and v2.1 rows sit side by side in the table (`rules_version` is in the key), so
-nothing is lost either way.
+v2.0, v2.1 and v2.2 rows sit side by side in the table (`rules_version` is in the key),
+so nothing is lost either way.

@@ -155,6 +155,38 @@ check("B1: chop around orh keeps ONE up-retest of the 09:30 break",
 check("B1: the down-retest opened by the 09:35 failed break is kept once",
       [e["clock"] for e in find(ev, family="C2", direction="down", level="orh")] == ["09:45"],
       [(e["clock"], e["family"], e["direction"]) for e in ev])
+# Both still hold under v2.2's re-arm: a quick chop's closes back through are
+# reclaims (C2 / R2), not breaks (C1), so they re-arm nothing.
+
+# ---- B1 re-armed (OPP, v2.2): the 2026-11-19 shape ------------------------------------------
+# Break of orh 09:35, wick retest 09:40 (kept), 8 closes well above it, a close back below at
+# 10:25 (a C1 down - it held more than RECLAIM_MAX_BARS closes above first), a reclaim at 10:30,
+# a hold at 10:35. B1 as it was kept only 09:40; v2.2 keeps the 10:30 reclaim too (the 10:35
+# hold is the same re-armed break's second retest, so it is still dropped).
+S_OPP = ORB_A + [(23090, 23145, 23085, 23140), (23140, 23162, 23138, 23160), (23160, 23168, 23135, 23165),
+                 (23172, 23185, 23172, 23180), (23180, 23195, 23175, 23190), (23190, 23200, 23182, 23185),
+                 (23185, 23198, 23180, 23195), (23195, 23205, 23188, 23200), (23200, 23206, 23185, 23190),
+                 (23190, 23196, 23178, 23185), (23185, 23190, 23176, 23182),
+                 (23182, 23184, 23136, 23140), (23140, 23162, 23136, 23158), (23158, 23175, 23155, 23170)]
+s_opp = mk(3, "09:15", S_OPP)
+ev = pt.detect_session(s_opp, PREV, s_opp, PREV)
+brk = find(ev, family="C1", direction="down", clock="10:25")
+check("OPP: the 10:25 close back below orh is a C1 down at orh",
+      len(brk) == 1 and brk[0]["level"] == "orh", [(e["clock"], e["family"], e["direction"], e["level"]) for e in ev])
+check("OPP: the close back through re-arms the up-retest - 09:40 and 10:30 kept, 10:35 not",
+      [e["clock"] for e in find(ev, family="C2", direction="up", level="orh")] == ["09:40", "10:30"],
+      [(e["clock"], e["family"], e["subtype"], e["direction"], e["level"]) for e in ev])
+# Same session with max pain 2 points under orh, known from 09:30: the 10:25 break is filed at
+# max pain (nearer the close) with orh in other_levels - and still re-arms orh's retest.
+fno_mp = [{"snapshot_ts": t(3, "09:30"), "near_max_pain": 23148, "near_max_oi_call": None, "near_max_oi_put": None}]
+ev = pt.detect_session(s_opp, PREV, s_opp, PREV, fno_mp)
+brk = find(ev, family="C1", direction="down", clock="10:25")
+check("OPP: with max pain 2 pts under orh, the 10:25 break is filed at max_pain, orh in other_levels",
+      len(brk) == 1 and brk[0]["level"] == "max_pain" and "orh" in brk[0]["other_levels"],
+      [(e["clock"], e["family"], e["direction"], e["level"], e["other_levels"]) for e in ev])
+check("OPP: ...and orh's up-retest is still re-armed through other_levels (10:30 kept)",
+      [e["clock"] for e in find(ev, family="C2", direction="up", level="orh")] == ["09:40", "10:30"],
+      [(e["clock"], e["family"], e["subtype"], e["direction"], e["level"], e["other_levels"]) for e in ev])
 
 # ---- B2: plain rejection ------------------------------------------------------------------
 sp = mk(3, "09:15", ORB_A + [(23090, 23095, 23075, 23080), (23080, 23085, 23068, 23072),

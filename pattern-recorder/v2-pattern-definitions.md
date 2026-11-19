@@ -4,7 +4,8 @@
 
 **Status: DEFINITIONS ACCEPTED 2026-11-05 — V1–V11 and B1–B6 accepted (Amar). V12
 (the 11-04 question) is still open.** The library implements them (`structure.py`,
-`patterns.py`, `RULES_VERSION = "v2.0"`). Phase C, running them live through the
+`patterns.py`; `RULES_VERSION` v2.0 → v2.1 on 2026-11-09, section 13 → v2.2 on 2026-11-19,
+section 14). Phase C, running them live through the
 `pattern-recorder` function, is **live since 2026-11-06 09:45**.
 
 It lived in `pattern-detector/` while it was offline-only. Phase C (C1 = B) moved it,
@@ -161,6 +162,18 @@ in section 6 is attached to it.
     crossing.
   - Measured before B1: 624 of 1,454 C2s were repeat retests, and they behaved like the
     first ones.
+  - **Re-armed (rules v2.2, Amar 2026-11-19, "OPP"):** a C1 at the level the **other**
+    way also re-arms it — price held beyond the level for more than `RECLAIM_MAX_BARS`
+    closes (else the close back is a C2 / R2 reclaim, which re-arms nothing) and then
+    closed back through, which is a new break to retest. And a C1 / R2 re-arms the key
+    levels (PDH/PDL/ORH/ORL) it names in `other_levels`, not only the level it is filed
+    under. Why: on 2026-11-19 the 15-min high broke at 09:45, the 09:50 wick retest was
+    kept, 8 closes held above, the 10:25 close fell back below (a C1 down filed at max
+    pain, 1.3 pts nearer, the 15-min high in its `other_levels`), and the 10:30 reclaim
+    and 10:35 hold at the 15-min high — Amar's trade — were dropped. Replay, 86 sessions
+    through the live chain: +48 trend-playbook candidates, +523 points; alerts 7.4 → 8.2
+    per session. Re-arming through the event's own level only added nothing (−16), and
+    dropping B1 altogether doubled the alerts (15.2 per session).
   - Consequence: 09-18's wall retest is announced at its first touch (13:20), not the
     13:45 second touch you logged.
 
@@ -353,3 +366,13 @@ or one in `other_levels`), by the classifier's `day_trend`:
   trades caught.
 - The 15-min classifier lag costs 74 KEY events over 90 sessions; Friday 11-06's 09:45 PDH
   break is one.
+
+## 14. v2.2 — B1 re-armed (Amar, 2026-11-19, "OPP")
+
+One change, in the B1 filter only (section 5, *One retest per break*): a retest at a level
+is re-armed by a break the **other** way there (a C1 — price had held beyond the level
+for more than `RECLAIM_MAX_BARS` closes and closed back through), and a C1 / R2 re-arms
+the key levels it names in `other_levels` as well as its own. Detection before the filter
+is unchanged, so v2.2 finds every v2.1 event and adds only C2s (verified on 99 stored
+sessions: 2,575 → 2,734 events, +159, all C2). `RULES_VERSION` = `v2.2`, so its rows
+sit beside the v2.1 rows. Replay and why: the B1 bullet in section 5.

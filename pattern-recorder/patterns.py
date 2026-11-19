@@ -23,7 +23,8 @@ FAMILIES (each is a 5-min trigger at a level, with a direction):
   C2  retest      - an R1 or R2 at a level price has already CROSSED this
                     session in the event's direction: same geometry, different
                     history, so it is a continuation, not a reversal. Only the
-                    first retest per break is kept (B1, _first_retest_only)
+                    first retest per break is kept (B1, _first_retest_only),
+                    re-armed by a break either way at the level (OPP, v2.2)
   D   double/triple test - not a family of its own: an R1 or R2 at a level
                     tested before carries chart_pattern = double_bottom, ...
 
@@ -47,7 +48,10 @@ from structure import BAR_SECONDS, SUPPORT, RESISTANCE
 #   v2.0  2026-11-06  PDH/PDL/ORH/ORL from the future's own bars
 #   v2.1  2026-11-09  PDH/PDL/ORH/ORL from the INDEX, priced on the future with
 #                     each bar's basis (plan v3). Everything else unchanged.
-RULES_VERSION = "v2.1"
+#   v2.2  2026-11-19  B1 re-armed (OPP): a break the OTHER way at a level also
+#                     re-arms its retest, and a break / sweep re-arms the key
+#                     levels named in its other_levels. Only C2s are added.
+RULES_VERSION = "v2.2"
 
 # ---- tunables. PROVISIONAL, env-overridable (definitions section 11) --------
 # Single-bar shapes need a real range: on a 5-pt bar a "doji" is noise. 0.03% is
@@ -490,7 +494,10 @@ def detect_session(session_bars, prev_bars=(), index_bars=(), prev_index_bars=()
                      Optional; rvol_tod is None without it.
     """
     sess = _Session(session_bars, prev_bars, index_bars, prev_index_bars, fno_rows)
-    return _first_retest_only(_detect_all(sess, rvol_history))
+    # The index levels' own keys (name, strike) - fixed for the session - so a
+    # break or sweep that lists one in other_levels can re-arm it (B1, v2.2).
+    twins = {lvl["name"]: lvl["price"] for lvl in sess.index_day}
+    return _first_retest_only(_detect_all(sess, rvol_history), twins)
 
 
 def _level_key(event):
@@ -499,27 +506,48 @@ def _level_key(event):
             event["level_strike"] if event["level_strike"] is not None else event["level_price"])
 
 
-def _first_retest_only(events):
+def _first_retest_only(events, twins=None):
     """
-    B1 (accepted 2026-11-05): ONE retest per break.
+    B1 (accepted 2026-11-05): ONE retest per break - re-armed (OPP, v2.2).
 
     The first C2 at a level in a direction is kept. Further C2s there, that way,
-    are dropped until the level is broken (C1) or swept and reclaimed (R2) in
-    that direction again. Every reclaim in a chop is itself a crossing, so
-    keying on "the last crossing" would let each one start a new break; keying
-    on the last C1/R2 is what keeps it to one per break. Measured before B1: 624
-    of 1,454 C2s were repeat retests of the same break, and they behaved like
-    the first ones, so nothing measured is lost.
+    are dropped until the level is RE-ARMED. Every reclaim in a chop is itself a
+    crossing, so keying on "the last crossing" would let each one start a new
+    break; keying on breaks (C1) and sweeps (R2) is what keeps it to one per
+    break. Measured before B1: 624 of 1,454 C2s were repeat retests of the same
+    break, and they behaved like the first ones.
+
+    RE-ARMED BY (v2.2, Amar 2026-11-19):
+      - a C1 or R2 at the level in that direction (B1 as it was);
+      - a C1 at the level the OTHER way: price held beyond it long enough to
+        count as a break (more than RECLAIM_MAX_BARS closes, else it would be a
+        C2 / R2 reclaim) and then closed back through - a new break to retest;
+      - either of those at a key level (PDH/PDL/ORH/ORL, `twins`) the event
+        names in other_levels - within NEAR, but filed under a nearer level.
+    On 2026-11-19 the 15-min high broke at 09:45, the 09:50 wick retest was
+    kept, 8 closes held above it, the 10:25 close fell back below (a C1 down
+    filed at max pain, the 15-min high in its other_levels), and the 10:30
+    reclaim and the 10:35 hold at the 15-min high were both dropped under B1 as
+    it was - the trade Amar took. Replay (86 sessions, the live chain): +48
+    trend-playbook candidates, +523 points, alerts 7.4 -> 8.2 per session
+    (pattern-recorder/replay/out/b1_variants_replay.md).
 
     Still stateless: whether an event is kept depends only on earlier events,
     which depend only on earlier bars.
     """
+    twins = twins or {}
     open_for_retest = {}
     kept = []
     for event in events:  # oldest first
-        key = (_level_key(event), event["direction"])
+        direction = event["direction"]
+        key = (_level_key(event), direction)
         if event["family"] in (C1, R2):
-            open_for_retest[key] = True
+            at = [_level_key(event)] + [(name, twins[name]) for name in event["other_levels"]
+                                        if name in twins]
+            ways = (UP, DOWN) if event["family"] == C1 else (direction,)
+            for level_key in at:
+                for way in ways:
+                    open_for_retest[(level_key, way)] = True
         elif event["family"] == C2:
             if not open_for_retest.get(key, True):
                 continue
