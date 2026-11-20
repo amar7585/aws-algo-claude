@@ -16,10 +16,10 @@ targets and risk-reward.
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
-| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `0NUOBVS0…` since the one-more-look push test, 2026-11-16 19:14; versions kept: 7 = `RaMJeVy2…` (Amar's within-levels gate), 6 = `CkCH//Y3…` (signal price), 5 = `+4qimC9c…` (out-of-order fix), 4 = `M3fvb4DI…` (no bias), 3 = `YLhNk/U9…`, 2 = `IBg6OIzl…`, 1 = the pre-register `HsOac/jT…`). Otherwise nothing: its log and its Telegram messages are its output |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `yZ30IM0U…` since 2026-11-19 20:37 (one rule set; before it `0NUOBVS0…`, the one-more-look push test, 2026-11-16 19:14); version kept: 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
 
-## Since 2026-11-14: every tick, two rule sets, and the trade after entry
+## Since 2026-11-14: every tick and the trade after entry
 
 Decided by Amar on 2026-11-14 after a measurement on 104 sessions (06-16 .. 11-13):
 
@@ -59,18 +59,25 @@ bearish bias), none removed; new rules 2 → 5 entries, +1.04R → +1.62R, full 
 −1.00R → −0.50R. Verified after the change: old vs new code differ on exactly those 5 entries (blocked → entered in
 the register) plus the bias wording dropped from 6 reasons; send-once 41/41.
 
-**Two rule sets, side by side.** Every Telegram message ends with which one produced it: `current logic only`,
-`new logic`, or `current + new logic`.
+**One rule set (since 2026-11-19).** Until then an older rule set ("current": 2 closes beyond the opening range =
+the range broke, 2 attempts per side, a re-entry only after Case B, no trade management) ran beside these, and every
+message ended with which set produced it. Amar removed it on 2026-11-19 ("we have enough validation"): replayed over
+45 sessions with stored 15-min rows, these rules took 9 trades for +318 points, the old set 5 for +98. Verified before
+the deploy: on all 45 sessions the register equals the previous build's `new` rows exactly and every message equals
+the previous build's minus the tag (in the replay 116 `current` rows were no longer written, and no message was
+current-only). Deployed 2026-11-19 20:37:20 IST, CodeSha256 `yZ30IM0U…` (previous `0NUOBVS0…`). The 12 `current` rows
+already in `algo.playbook_alerts` (5 sessions) were backed up (`pattern-recorder/replay/out/backup-2026-11-19/`,
+git-ignored) and deleted 20:37 IST; Lambda versions 1–6 deleted, version 7 (`RaMJeVy2…`) kept as a rollback copy.
 
-| | current logic (today's rules, `session.walk_current`) | new logic |
-|---|---|---|
-| a push with 2+ closes beyond | never a sweep | a sweep if the candle back inside closes past the whole push — or, failing that, the next candle closes inside, prints no new extreme and closes past it (one more look, since 2026-11-16; it is then the sweep candle) — the push is in the band and the candle after prints no new extreme (`sweep.push_sweeps`) |
-| "the range broke" | 2 closes beyond the opening range | a 2+ close push at the opening range that failed that test (both looks), or has not come back yet (`sweep.range_broke_at`) |
-| attempts | 2 per side, a re-entry only after Case B | one live idea per side |
-| after entry | — | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT. One exit and one re-entry per trade, as measured |
+| | the rules |
+|---|---|
+| a push with 2+ closes beyond | a sweep if the candle back inside closes past the whole push — or, failing that, the next candle closes inside, prints no new extreme and closes past it (one more look, since 2026-11-16; it is then the sweep candle) — the push is in the band and the candle after prints no new extreme (`sweep.push_sweeps`) |
+| "the range broke" | a 2+ close push at the opening range that failed that test (both looks), or has not come back yet (`sweep.range_broke_at`) |
+| attempts | one live idea per side |
+| after entry | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT. One exit and one re-entry per trade, as measured |
 
-**Messages.** All of them go to Telegram (`TELEGRAM_ENABLED` is a kill switch, on by default). That is entries
-from either rule set plus the new logic's steps.
+**Messages.** All of them go to Telegram (`TELEGRAM_ENABLED` is a kill switch, on by default): every entry and every
+trade step.
 
 **The SIGNAL carries the price at the signal** (Amar 2026-11-15, live since 09:26 that day, `CkCH//Y3…`). The
 playbook's entry is the close of the candle back inside; the message can only arrive after the NEXT (confirming)
@@ -110,7 +117,7 @@ from the closed candles ([register.py](register.py)) and upserts it into `algo.p
 ([migration](../migrations/2026-11-14-playbook-alerts.sql)). **Nothing reads it back**, so a failed or retried run
 cannot leave a wrong state: the next run rewrites the day. It changes no entry, exit or message.
 
-**One row per alert** — a level touched on one side, under one rule set (`current` / `new`). Retests of the same
+**One row per alert** — a level touched on one side. `logic` is always `new` since 2026-11-19 (the old `current` rule set was removed and its rows deleted). Retests of the same
 level while it is watching are counted in `touches`, and `touch_log` says, per touch, in the playbook's own words,
 why it did or did not give an entry ("wick 0.02% through: too shallow", "push of 3 closes beyond … -> ENTRY").
 
@@ -463,7 +470,7 @@ playbook are marked.
 
 | Variable | Default | Source |
 |---|---|---|
-| `EXPECTED_CONTEXT_VERSION` | 2 | asserted against the manager |
+| `EXPECTED_CONTEXT_VERSION` | 3 | asserted against the manager (2 until 2026-11-19) |
 | `MIN_PENETRATION_PCT` | 0.04 | playbook — but see disagreement 1 |
 | `MAX_PENETRATION_PCT` | 0.30 | playbook |
 | `MIN_RISK_REWARD` | 1.5 | playbook |
@@ -474,10 +481,7 @@ playbook are marked.
 | `STOP_BUFFER_ATR_FACTOR` | 0.5 | playbook |
 | `STOP_BUFFER_LOOKBACK_BARS` | 6 | playbook |
 | `STACKED_POOL_PCT` | 0.08 | **not in the playbook** — set from its Example 2 |
-| `NO_FOLLOW_THROUGH_RISK_FRACTION` | 0.5 | **not in the playbook** — "back around the entry" has no number |
-| `MAX_ATTEMPTS_PER_SIDE` | 2 | playbook — **current logic only** since 2026-11-14 |
 | `ACCEPTANCE_CLOSES` | 2 | playbook |
-| `NO_FOLLOW_THROUGH_BARS` | 8 | playbook — **current logic only**, labels history |
 
 The rest are not thresholds — they decide when this playbook runs at all, and
 what it reads:

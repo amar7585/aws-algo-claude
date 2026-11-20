@@ -148,13 +148,9 @@ def build_daily_sentiment(instrument, candles, vix_candles, session_open,
         "trade_date": last["ts"],
 
         # the classification - same rules, same scale as the intraday row
-        "bias": result["bias"],
         "structure": result["structure"],
         "regime": result["regime"],
         "volatility": result["volatility"],
-        "score": int(result["score"]),
-        "max_score": int(result["max_score"]),
-        "confidence": result["confidence"],
         "swing_direction": result["swing_direction"],
         "swing_high": result["swing_high"],
         "swing_low": result["swing_low"],

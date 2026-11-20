@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS algo.playbook_alerts (
     security_id      text     NOT NULL,
     instrument_type  text     NOT NULL,
     playbook         text     NOT NULL,   -- the writing function, e.g. strategy-range-liquidity-sweep
-    logic            text     NOT NULL,   -- the rule set: current | new
+    logic            text     NOT NULL,   -- the rule set: 'new' only since 2026-11-19 ('current' removed)
     side             text     NOT NULL,   -- the side of the level touched: high | low
     level_name       text     NOT NULL,   -- 15min high, PDL, 1Hr low, ...
     alert_ts         bigint   NOT NULL,   -- the alert candle: first touch of this alert

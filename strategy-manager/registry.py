@@ -1,25 +1,19 @@
 """
-The regime gate and the dispatch.
+The trend-day shortlist and the dispatch.
 
-Two jobs, and the split between them is the whole point of this function:
+  trend_shortlist()  the playbooks for an alert on a TREND day (day_trend up/down):
+                     TREND_PLAYBOOKS.
+  dispatch()         invokes them, asynchronously, each with the full context.
 
-  shortlist()  decides WHICH playbooks are even eligible, from the regime
-               and bias the sentiment row already carries. A playbook fired on
-               the wrong kind of day is the main way this loses money, so that
-               decision is a lookup in a table rather than a judgement inside
-               a strategy that wants to trade.
+Until 2026-11-19 a regime|bias registry (shortlist / routing_key) also routed
+alerts on no-trend days. Its only filled cell sent them to the sweep, which runs
+on every tick anyway and was always left out, so it dispatched nothing; it was
+removed with bias (Amar, 2026-11-19).
 
-  dispatch()   invokes them, asynchronously, each with the full context.
-
-THE GATE HERE IS COARSE, AND DELIBERATELY SO. It answers "is this playbook
-valid for this kind of day at all". The fine gate - VIX behaviour, how much of
-the day's range is already spent, opening-range width, time of day - belongs
-inside each strategy, because only the strategy knows what its own playbook
-requires, and because a strategy that trusts an upstream gate it cannot see is
-a strategy that fires on a bad day when the upstream changes.
-
-So a strategy gating again on arrival is not redundancy to be cleaned up. Both
-gates are load-bearing.
+THE GATE HERE IS COARSE, AND DELIBERATELY SO. The fine gate - VIX behaviour,
+levels, time of day - belongs inside each strategy, because only the strategy
+knows what its own playbook requires. A strategy gating again on arrival is not
+redundancy to be cleaned up.
 """
 
 import json
@@ -31,7 +25,6 @@ from config import (
     CONTEXT_VERSION,
     INVOCATION_TYPE,
     MAX_PAYLOAD_BYTES,
-    STRATEGY_REGISTRY,
     TREND_PLAYBOOKS,
 )
 
@@ -40,16 +33,11 @@ logger = logging.getLogger()
 TREND_STATES = ("up", "down")
 
 
-def routing_key(regime, bias):
-    """The registry key for a market that looks like this."""
-    return f"{regime}|{bias}"
-
-
 def trend_shortlist(day_trend):
     """
     The playbooks for a v2 alert on a TREND day (day_trend up/down).
 
-    Never the regime|bias registry - see config.TREND_PLAYBOOKS. Empty (unset)
+    See config.TREND_PLAYBOOKS. Empty (unset)
     is a deliberate stand-down, logged as such, not a miss.
     """
     if day_trend not in TREND_STATES:
@@ -59,42 +47,6 @@ def trend_shortlist(day_trend):
         logger.info("day trend %s: no TREND_PLAYBOOKS configured - nothing routed", day_trend)
     else:
         logger.info("day trend %s: eligible %s", day_trend, ", ".join(functions))
-    return functions
-
-
-def shortlist(regime, bias):
-    """
-    The strategy functions valid for this regime AND bias.
-
-    ROUTING IS ON THE COMBINATION. "sideways" says the swing read found no
-    progression; it does not say whether the market is leaning up, leaning
-    down, or genuinely balanced, and a playbook that is right on a balanced
-    day can be wrong on a sideways day with a bearish lean.
-
-    AN UNKNOWN COMBINATION RAISES rather than returning nothing. A key this
-    function has never heard of means the market-classifier layer and this map
-    have drifted apart - a new regime or bias value appeared and nobody told
-    the router - and the symptom of returning [] would be a session that
-    routes nothing and looks merely quiet, indistinguishable from a correct
-    stand-down. Those two must not look the same.
-
-    A key that is PRESENT and maps to [] is a different thing entirely: a
-    deliberate "no playbook is valid on this kind of day", which is currently
-    the answer for eight of the nine cells.
-    """
-    key = routing_key(regime, bias)
-    if key not in STRATEGY_REGISTRY:
-        raise RuntimeError(
-            f"routing key {key!r} is not in STRATEGY_REGISTRY "
-            f"({sorted(STRATEGY_REGISTRY)}) - the market-classifier layer and "
-            f"the registry have drifted apart, and routing nothing would look "
-            f"like a quiet session rather than a misconfiguration"
-        )
-    functions = list(STRATEGY_REGISTRY[key])
-    if not functions:
-        logger.info("%s: no playbook is valid on this kind of day", key)
-    else:
-        logger.info("%s: eligible %s", key, ", ".join(functions))
     return functions
 
 

@@ -16,8 +16,8 @@ intraday-market-sentiment, and a given SMA separation plainly does not mean
 the same thing on a 5-minute bar as on a daily one. The honest position is
 that nothing here has been measured on either frame yet, so splitting them now
 would be inventing two sets of unmeasured numbers instead of one. Every value
-below takes an optional per-frame override - CLASSIFIER_RSI_BULLISH_DAILY
-beats CLASSIFIER_RSI_BULLISH - so the split can be made per value, with
+below takes an optional per-frame override - CLASSIFIER_SWING_WINDOW_DAILY
+beats CLASSIFIER_SWING_WINDOW - so the split can be made per value, with
 evidence, without touching this file.
 """
 
@@ -29,15 +29,8 @@ import os
 # tunables. They live in indicators.SMA_PERIODS.
 
 _DEFAULTS = {
-    # ---- RSI: the momentum term, worth +-1 -------------------------------
+    # ---- RSI: the period of the stored indicator --------------------------
     "RSI_PERIOD": 14,
-    "RSI_BULLISH": 60.0,
-    "RSI_BEARISH": 40.0,
-
-    # ---- bias: |score| at or above this leaves range-bound ----------------
-    # The score runs +-4 without VWAP and +-5 with it (see classify.py), so 2
-    # asks for two agreeing terms out of four or five.
-    "BIAS_THRESHOLD": 2,
 
     # ---- structure: the swing read ----------------------------------------
     # A bar is a swing high when its high is the highest of the SWING_WINDOW
@@ -112,14 +105,6 @@ _DEFAULTS = {
     # mean for range_used ("the top ~10% of days"). The 09:45 run still reads
     # it on 21% of sessions - opens that are wide even for an open.
     "RECENT_RANGE_MULTIPLE": 2.0,
-
-    # ---- confidence --------------------------------------------------------
-    # |score|/max_score scaled to 100, then multiplied by the regime's factor.
-    # A read taken on an expanding day is worth less because the structure it
-    # rests on is the thing being disrupted.
-    "CONFIDENCE_FACTOR_TRENDING": 1.0,
-    "CONFIDENCE_FACTOR_SIDEWAYS": 0.7,
-    "CONFIDENCE_FACTOR_VOLATILE": 0.5,
 }
 
 
@@ -134,8 +119,8 @@ def get(name, frame=None):
     The value of `name`, with an optional per-frame override.
 
     Lookup order, first hit wins:
-        CLASSIFIER_<NAME>_<FRAME>   e.g. CLASSIFIER_RSI_BULLISH_DAILY
-        CLASSIFIER_<NAME>           e.g. CLASSIFIER_RSI_BULLISH
+        CLASSIFIER_<NAME>_<FRAME>   e.g. CLASSIFIER_SWING_WINDOW_DAILY
+        CLASSIFIER_<NAME>           e.g. CLASSIFIER_SWING_WINDOW
         the default above
 
     An unknown name raises rather than returning None - a typo in a threshold

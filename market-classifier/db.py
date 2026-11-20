@@ -22,8 +22,7 @@ SENTIMENTS_TABLE = "algo.intraday_sentiments"
 SENTIMENTS_KEY = ("security_id", "instrument_type", "snapshot_ts")
 SENTIMENTS_COLUMNS = SENTIMENTS_KEY + (
     "captured_at", "prev_snapshot_ts",
-    "bias", "structure", "regime", "volatility", "score", "max_score",
-    "confidence", "buildup",
+    "structure", "regime", "volatility", "buildup",
     "swing_direction", "swing_high", "swing_low", "structure_determined",
     "range_used", "session_elapsed", "volatility_expanding",
     "day_trend",

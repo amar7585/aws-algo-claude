@@ -32,7 +32,7 @@ import os
 # getting None, and gating on it. A gate that silently passes because its
 # input vanished is the worst failure this playbook can have.
 # --------------------------------------------------------------------------
-EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "2"))
+EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "3"))
 
 # --------------------------------------------------------------------------
 # IST
@@ -236,15 +236,6 @@ PRIME_END = datetime.time(14, 30)
 LATE_END = datetime.time(15, 0)
 
 # --------------------------------------------------------------------------
-# Re-entry
-#
-# One re-entry per side per session, and the playbook is explicit that a
-# second failure closes that side for the day "regardless of how the candles
-# look. There is no third attempt that is not just wanting it to work."
-# --------------------------------------------------------------------------
-MAX_ATTEMPTS_PER_SIDE = int(os.environ.get("MAX_ATTEMPTS_PER_SIDE", "2"))
-
-# --------------------------------------------------------------------------
 # Telegram
 #
 # A qualifying candidate is a real trade signal, and the signal is pushed to
@@ -261,24 +252,12 @@ MAX_ATTEMPTS_PER_SIDE = int(os.environ.get("MAX_ATTEMPTS_PER_SIDE", "2"))
 TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
 
-# Two consecutive 5-minute closes beyond the level is acceptance - Case A, the
-# range broke, and that side is dead for the session along with the other one.
+# A push of this many consecutive 5-minute closes beyond a level is judged
+# structurally at its close back inside (sweep.push_sweeps): a sweep, or a break.
 ACCEPTANCE_CLOSES = int(os.environ.get("ACCEPTANCE_CLOSES", "2"))
 
-# Case C: filled, never reached T1, and roughly this many bars later price is
-# back around entry with the range intact. The idea has expired rather than
-# failed.
-NO_FOLLOW_THROUGH_BARS = int(os.environ.get("NO_FOLLOW_THROUGH_BARS", "8"))
-
-# How near "back around the entry" is, as a fraction of the trade's own risk.
-# NOT FROM THE PLAYBOOK, which says "back around the entry" without a number.
-# Expressed in units of risk rather than points so it scales with the setup.
-NO_FOLLOW_THROUGH_RISK_FRACTION = float(
-    os.environ.get("NO_FOLLOW_THROUGH_RISK_FRACTION", "0.5")
-)
-
 # --------------------------------------------------------------------------
-# Every-tick runs, both rule sets, and the trade after entry (2026-11-14)
+# Every-tick runs and the trade after entry (2026-11-14)
 #
 # Since 2026-11-14 pattern-recorder hands EVERY 5-min tick to strategy-manager,
 # and the manager sends each tick here whatever the regime, so a trade that is
@@ -287,15 +266,12 @@ NO_FOLLOW_THROUGH_RISK_FRACTION = float(
 # regime is not volatile-expansion - no bias, no day trend (Amar 2026-11-14 /
 # 11-15; see ALLOWED_REGIMES above and session.context_at).
 #
-# BOTH RULE SETS RUN on the same candles, so every Telegram message can say
-# which produced it (Amar: "send all messages with note from which it came
-# from" - "from which logic, current or new"):
-#   current  today's playbook rules - first-candle detection, 2 closes beyond
-#            the opening range = range broke, 2 attempts per side
-#   new      + a 2+ close push judged structurally at its close back inside,
-#            with one more look on the next candle (2026-11-16,
-#            sweep.push_sweeps), one live idea per side, and the exit / watch
-#            / re-entry rule (manage.py)
+# THE RULES: first-candle detection plus a 2+ close push judged structurally at
+# its close back inside, with one more look on the next candle (2026-11-16,
+# sweep.push_sweeps), one live idea per side, and the exit / watch / re-entry
+# rule (manage.py). The older rule set that ran beside them (2 closes beyond =
+# range broke, 2 attempts per side) and the message tags naming which set
+# produced each message were removed 2026-11-19 (Amar).
 # --------------------------------------------------------------------------
 # When a 15-min row counts as in force for a candle: written (created_at) by the
 # candle's close plus this - pattern-recorder runs about 100 s after the close.

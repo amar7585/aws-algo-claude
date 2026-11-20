@@ -6,9 +6,9 @@ replay (pattern-recorder/replay/out/trend_playbook_replay.md), not laws.
 
 import os
 
-# The context strategy-manager hands over. v2 is the manager's current shape;
+# The context strategy-manager hands over. v3 (2026-11-19, bias removed) is the manager's current shape;
 # this playbook additionally needs `detection` (v2's alert) and `index_bars`.
-EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "2"))
+EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "3"))
 
 # ---- the setup (Amar, 2026-11-09): breakout and hold only ----------------------
 # C2 = a retest / hold of a key level already broken this session in the trend's

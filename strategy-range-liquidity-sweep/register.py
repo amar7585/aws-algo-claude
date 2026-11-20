@@ -6,7 +6,8 @@ session's register from the closed candles and the playbook's own derivations (s
 gate) and writes it to algo.playbook_alerts. Nothing here is read on the next run, so a failed or retried run cannot
 leave a wrong state behind - the next run rewrites the day. It decides no trade: it records what the playbook decided.
 
-ONE ROW PER ALERT = one level touched on one side, under one rule set (current / new).
+ONE ROW PER ALERT = one level touched on one side. The `logic` column is always "new": the old "current" rules were
+removed 2026-11-19 (Amar), and their rows deleted from algo.playbook_alerts.
   touch     a candle's wick goes beyond a level the playbook watches and the candle before did not - the same "first
             penetration" rule as sweep.detect
   retest    another fresh penetration of the same level while the alert is still watching (touches + 1)
@@ -17,13 +18,13 @@ STATUS
   blocked   the structure qualified but the gate or the cell refused it - followed in shadow, same fields
   missed    no entry, and price reached T2 - the opposite side of the opening range - without us: the full move
   invalid   no entry, and the level was accepted through, the opening range broke for good (the playbook stands
-            down for the day), or - new rules - a push was still beyond the level at 15:00
+            down for the day), or a push was still beyond the level at 15:00
   ended     no entry, and 15:00 came first
   covered   no entry here because a trade on the same side was taken (or blocked) at another level - one idea per side
 
 Both choices for "missed" and the 15:00 push were measured on the 104-session replay before they were made
 (2026-11-14): with T1 as the target a T1 sitting on the level marked misses (11-13: 0.75 pt from PDL while PDL broke),
-and 34 of 38 new-rule "ended" alerts were pushes still beyond at 15:00 - a break that held.
+and 34 of 38 "ended" alerts were pushes still beyond at 15:00 - a break that held.
 
 PURE. A function of the bars and the derivations; no I/O.
 """
@@ -31,17 +32,15 @@ PURE. A function of the bars and the derivations; no I/O.
 import collections
 
 import gate as gate_lib
-import manage
 import sweep as sweep_lib
 from config import ACCEPTANCE_CLOSES
 from levels import HIGH, LOW, ist_datetime
-from session import ENTRY_WINDOWS, walk_current
+from session import ENTRY_WINDOWS
 
 WATCHING, ENTERED, BLOCKED, MISSED, INVALID, ENDED, COVERED = (
     "watching", "entered", "blocked", "missed", "invalid", "ended", "covered")
 NO_TRADE_ENDS = (MISSED, INVALID, ENDED, COVERED)
-CURRENT, NEW = "current", "new"
-LOGICS = (CURRENT, NEW)
+NEW = "new"          # the only rule set since 2026-11-19; kept as the `logic` key column
 
 
 def _beyond(side, price, level):
@@ -61,48 +60,20 @@ def _hm(bars, i):
 
 
 # ---- the trades each derivation produced ---------------------------------------------------------------------------
-def _held(bars, n, c):
-    """The current rules have no trade management: a trade is held to its stop or T2 (stop first within a candle)."""
-    short = c["direction"] == "short"
-    for i in range(n + 1, len(bars)):
-        b = bars[i]
-        if (b["high"] >= c["stop"]) if short else (b["low"] <= c["stop"]):
-            return manage.STOP, i, [{"kind": manage.STOP, "index": i, "price": c["stop"], "reason": "the stop traded"}]
-        if (b["low"] <= c["t2"]) if short else (b["high"] >= c["t2"]):
-            return manage.TARGET, i, [{"kind": manage.TARGET, "index": i, "price": c["t2"], "reason": "T2 traded"}]
-    return "open", None, []
-
-
-def trades(result, bars, logic):
+def trades(result, bars):
     """[{n, key, event, candidate, outcome, end, steps}] - one per trade the derivation took, in order."""
     out = []
-    if logic == CURRENT:
-        for n, rec in result["current"]:
-            outcome, end, steps = _held(bars, n, rec["candidate"])
-            out.append({"n": n, "key": (rec["event"]["pool"]["name"], rec["event"]["side"]), "event": rec["event"],
-                        "candidate": rec["candidate"], "outcome": outcome, "end": end, "steps": steps})
-    else:
-        for idea in result["ideas"]:
-            outcome = idea["steps"][-1]["kind"] if idea["end"] is not None else idea["state"]
-            out.append({"n": idea["n"], "key": (idea["event"]["pool"]["name"], idea["event"]["side"]),
-                        "event": idea["event"], "candidate": idea["candidate"], "outcome": outcome,
-                        "end": idea["end"], "steps": idea["steps"]})
+    for idea in result["ideas"]:
+        outcome = idea["steps"][-1]["kind"] if idea["end"] is not None else idea["state"]
+        out.append({"n": idea["n"], "key": (idea["event"]["pool"]["name"], idea["event"]["side"]),
+                    "event": idea["event"], "candidate": idea["candidate"], "outcome": outcome,
+                    "end": idea["end"], "steps": idea["steps"]})
     return out
 
 
 # ---- what ends an alert with no entry ------------------------------------------------------------------------------
-def _accepted_from(bars, level, side, start):
-    """CURRENT rules: the close completing ACCEPTANCE_CLOSES consecutive closes beyond, at/after start."""
-    run = 0
-    for i in range(start, len(bars)):
-        run = run + 1 if _beyond(side, bars[i]["close"], level) else 0
-        if run >= ACCEPTANCE_CLOSES:
-            return i
-    return None
-
-
 def _push_broke_from(bars, pool, start):
-    """NEW rules: (index, why) of the first push at this level resolved as a break, at/after start - the index is the
+    """(index, why) of the first push at this level resolved as a break, at/after start - the index is the
     candle that decided it (the next candle when the one-more-look rule ran, sweep.push_sweeps)."""
     for r in sweep_lib.push_sweeps(bars, pool):
         if r["kind"] == sweep_lib.PUSH_BROKE and r["back_inside"] >= start:
@@ -111,7 +82,7 @@ def _push_broke_from(bars, pool, start):
 
 
 def _still_beyond(bars, level, side, n):
-    """NEW rules: the last ACCEPTANCE_CLOSES+ closes up to n are all beyond - a push that has not come back."""
+    """The last ACCEPTANCE_CLOSES+ closes up to n are all beyond - a push that has not come back."""
     run = 0
     for i in range(n, -1, -1):
         if not _beyond(side, bars[i]["close"], level):
@@ -120,18 +91,14 @@ def _still_beyond(bars, level, side, n):
     return run >= ACCEPTANCE_CLOSES
 
 
-def range_stand_down(bars, orb, logic):
+def range_stand_down(bars, orb):
     """(index, reason) where the opening range broke for good - after it the playbook takes no range trade."""
     if not orb:
         return None, None
     best = (None, None)
     for level, side, name in ((orb["high"], HIGH, "opening-range high"), (orb["low"], LOW, "opening-range low")):
-        if logic == CURRENT:
-            at = sweep_lib.acceptance_at(bars, level, side)
-            why = f"the range broke at the {name} ({ACCEPTANCE_CLOSES} closes beyond)"
-        else:
-            at, why0 = _push_broke_from(bars, {"name": "_range", "price": level, "side": side, "priority": 0}, 0)
-            why = f"the range broke at the {name} ({why0})" if at is not None else None
+        at, why0 = _push_broke_from(bars, {"name": "_range", "price": level, "side": side, "priority": 0}, 0)
+        why = f"the range broke at the {name} ({why0})" if at is not None else None
         if at is not None and (best[0] is None or at < best[0]):
             best = (at, why)
     return best
@@ -159,12 +126,12 @@ def _fresh_start(bars, side, level, k):
     return k
 
 
-def touch_notes(bars, contexts, gated, ungated, logic, daily):
+def touch_notes(bars, contexts, gated, ungated):
     """{(pool name, side, touch index): [(decided at index or None, text)]}."""
     out = collections.defaultdict(list)
     pools = [p for p in contexts[-1]["pools"] if not p["name"].startswith("session")]
-    g_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(gated, bars, logic)}
-    u_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(ungated, bars, logic)}
+    g_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(gated, bars)}
+    u_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(ungated, bars)}
 
     def confirmed(e):
         c = e["confirm_index"]
@@ -178,11 +145,7 @@ def touch_notes(bars, contexts, gated, ungated, logic, daily):
         if (key, e["sweep_index"]) in u_keys:
             return f"{head}, refused by the gate/cell: {_gate_reason(ctx)}"
         # a structural refusal - the same with or without the gate
-        if logic == CURRENT:
-            row = ctx["row"] or {}
-            _, rej, _ = walk_current(bars[: c + 1], ctx["pools"], ctx["orb"], row.get("vwap"), daily, ctx["window"])
-        else:
-            rej = ungated["rejected"].get(c, [])
+        rej = ungated["rejected"].get(c, [])
         why = [r for ev, r in rej if ev["pool"]["name"] == key[0] and ev["sweep_index"] == e["sweep_index"]]
         return f"{head}, not taken: {why[0]}" if why else f"{head}, not taken"
 
@@ -192,58 +155,54 @@ def touch_notes(bars, contexts, gated, ungated, logic, daily):
             out[k].append((e["sweep_index"], f"wick {e['penetration_pct']:.2f}% through: {e['reject_reason']}"))
         else:
             out[k].append((e["sweep_index"], confirmed(e)))
-    if logic == NEW:
-        for pool in pools:
-            for r in sweep_lib.push_sweeps(bars, pool):
-                if "push_start" not in r:
-                    k0 = r["accepted_at"] - ACCEPTANCE_CLOSES + 1
-                    out[(pool["name"], pool["side"], _fresh_start(bars, pool["side"], pool["price"], k0))].append(
-                        (None, "push still beyond the level"))
-                    continue
-                t = _fresh_start(bars, pool["side"], pool["price"], r["push_start"])
-                head = (f"push of {r['closes']} closes beyond ({r['penetration_pct']:.2f}% at its furthest), "
-                        f"back inside at {_hm(bars, r['back_inside'])}")
-                key = (pool["name"], pool["side"], t)
-                if r["kind"] == sweep_lib.PUSH_SWEEP:
-                    past = (f", past the whole push at {_hm(bars, r['second_look'])} (the next candle); "
-                            if r.get("second_look") is not None else " past the whole push; ")
-                    out[key].append((r["event"]["confirm_index"], head + past + confirmed(r["event"])))
-                elif r["kind"] == sweep_lib.PUSH_BROKE:
-                    out[key].append((r.get("decided_at", r["back_inside"]), f"{head}: {r['why']} - a break, not a sweep"))
-                elif r.get("awaiting") == "next candle":
-                    out[key].append((None, f"{head}: not past the whole push - one more look on the next candle"))
-                else:
-                    out[key].append((None, f"{head}: awaiting the confirmation candle"))
+    for pool in pools:
+        for r in sweep_lib.push_sweeps(bars, pool):
+            if "push_start" not in r:
+                k0 = r["accepted_at"] - ACCEPTANCE_CLOSES + 1
+                out[(pool["name"], pool["side"], _fresh_start(bars, pool["side"], pool["price"], k0))].append(
+                    (None, "push still beyond the level"))
+                continue
+            t = _fresh_start(bars, pool["side"], pool["price"], r["push_start"])
+            head = (f"push of {r['closes']} closes beyond ({r['penetration_pct']:.2f}% at its furthest), "
+                    f"back inside at {_hm(bars, r['back_inside'])}")
+            key = (pool["name"], pool["side"], t)
+            if r["kind"] == sweep_lib.PUSH_SWEEP:
+                past = (f", past the whole push at {_hm(bars, r['second_look'])} (the next candle); "
+                        if r.get("second_look") is not None else " past the whole push; ")
+                out[key].append((r["event"]["confirm_index"], head + past + confirmed(r["event"])))
+            elif r["kind"] == sweep_lib.PUSH_BROKE:
+                out[key].append((r.get("decided_at", r["back_inside"]), f"{head}: {r['why']} - a break, not a sweep"))
+            elif r.get("awaiting") == "next candle":
+                out[key].append((None, f"{head}: not past the whole push - one more look on the next candle"))
+            else:
+                out[key].append((None, f"{head}: awaiting the confirmation candle"))
     return out
 
 
 # ---- the register ----------------------------------------------------------------------------------------------------
-def build(bars, gated, ungated, logic, daily=None):
-    """All alert rows for one rule set, oldest first. `gated` is session.derive's result as the playbook runs it;
+def build(bars, gated, ungated, daily=None):
+    """All alert rows, oldest first. `gated` is session.derive's result as the playbook runs it;
     `ungated` the same with the gate and cell forced open (window kept) - where `blocked` trades come from."""
     contexts = gated["contexts"]
     orb = contexts[-1]["orb"] if contexts else None
     at = collections.defaultdict(list)
-    g = trades(gated, bars, logic)
+    g = trades(gated, bars)
     gk = {(t["n"], t["key"]) for t in g}
     for t in g:
         at[t["n"]].append((ENTERED, t))
-    for t in trades(ungated, bars, logic):
+    for t in trades(ungated, bars):
         if (t["n"], t["key"]) not in gk:
             at[t["n"]].append((BLOCKED, t))
-    stand_down, stand_down_why = range_stand_down(bars, orb, logic)
+    stand_down, stand_down_why = range_stand_down(bars, orb)
 
     rows, open_, latest = [], {}, {}
 
     def new_alert(key, level, n, note=None):
-        a = {"logic": logic, "level_name": key[0], "side": key[1], "level": round(level, 2), "alert_n": n,
+        a = {"logic": NEW, "level_name": key[0], "side": key[1], "level": round(level, 2), "alert_n": n,
              "touches": 1, "touch_ns": [n], "status": WATCHING, "status_n": None, "reason": None, "note": note,
              "target": missed_target(key[1], level, contexts[n]), "trade": None}
-        if logic == CURRENT:
-            a["_inv"] = (_accepted_from(bars, level, key[1], n), f"accepted through ({ACCEPTANCE_CLOSES} closes beyond)")
-        else:
-            i, why = _push_broke_from(bars, {"name": key[0], "price": level, "side": key[1], "priority": 0}, n)
-            a["_inv"] = (i, f"accepted through ({why})")
+        i, why = _push_broke_from(bars, {"name": key[0], "price": level, "side": key[1], "priority": 0}, n)
+        a["_inv"] = (i, f"accepted through ({why})")
         rows.append(a)
         open_[key] = a
         latest[key] = a
@@ -289,7 +248,7 @@ def build(bars, gated, ungated, logic, daily=None):
                 a.update(status=MISSED, status_n=n, reason=f"T2 {a['target']} (opposite side of the opening range) "
                                                            f"traded with no entry")
             elif ctx["window"] == gate_lib.WINDOW_CLOSED:
-                if logic == NEW and _still_beyond(bars, level, side, n):
+                if _still_beyond(bars, level, side, n):
                     a.update(status=INVALID, status_n=n, reason="the push was still beyond the level at 15:00 - "
                                                                 "the break held")
                 else:
@@ -308,7 +267,7 @@ def build(bars, gated, ungated, logic, daily=None):
                 if key not in open_ and _fresh_touch(bars, n, pool["side"], pool["price"]):
                     new_alert(key, pool["price"], n)
 
-    notes = touch_notes(bars, contexts, gated, ungated, logic, daily)
+    notes = touch_notes(bars, contexts, gated, ungated)
     for a in rows:
         a.pop("_inv", None)
 
@@ -322,40 +281,39 @@ def build(bars, gated, ungated, logic, daily=None):
 
 
 def records(bars, gated, ungated, daily=None):
-    """The register for both rule sets, shaped for algo.playbook_alerts (epoch seconds; candle STARTS)."""
+    """The register, shaped for algo.playbook_alerts (epoch seconds; candle STARTS)."""
     out, seen = [], set()
-    for logic in LOGICS:
-        for a in build(bars, gated, ungated, logic, daily):
-            ident = (a["logic"], a["side"], a["level_name"], int(bars[a["alert_n"]]["ts"]))
-            if ident in seen:
-                # Fail loud: two rows with one identity would make the upsert fail obscurely - name it here.
-                raise RuntimeError(f"register: two alerts share identity {ident} - the alert walk is inconsistent")
-            seen.add(ident)
-            t = a["trade"]
-            c = t["candidate"] if t else None
-            out.append({
-                "logic": a["logic"],
-                "level_name": a["level_name"],
-                "side": a["side"],
-                "level_price": a["level"],
-                "alert_ts": int(bars[a["alert_n"]]["ts"]),
-                "touches": a["touches"],
-                "touch_log": [{"ts": int(bars[x["n"]]["ts"]), "notes": x["notes"]} for x in a["touch_log"]],
-                "status": a["status"],
-                "status_ts": int(bars[a["status_n"]]["ts"]) if a["status_n"] is not None else None,
-                "reason": (a["reason"] or "") + (f" ({a['note']})" if a["note"] else "") or None,
-                "target_price": a["target"],
-                "direction": c["direction"] if c else None,
-                "entry_ts": int(bars[t["n"]]["ts"]) if t else None,
-                "entry_price": c["entry"] if c else None,
-                "signal_close": round(bars[t["n"]]["close"], 2) if t else None,
-                "stop_price": c["stop"] if c else None,
-                "t1_price": c["t1"] if c else None,
-                "t2_price": c["t2"] if c else None,
-                "risk_reward": c["risk_reward"] if c else None,
-                "grade": c.get("grade") if c else None,
-                "outcome": t["outcome"] if t else None,
-                "steps": [{"kind": s["kind"], "ts": int(bars[s["index"]]["ts"]), "price": round(float(s["price"]), 2),
-                           "reason": s.get("reason")} for s in t["steps"]] if t else [],
-            })
+    for a in build(bars, gated, ungated, daily):
+        ident = (a["logic"], a["side"], a["level_name"], int(bars[a["alert_n"]]["ts"]))
+        if ident in seen:
+            # Fail loud: two rows with one identity would make the upsert fail obscurely - name it here.
+            raise RuntimeError(f"register: two alerts share identity {ident} - the alert walk is inconsistent")
+        seen.add(ident)
+        t = a["trade"]
+        c = t["candidate"] if t else None
+        out.append({
+            "logic": a["logic"],
+            "level_name": a["level_name"],
+            "side": a["side"],
+            "level_price": a["level"],
+            "alert_ts": int(bars[a["alert_n"]]["ts"]),
+            "touches": a["touches"],
+            "touch_log": [{"ts": int(bars[x["n"]]["ts"]), "notes": x["notes"]} for x in a["touch_log"]],
+            "status": a["status"],
+            "status_ts": int(bars[a["status_n"]]["ts"]) if a["status_n"] is not None else None,
+            "reason": (a["reason"] or "") + (f" ({a['note']})" if a["note"] else "") or None,
+            "target_price": a["target"],
+            "direction": c["direction"] if c else None,
+            "entry_ts": int(bars[t["n"]]["ts"]) if t else None,
+            "entry_price": c["entry"] if c else None,
+            "signal_close": round(bars[t["n"]]["close"], 2) if t else None,
+            "stop_price": c["stop"] if c else None,
+            "t1_price": c["t1"] if c else None,
+            "t2_price": c["t2"] if c else None,
+            "risk_reward": c["risk_reward"] if c else None,
+            "grade": c.get("grade") if c else None,
+            "outcome": t["outcome"] if t else None,
+            "steps": [{"kind": s["kind"], "ts": int(bars[s["index"]]["ts"]), "price": round(float(s["price"]), 2),
+                       "reason": s.get("reason")} for s in t["steps"]] if t else [],
+        })
     return out

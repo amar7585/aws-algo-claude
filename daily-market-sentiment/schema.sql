@@ -55,24 +55,16 @@ CREATE TABLE IF NOT EXISTS algo.daily_market_sentiment (
     -- SAME rules intraday-market-sentiment runs on 5-minute candles. That is
     -- new: this table previously held a port of trading-algo's
     -- detect_market_regime / calculate_sentiment while the intraday path held
-    -- a port of a different legacy builder, so `regime` and `score` were
-    -- different measurements sharing a name across the two tables.
-    --
-    -- score IS NOT COMPARABLE ACROSS FRAMES WITHOUT max_score. The 5-minute
-    -- frame carries a VWAP term this frame cannot - there is no session VWAP
-    -- on a daily candle - so it scores out of 5 and this out of 4. Stored so a
-    -- reader normalises rather than assumes.
-    bias              text    NOT NULL,   -- bullish | bearish | range-bound
+    -- a port of a different legacy builder, so `regime` was a different
+    -- measurement sharing a name across the two tables. (bias, score, max_score
+    -- and confidence were dropped 2026-11-19 - migrations/2026-11-19-drop-bias.sql.)
     structure         text    NOT NULL,   -- trending | sideways | transitional
     regime            text    NOT NULL,   -- trending | sideways | volatile-expansion
     volatility        text,               -- low | normal | high; null without VIX
-    score             integer NOT NULL,
-    max_score         integer NOT NULL,
-    confidence        numeric NOT NULL,
 
     -- the swing read behind `structure`, over the recent DAILY bars rather
-    -- than one session - which is what identifies a broken trend and the
-    -- broader bias. swing_high/low are null until two swings of each kind
+    -- than one session - which is what identifies a broken trend.
+    -- swing_high/low are null until two swings of each kind
     -- confirm; structure_determined says so explicitly rather than leaving a
     -- caller to infer it from the nulls.
     swing_direction        text    NOT NULL,   -- up | down | none

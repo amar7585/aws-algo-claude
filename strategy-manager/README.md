@@ -43,9 +43,9 @@ that setup must not act on.
 EventBridge (every 15 min)
   → intraday-data-loader        commits candles
   → intraday-market-sentiment   measures → intraday_fno_data, reads the daily row
-  → market-classifier           scores → intraday_sentiments (regime|bias|buildup)
+  → market-classifier           judges → intraday_sentiments (regime|structure|buildup|day_trend)
   → pattern-detector            confirmed turn? — on a turn only, invokes ↓
-  → strategy-manager            routes on regime|bias
+  → strategy-manager            routes on day_trend
   → the playbooks               fetch their own bars, gate again, report
 ```
 
@@ -79,8 +79,8 @@ today's closed index candles as `index_bars`.
 
 | `detection.day_trend` | Routed to |
 |---|---|
-| `up` / `down` | **`TREND_PLAYBOOKS`** (`strategy-trend-pullback`) — never the registry below |
-| `none`, or no `detection` | the `regime\|bias` registry below, exactly as before |
+| `up` / `down` | **`TREND_PLAYBOOKS`** (`strategy-trend-pullback`) |
+| `none`, or no `detection` | **nothing** — the range playbook (the sweep) runs on every tick. Until 2026-11-19 the `regime\|bias` registry below routed these; it dispatched nothing and was removed with bias |
 
 Why not a registry cell: a trend day's hold is a breakout trade, and the only
 filled cell (`sideways|range-bound`) is a range playbook that would fade it. And
@@ -94,7 +94,13 @@ Deployed 2026-11-09 22:36 IST (CodeSha256 `bwCjwZCp…`, previous `yfd92VM/…`)
 change is **additive**: `context_version` stays 2 and the sweep playbook reads the
 new context unchanged (verified offline 2026-11-09).
 
-## Routing is on a combination
+## Routing was on a combination — REMOVED 2026-11-19
+
+**The registry below no longer exists.** Amar removed bias system-wide on 2026-11-19, and
+the `regime|bias` registry went with it: its only filled cell (`sideways|range-bound` → the
+sweep) was always left out because the sweep runs on every tick, so it dispatched nothing.
+No-trend alerts now route nowhere; the payload contract went to v3. The section is kept as
+the record of why it was built.
 
 `regime` alone is not enough. "sideways" says the swing read found no
 progression; it does not say whether the market is leaning up, leaning down, or
@@ -124,17 +130,20 @@ know — VIX behaviour, how much of the day's range is spent, opening-range
 width, time of day. A strategy that trusted an upstream gate it cannot see
 would fire on a bad day the moment that gate moved.
 
-## The payload contract — v2
+## The payload contract — v3 (v2 until 2026-11-19)
+
+**v3 (2026-11-19):** `bias`, `score`, `max_score` and `confidence` are gone from the snapshot
+and the daily read. Both playbooks assert v3. Everything below is otherwise unchanged.
 
 `CONTEXT_VERSION` is an interface. Every playbook asserts the version it was
 written against and raises on anything else, so a change is loud on both sides.
 
 ```json
 {
-  "context_version": 2,
+  "context_version": 3,
   "dispatched_at": 1789104600,
   "instrument": { "security_id": "13", "instrument_type": "INDEX", ... },
-  "snapshot":   { "snapshot_ts": ..., "regime": ..., "bias": ..., "sma9": ... },
+  "snapshot":   { "snapshot_ts": ..., "regime": ..., "structure": ..., "sma9": ... },
   "daily":      { "trade_date": ..., "regime": ..., "stale": false, ... }
 }
 ```
@@ -142,8 +151,8 @@ written against and raises on anything else, so a change is loud on both sides.
 **What changed from v1:**
 
 - `classification` is gone as a separate block — it is **on** the snapshot now
-  (`bias`, `structure`, `regime`, `volatility`, `score`, `max_score`,
-  `confidence`, `sma9/50/100/200`, `rsi`, `swing_*`).
+  (`structure`, `regime`, `volatility`, `sma9/50/100/200`, `rsi`, `swing_*`;
+  `bias`, `score`, `max_score`, `confidence` until v3).
 - `candles`, `live` and `daily_atr14` are gone. Playbooks fetch their own.
 - `sma20` no longer exists anywhere; the frame carries `sma9`.
 - `daily` may be `None`, and carries `stale` when this morning's 09:35 run did
@@ -182,7 +191,6 @@ fires. See CLAUDE.md.
 
 | Variable | Default | Why |
 |---|---|---|
-| `STRATEGY_REGISTRY` | the 9-cell map above | filling a cell is configuration, not a redeploy |
 | `TICK_PLAYBOOKS` | *(unset)* | comma-separated; the playbooks every tick goes to, whatever the regime, and which alert routing then leaves out. Unset = no tick routing |
 | `TREND_PLAYBOOKS` | *(unset)* | comma-separated; where a trend-day (`day_trend` up/down) alert goes. Unset = nowhere. Each name needs its ARN in `invoke-playbooks` |
 | `INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |

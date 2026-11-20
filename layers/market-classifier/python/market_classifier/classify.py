@@ -12,9 +12,8 @@ and the legacy intraday builder were both discarded rather than reconciled,
 because reconciling them meant picking one frame's rules and imposing them on
 the other. The rules below were defined fresh against the agreed taxonomy.
 
-THE TAXONOMY, AND WHY IT IS THREE SEPARATE ANSWERS:
+THE TAXONOMY, AND WHY IT IS TWO SEPARATE ANSWERS:
 
-    bias        bullish | bearish | range-bound    - which way, from a score
     structure   trending | sideways | transitional - what price is DOING,
                                                      from the swing read
     regime      trending | sideways |              - what KIND of day it is,
@@ -26,10 +25,16 @@ volatility has had a veto: on a day whose range is already expanding, the
 structure underneath is the thing being disrupted, so the regime says so and
 the structure label keeps reporting what it actually saw.
 
-NOTHING HERE FORECASTS. bias and regime name what price has already done.
-daily-market-sentiment measured its predecessor's score as not predictive of
-forward return; treat this the same way. Its job is to decide which playbooks
-are eligible.
+NOTHING HERE FORECASTS. regime names what price has already done.
+
+BIAS WAS REMOVED 2026-11-19 (Amar). A third answer - bias, bullish | bearish |
+range-bound from a +-5 score of SMA alignment, RSI, the swing direction and VWAP,
+with a confidence figure built on that score - used to sit beside these two. No
+decision used it any more: the sweep playbook dropped it 2026-11-14 (it made
+sweeps worse), the trend playbook routes on market-classifier's day_trend, and
+strategy-manager's regime|bias registry dispatched nothing. The score, its terms
+and confidence went with it; the columns were dropped from intraday_sentiments
+and daily_market_sentiment (migrations/2026-11-19-drop-bias.sql).
 
 EVERY THRESHOLD IS PROVISIONAL - see thresholds.py. The shape is agreed; the
 numbers wait on live sessions.
@@ -44,10 +49,6 @@ from .indicators import SMA_PERIODS
 
 logger = logging.getLogger(__name__)
 
-BULLISH = "bullish"
-BEARISH = "bearish"
-RANGE_BOUND = "range-bound"
-
 TRENDING = "trending"
 SIDEWAYS = "sideways"
 VOLATILE_EXPANSION = "volatile-expansion"
@@ -56,41 +57,10 @@ LOW = "low"
 NORMAL = "normal"
 HIGH = "high"
 
-# Present on the newest bar or the run fails. Absent any one of them the score
-# is not the score the rules describe - a missing SMA compared as 0.0 makes
-# `close > sma100 > sma200` read as `close > 0 > 0`, which is False, so the
-# term contributes nothing and the score silently caps. Legacy did that. This
-# raises instead.
+# Present on the newest bar or the run fails: they are carried through to the
+# result (daily-market-sentiment stores them), and a missing one is a broken
+# measurement upstream, not a value to default.
 REQUIRED = tuple(f"sma{p}" for p in SMA_PERIODS) + ("rsi",)
-
-_CONFIDENCE_FACTORS = {
-    TRENDING: "CONFIDENCE_FACTOR_TRENDING",
-    SIDEWAYS: "CONFIDENCE_FACTOR_SIDEWAYS",
-    VOLATILE_EXPANSION: "CONFIDENCE_FACTOR_VOLATILE",
-}
-
-
-def _alignment_score(bar):
-    """
-    The SMA term: +-2 for a full stack, +-1 for the fast pair only, else 0.
-
-    Full stack is close > sma9 > sma50 > sma100 > sma200 - price above every
-    average and every average in order. The partial credit is the fast pair
-    alone, which is where a turn shows up first.
-    """
-    close = float(bar["close"])
-    sma9, sma50 = float(bar["sma9"]), float(bar["sma50"])
-    sma100, sma200 = float(bar["sma100"]), float(bar["sma200"])
-    if close > sma9 > sma50 > sma100 > sma200:
-        return 2
-    if close < sma9 < sma50 < sma100 < sma200:
-        return -2
-    if close > sma9 > sma50:
-        return 1
-    if close < sma9 < sma50:
-        return -1
-    return 0
-
 
 def _volatility(vix, vix_baseline, day_range, expected_move, frame,
                 session_elapsed=1.0, recent_range_ratio=None):
@@ -220,7 +190,7 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
                       preserved because both callers use this same classify().
     frame             "5min" or "daily". Names the per-frame threshold overrides
                       and appears in the result; it does not change any rule.
-    vwap              session VWAP, intraday only. See the note on the term.
+    vwap              session VWAP, intraday only - carried through to the result.
     gap_pct           today's open against the previous close, carried through
                       to the result unscored.
     session_elapsed   fraction of the trading session already elapsed,
@@ -250,42 +220,6 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
     rsi = float(bar["rsi"])
     struct = structure
 
-    # ---- the score --------------------------------------------------------
-    # Four terms, +-4, and a fifth worth +-1 on the intraday frame only.
-    alignment = _alignment_score(bar)
-
-    rsi_bullish = rsi >= thresholds.get("RSI_BULLISH", frame)
-    rsi_bearish = rsi <= thresholds.get("RSI_BEARISH", frame)
-    momentum = 1 if rsi_bullish else -1 if rsi_bearish else 0
-
-    # The swing read's DIRECTION, not its label. A transitional or sideways
-    # structure has no direction and contributes nothing.
-    swing = {
-        structure_lib.UP: 1,
-        structure_lib.DOWN: -1,
-        structure_lib.NONE: 0,
-    }[struct["direction"]]
-
-    # VWAP IS ASYMMETRIC BETWEEN THE FRAMES, DELIBERATELY. There is no session
-    # VWAP on a daily candle, so this term exists intraday and not daily, and
-    # max_score moves with it rather than the daily frame being scored out of
-    # a total it can never reach. If that asymmetry is unwanted the term comes
-    # out in one place and max_score follows.
-    vwap_term = 0
-    if vwap is not None:
-        vwap_term = 1 if close > float(vwap) else -1 if close < float(vwap) else 0
-
-    score = alignment + momentum + swing + vwap_term
-    max_score = 4 + (1 if vwap is not None else 0)
-
-    bias_threshold = thresholds.get("BIAS_THRESHOLD", frame)
-    if score >= bias_threshold:
-        bias = BULLISH
-    elif score <= -bias_threshold:
-        bias = BEARISH
-    else:
-        bias = RANGE_BOUND
-
     # ---- regime -----------------------------------------------------------
     # Volatility has the first veto, then the swing read. A transitional
     # structure lands in sideways: it is not a trend, and it is the regime
@@ -300,26 +234,13 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
     else:
         regime = SIDEWAYS
 
-    confidence = (abs(score) / max_score) * 100
-    confidence *= thresholds.get(_CONFIDENCE_FACTORS[regime], frame)
-    confidence = round(min(confidence, 100.0), 2)
-
     result = {
         "frame": frame,
         "candle_ts": bar["ts"],
         "close": close,
-        "bias": bias,
         "structure": struct["structure"],
         "regime": regime,
         "volatility": vol["volatility"],
-        "score": score,
-        "max_score": max_score,
-        "confidence": confidence,
-        # the terms, so a row explains its own score
-        "score_alignment": alignment,
-        "score_momentum": momentum,
-        "score_swing": swing,
-        "score_vwap": vwap_term if vwap is not None else None,
         # the inputs
         "rsi": rsi,
         "vwap": round(float(vwap), 2) if vwap is not None else None,
@@ -344,13 +265,9 @@ def classify(frame, *, bar, structure, vix=None, vix_baseline=None,
         result[f"sma{period}"] = float(bar[f"sma{period}"])
 
     logger.info(
-        "%s: bias %s structure %s regime %s score %+d/%d confidence %.1f "
-        "(alignment %+d momentum %+d swing %+d vwap %s, rsi %.1f, "
-        "volatility %s expanding=%s via %s, structure over %d bars%s)",
-        frame, bias, struct["structure"], regime, score, max_score, confidence,
-        alignment, momentum, swing,
-        f"{vwap_term:+d}" if vwap is not None else "n/a",
-        rsi, vol["volatility"], vol["expanding"],
+        "%s: structure %s regime %s (rsi %.1f, volatility %s expanding=%s via %s, "
+        "structure over %d bars%s)",
+        frame, struct["structure"], regime, rsi, vol["volatility"], vol["expanding"],
         ",".join(vol["tests_run"]) or "no test",
         structure_bars if structure_bars is not None else 0,
         "" if struct["determined"] else " - undetermined: " + str(struct["reason"]),

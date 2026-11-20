@@ -24,7 +24,7 @@ Modules:
     dhan.py        charts API client, and the measured facts about it
     db.py          Neon access and the upserts
     indicators.py  SMA / RSI / ATR, pure Python
-    sentiment.py   regime, score, bias, the daily read
+    sentiment.py   regime, structure, the daily read
     width_profile.py  the normal 5-min width per clock slot, pure
     notify.py      Telegram
 
@@ -217,7 +217,6 @@ def lambda_handler(event, context):
             "rows_written": rows,
             "api_calls": client.calls,
             "regime": sentiment["regime"],
-            "score": sentiment["score"],
             "width_profile": {
                 "slots": profile_rows,
                 "sessions": len(profile_sessions),

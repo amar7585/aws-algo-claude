@@ -186,7 +186,7 @@ inside the range turns the trend off, so it is not this playbook's trade
 | `STOP_BUFFER_PCT` | 0.03 | the sweep playbook's buffer rule |
 | `STOP_BUFFER_RANGE_FACTOR` | 0.5 | |
 | `STOP_BUFFER_LOOKBACK_BARS` | 6 | |
-| `EXPECTED_CONTEXT_VERSION` | 2 | asserted against strategy-manager |
+| `EXPECTED_CONTEXT_VERSION` | 3 | asserted against strategy-manager (2 until 2026-11-19) |
 | `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | |
 
 ## Deployment shape

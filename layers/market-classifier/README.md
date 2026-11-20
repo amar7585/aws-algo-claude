@@ -20,7 +20,7 @@ caller owns `decorate()` and `read_structure()`, so the scorer needs only the
 newest bar's numbers and the swing result. That is what lets the
 `market-classifier` function score straight off a stored `intraday_fno_data`
 row without re-fetching bars, while `daily-market-sentiment` runs the identical
-`classify()` on daily candles (`frame="daily"`). Same rules, same score scale,
+`classify()` on daily candles (`frame="daily"`). Same rules,
 so a daily row and an intraday row can be read against each other.
 
 Pure Python, stdlib only. No dependency of its own.
@@ -44,7 +44,6 @@ Three separate answers, not one label:
 
 | Field | Values | From |
 |---|---|---|
-| `bias` | bullish / bearish / range-bound | the score, against `BIAS_THRESHOLD` |
 | `structure` | trending / sideways / transitional | the swing read alone |
 | `regime` | trending / sideways / volatile-expansion | the swing read **after** volatility has a veto |
 | `volatility` | low / normal / high | INDIA VIX against its bands |
@@ -54,7 +53,13 @@ same question. On a day whose range is expanding, the structure underneath is
 the thing being disrupted — so `regime` says `volatile-expansion` while
 `structure` keeps reporting what it actually saw.
 
-### The score
+### The score — REMOVED 2026-11-19
+
+**bias, the score, max_score and confidence were removed on 2026-11-19 (Amar),** in layer
+version 4: no decision used them any more (the sweep dropped bias 2026-11-14; the trend
+playbook routes on day_trend; the manager's regime|bias registry dispatched nothing). The
+columns were backed up and dropped (`migrations/2026-11-19-drop-bias.sql`). Kept below as the
+record.
 
 Four terms, ±4, plus a fifth worth ±1 on the intraday frame only.
 
@@ -195,7 +200,7 @@ One swap is worth making at the same time: `near_straddle_pct` is the market's
 own implied move for the session and is a more direct input to the
 range-expansion test than the VIX-derived expected move it uses today.
 
-**3. The routing key.** `STRATEGY_REGISTRY` in `strategy-manager` is keyed on a
+**3. The routing key** (resolved 2026-11-19: the registry was removed with bias). `STRATEGY_REGISTRY` in `strategy-manager` was keyed on a
 `regime|bias` combination, but only one cell is filled and it is a placeholder.
 Which combinations run which playbook is a decision to take against observed
 sessions, not to infer from the taxonomy.

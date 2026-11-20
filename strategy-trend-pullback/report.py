@@ -36,6 +36,6 @@ def render(candidate, detection, snapshot, stamp):
     vz = d.get("vol_z")
     rv = d.get("rvol_tod")
     lines.append(f"v2: vol z {'-' if vz is None else f'{float(vz):.2f}'}, rvol {'-' if rv is None else f'{float(rv):.2f}'}x"
-                 f" | 15m {snapshot.get('regime') or '-'}|{snapshot.get('bias') or '-'}")
+                 f" | 15m {snapshot.get('regime') or '-'}")
     lines.append("Index points. Not an order.")
     return "\n".join(lines)

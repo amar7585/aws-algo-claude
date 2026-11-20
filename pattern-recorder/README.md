@@ -24,7 +24,7 @@ v2.1 event is still found. See `patterns._first_retest_only` and
 | Runtime | Python 3.14, zip package, 11 modules (`handler`, `config`, `db`, `dhan`, `params`, `inputs`, `structure`, `patterns`, `alerts`, `notify`, `dispatch`) |
 | Layers | `neon-db-driver` + `neon-access` |
 | Schedule | **none.** `intraday-fno-poller` invokes it (`Event`) as its **last** step, 71×/day, behind its `PATTERN_RECORDER_FUNCTION_NAME` (unset = off) |
-| Reads | Dhan: today's index and future 5-min candles, in memory, never saved. Neon: earlier sessions' `candle_5min`; `intraday_fno_data` (walls, each day's contract, the latest 15-min snapshot); `intraday_sentiments` (`day_trend`, regime, bias); `fno_5m_snapshot` (the previous tick, each bar's OI change); `daily_market_sentiment` (the daily read for the manager) |
+| Reads | Dhan: today's index and future 5-min candles, in memory, never saved. Neon: earlier sessions' `candle_5min`; `intraday_fno_data` (walls, each day's contract, the latest 15-min snapshot); `intraday_sentiments` (`day_trend`, regime); `fno_5m_snapshot` (the previous tick, each bar's OI change); `daily_market_sentiment` (the daily read for the manager) |
 | Writes | `algo.pattern_events` only ([schema](schema.sql)), including its `telegram_sent_at` / `manager_sent_at` marks. **Never** `session_observations` |
 | Sends | Telegram (`/algo/telegram/brief`, the same chat as everything else), and strategy-manager (`Event`) |
 | Secrets | `/algo/neon/connection`, `/algo/dhan/token`, `/algo/telegram/brief` |
@@ -43,7 +43,7 @@ v2.1 event is still found. See `patterns._first_retest_only` and
 ```
 every 5 min:  intraday-fno-poller ─(writes its 5-min row, then)─Event─► pattern-recorder v2.1
                  today's index + future candles from Dhan · history from candle_5min
-                 latest 15-min row (day_trend, regime|bias, walls) · daily read
+                 latest 15-min row (day_trend, regime, walls) · daily read
                  → upsert algo.pattern_events (rules v2.2 since 2026-11-19; v2.1 before)
                  → alert = new event at PDH/PDL/ORH/ORL that fits day_trend
                  → Telegram + strategy-manager, once each (claim, send, mark)
@@ -221,8 +221,10 @@ a wildcard. See CLAUDE.md on the silent borrowed-role trap.
    - re-create `invoke-pattern-recorder` on `pattern-detector-role` first (removed
      2026-11-19; the document is in [iam/](iam/README.md)), then set the detector's
      `PATTERN_RECORDER_FUNCTION_NAME` again;
-   - set its `TELEGRAM_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME` again, so v1 sends
-     as before.
+   - re-create `invoke-strategy-manager` on `pattern-detector-role` (removed 2026-11-19;
+     the document is in [pattern-detector/iam/](../pattern-detector/iam/pattern-detector-role.invoke-strategy-manager.json)),
+     then set its `TELEGRAM_ENABLED=on` and `STRATEGY_MANAGER_FUNCTION_NAME` again, so v1
+     sends as before.
 5. Delete this function and its role; `DROP TABLE algo.pattern_events`.
 
 v2.0, v2.1 and v2.2 rows sit side by side in the table (`rules_version` is in the key),

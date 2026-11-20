@@ -54,7 +54,7 @@ logger.setLevel(logging.INFO)
 REQUIRED_FNO = (
     "security_id", "instrument_type", "snapshot_ts", "captured_at", "fut_security_id", "spot",
 )
-REQUIRED_SENTIMENT = ("regime", "bias")
+REQUIRED_SENTIMENT = ("regime",)
 
 
 def read_event(event):

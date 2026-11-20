@@ -17,7 +17,8 @@ BEGIN;
 --
 -- THE OTHER HALF OF THE SPLIT. algo.intraday_fno_data holds what was measured;
 -- this holds what the market-classifier layer decided FROM it - regime,
--- structure, bias, buildup and the swing/volatility reads. The two join on
+-- structure, buildup, day_trend and the swing/volatility reads (bias, score,
+-- max_score and confidence until 2026-11-19 - migrations/2026-11-19-drop-bias.sql). The two join on
 -- (security_id, instrument_type, snapshot_ts): exactly one fno-data row and one
 -- sentiments row per snapshot, written in that order by two functions
 -- (intraday-market-sentiment measures and invokes market-classifier, which
@@ -26,15 +27,7 @@ BEGIN;
 --
 -- ONE RULE SET, BOTH FRAMES. The layer's classify() that fills this is the same
 -- one daily-market-sentiment runs on daily candles, so a row here and a daily
--- row are on one scale. max_score is stored because the 5-minute frame carries
--- a VWAP term the daily frame cannot (max_score 5 here, 4 there) - a reader
--- normalises rather than assumes.
---
--- NO OPTION TERM FEEDS THE SCORE YET. Dhan serves no historical option chain,
--- so PCR / IV-skew / straddle thresholds cannot be measured until fno-data rows
--- accumulate; scoring them on invented numbers would make `bias` mean one thing
--- before recalibration and another after. When the rows exist the agreed shape
--- is a separate options overlay, not extra terms folded into `score`.
+-- row are on one scale.
 --
 -- buildup IS A JUDGEMENT LABEL, not a measurement. It is the four-quadrant read
 -- of fut_price_change_pct against fut_oi_change_pct (LONG_BUILDUP, SHORT_BUILDUP,
@@ -49,13 +42,9 @@ CREATE TABLE IF NOT EXISTS algo.intraday_sentiments (
     prev_snapshot_ts       bigint,             -- the baseline behind the deltas judged
 
     -- ---- the classification ------------------------------------------------
-    bias                   text    NOT NULL,   -- bullish | bearish | range-bound
     structure              text    NOT NULL,   -- trending | sideways | transitional
     regime                 text    NOT NULL,   -- trending | sideways | volatile-expansion
     volatility             text,               -- low | normal | high; null without VIX
-    score                  integer NOT NULL,
-    max_score              integer NOT NULL,
-    confidence             numeric NOT NULL,
 
     -- ---- futures OI buildup (derived from the fno-data deltas) --------------
     buildup                text,               -- LONG_BUILDUP | SHORT_BUILDUP |

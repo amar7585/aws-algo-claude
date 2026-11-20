@@ -33,8 +33,8 @@ snapshot row by the function that computed it, so there is nothing here worth
 duplicating into a second table.
 
 WHAT IT DOES NOT DO. It does not place orders, hold position state, size
-anything, or decide whether a setup is worth taking. The regime-and-bias gate
-is the whole of its judgement.
+anything, or decide whether a setup is worth taking. day_trend is the whole of
+its judgement (the regime|bias registry was removed with bias, 2026-11-19).
 
 SINCE 2026-11-14 pattern-recorder also hands over EVERY tick (source
 "pattern-recorder-tick"); those go to TICK_PLAYBOOKS whatever the regime, and
@@ -43,12 +43,12 @@ alert routing leaves the TICK_PLAYBOOKS out.
 SINCE 2026-11-09 the caller is pattern-recorder (v2), once per v2 alert, and the
 payload adds v2's alert (`detection`, carrying day_trend) and today's closed
 index candles (`index_bars`). ROUTING: day_trend up/down -> TREND_PLAYBOOKS
-(strategy-trend-pullback); day_trend none, or no `detection` -> the regime|bias
-registry as before. Both are carried through to the playbooks.
+(strategy-trend-pullback); day_trend none, or no `detection` -> nothing (the
+sweep runs on every tick). Both are carried through to the playbooks.
 
 Modules:
-    config.py    the payload contract and the registry
-    registry.py  the routing key, the gate and the asynchronous dispatch
+    config.py    the payload contract and the playbook lists
+    registry.py  the trend shortlist and the asynchronous dispatch
 """
 
 import logging
@@ -57,7 +57,7 @@ import time
 from neon_access import ist_datetime, now_epoch
 
 from config import CONTEXT_VERSION, TICK_PLAYBOOKS, TICK_SOURCE
-from registry import TREND_STATES, dispatch, routing_key, shortlist, trend_shortlist
+from registry import TREND_STATES, dispatch, trend_shortlist
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -67,15 +67,12 @@ logger.setLevel(logging.INFO)
 #
 # CHECKED, NOT ASSUMED. A snapshot arriving without its classification means
 # intraday-market-sentiment wrote a row the old way - before the classifier
-# was wired in - and routing on a missing regime would resolve to the key
-# "None|None", miss the registry, and raise a confusing drift error instead of
-# naming the real problem.
+# was wired in - and that is named here rather than passed on.
 REQUIRED_SNAPSHOT_KEYS = (
     "snapshot_ts",
     "security_id",
     "instrument_type",
     "regime",
-    "bias",
 )
 
 
@@ -148,16 +145,12 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     snapshot, instrument, daily, detection, index_bars, source, tick = read_event(event)
 
     snapshot_ts = int(snapshot["snapshot_ts"])
-    regime, bias = snapshot["regime"], snapshot["bias"]
+    regime = snapshot["regime"]
     day_trend = (detection or {}).get("day_trend")
     logger.info(
-        "snapshot %s: %s, structure %s, volatility %s, score %s/%s, "
-        "confidence %s",
+        "snapshot %s: regime %s, structure %s, volatility %s",
         ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
-        routing_key(regime, bias),
-        snapshot.get("structure"), snapshot.get("volatility"),
-        snapshot.get("score"), snapshot.get("max_score"),
-        snapshot.get("confidence"),
+        regime, snapshot.get("structure"), snapshot.get("volatility"),
     )
 
     # The whole contract. Two rows and an instrument - the snapshot carries its
@@ -182,8 +175,9 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     # ROUTING. An every-tick hand-off (2026-11-14) goes to TICK_PLAYBOOKS
     # whatever the regime - they apply their own entry cell and keep following
     # an open trade. A trend day (v2's day_trend up/down) goes to the trend
-    # playbooks, never to the regime|bias registry - see config.TREND_PLAYBOOKS.
-    # Alert routing leaves the tick playbooks out: the tick already ran them.
+    # playbooks - see config.TREND_PLAYBOOKS. Any other alert routes nowhere: the
+    # range playbook already runs on every tick. Alert routing leaves the tick
+    # playbooks out: the tick already ran them.
     if source == TICK_SOURCE:
         dispatch_context["source"] = source
         dispatch_context["tick"] = tick
@@ -195,8 +189,9 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
             route = f"day trend {day_trend}"
             eligible = trend_shortlist(day_trend)
         else:
-            route = routing_key(regime, bias)
-            eligible = shortlist(regime, bias)
+            route = f"no day trend ({regime})"
+            eligible = []
+            logger.info("%s: nothing routed - the range playbook runs on every tick", route)
         skipped = [f for f in eligible if f in TICK_PLAYBOOKS]
         if skipped:
             logger.info("%s: %s left out - it runs on every tick", route, ", ".join(skipped))
@@ -212,19 +207,14 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "status": "success",
         "snapshot": ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
         "instrument": instrument.get("trading_symbol"),
-        "routing_key": routing_key(regime, bias),
         "route": route,
         "day_trend": day_trend,
         "regime": regime,
-        "bias": bias,
         "structure": snapshot.get("structure"),
         "volatility": snapshot.get("volatility"),
-        "score": snapshot.get("score"),
-        "confidence": snapshot.get("confidence"),
         "daily_read": None if not daily else {
             "trade_date": daily.get("trade_date"),
             "regime": daily.get("regime"),
-            "bias": daily.get("bias"),
             "stale": daily.get("stale"),
         },
         "eligible": eligible,

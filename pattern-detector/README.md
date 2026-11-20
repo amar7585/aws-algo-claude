@@ -207,8 +207,10 @@ sent: ..."), but nothing goes to Telegram. It exists so v1 can become log-only o
 - **Before deploying this code,** set `TELEGRAM_ENABLED=on` on the live function. The old
   code ignores it, so the deploy changes nothing.
 - **At the v2.1 cutover,** unset it, together with `STRATEGY_MANAGER_FUNCTION_NAME`.
-  **Done 2026-11-09 16:04:11 IST** (the function has no env vars now). Rollback: set both
-  again (`TELEGRAM_ENABLED=on`, `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager`).
+  **Done 2026-11-09 16:04:11 IST** (the function has no env vars now). Rollback: re-create
+  the role's `invoke-strategy-manager` policy first (removed 2026-11-19 20:38 IST; the
+  document is in [iam/](iam/pattern-detector-role.invoke-strategy-manager.json)), then set
+  both again (`TELEGRAM_ENABLED=on`, `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager`).
 - **Replayed over 880 stored runs against the deployed code:**
   - with it on, every decision and outward call is identical: 70 Telegram messages and 30
     manager invokes;
@@ -224,7 +226,7 @@ and future-dependent.
   → market-classifier    writes intraday_sentiments, invokes with fno + sentiment
   → pattern-detector      confirmed turn?  ── no ─→ stand down, log the reason
                                             └─ yes ─→ invoke ↓
-  → strategy-manager      routes on regime|bias  (now runs ONLY on a turn)
+  → strategy-manager      routes on day_trend (v1 dispatches nothing since 2026-11-09)
 
   pattern-detector, last step, every run ─→ pattern-recorder (Event) → algo.pattern_events
 ```
@@ -258,11 +260,12 @@ set, a turn is detected and logged and nothing is dispatched.
 
 Its own execution role (`pattern-detector-role`), not a borrowed one:
 `ssm:GetParameter` on `/algo/neon/connection` **and `/algo/telegram/brief`**
-(+ `kms:Decrypt` via SSM), `logs` on **its own** log group only, and
-`lambda:InvokeFunction` on `strategy-manager`'s ARN —
-not a wildcard. (Its `invoke-pattern-recorder` policy, for the v2.0 hand-off, was
-removed 2026-11-19 17:42 IST: v2.1 runs on intraday-fno-poller. The document is kept
-in [pattern-recorder/iam/](../pattern-recorder/iam/README.md).) A role
+(+ `kms:Decrypt` via SSM) and `logs` on **its own** log group only — it invokes
+nothing since 2026-11-19: v1 is log-only. Its `invoke-pattern-recorder` policy (the v2.0
+hand-off) was removed 2026-11-19 17:42 IST — the document is kept in
+[pattern-recorder/iam/](../pattern-recorder/iam/README.md) — and its
+`invoke-strategy-manager` policy 20:38 IST, kept in
+[iam/](iam/pattern-detector-role.invoke-strategy-manager.json). A role
 missing the Telegram parameter does not fail at import: it raises on the first
 alert, after the detection has already run. See CLAUDE.md on the silent
 borrowed-role trap. `error-notifier` is subscribed to this function's log group.
@@ -271,7 +274,7 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 
 | Variable | Default | Why |
 |---|---|---|
-| `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = off; set it to switch the manager gate on |
+| `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = off; set it to switch the manager gate on. Since 2026-11-19 the role no longer allows the invoke - re-create `invoke-strategy-manager` first |
 | `STRATEGY_MANAGER_INVOCATION_TYPE` | `Event` | a slow playbook must not sit inside this timeout |
 | `PATTERN_RECORDER_FUNCTION_NAME` | *(unset)* | unset = off; set to `pattern-recorder` to hand every run to v2.0 (always `Event`). **Unset it when v2.1 goes on**: v2.1 runs on intraday-fno-poller and refuses this payload. Since 2026-11-19 the role no longer allows this invoke, so setting it would raise on every run |
 | `VOLUME_Z_MIN` | `2.0` | z that counts as a volume spike (spikes only) — **provisional** |

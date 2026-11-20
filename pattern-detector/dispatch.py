@@ -6,7 +6,7 @@ manager runs on a turn, not on every snapshot. Same shape as the other
 dispatches: asynchronous (Event), write-nothing-first-there-is-nothing-to-write,
 UNSET means off.
 
-The manager routes on regime|bias, which live on the sentiment row; it is handed
+The manager routes on day_trend and regime, which live on the sentiment row; it is handed
 the measurement and judgement MERGED as `snapshot` (so a playbook has the full
 picture and fetches only its own bars), with the detection alongside so a
 playbook can see what turned and which way.
@@ -40,7 +40,7 @@ def dispatch_to_manager(fno, sentiment, instrument, detection, daily=None, clien
         )
         return None
 
-    # The manager reads regime|bias from `snapshot`; give it measurement +
+    # The manager reads regime from `snapshot`; give it measurement +
     # judgement merged (identical keys carry identical values), so a playbook
     # has the full read and fetches only bars.
     snapshot = {**fno, **sentiment}

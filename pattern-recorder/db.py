@@ -9,7 +9,7 @@ types, so the connection string comes only from /algo/neon/connection.
 READS  algo.candle_5min            earlier sessions' 5-min bars (today's come from Dhan)
        algo.intraday_fno_data      the option walls, each day's active contract,
                                    and the latest 15-min snapshot (for the manager)
-       algo.intraday_sentiments    the latest day_trend, regime and bias
+       algo.intraday_sentiments    the latest day_trend and regime
        algo.fno_5m_snapshot        the previous tick's captured_at, each bar's OI change
        algo.daily_market_sentiment the daily read handed to the manager
 WRITES algo.pattern_events         and nothing else - never session_observations.
@@ -46,8 +46,7 @@ SENT_MARKS = ("telegram_sent_at", "manager_sent_at")
 # The daily read exactly as intraday-market-sentiment hands it on (its db.py), so
 # strategy-manager and its playbooks see the same shape from either sender.
 DAILY_COLUMNS = (
-    "trade_date", "bias", "structure", "regime", "volatility",
-    "score", "max_score", "confidence",
+    "trade_date", "structure", "regime", "volatility",
     "swing_direction", "swing_high", "swing_low", "structure_determined",
     "range_used", "volatility_expanding", "gap_pct",
     "pd_high", "pd_low", "pd_close",

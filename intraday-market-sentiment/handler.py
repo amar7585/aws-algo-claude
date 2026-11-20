@@ -523,7 +523,6 @@ def lambda_handler(event, context):
                 else {
                     "trade_date": daily["trade_date"],
                     "regime": daily["regime"],
-                    "bias": daily["bias"],
                     "stale": daily["stale"],
                 }
             ),

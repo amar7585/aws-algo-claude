@@ -18,7 +18,7 @@ BEGIN;
 --
 -- MEASUREMENT ONLY. This holds what was measured - price, indicators, OI,
 -- straddle, VIX and the *_change_pct deltas. The JUDGEMENT built from it
--- (regime, structure, bias, buildup and the swing/volatility reads) lives in
+-- (regime, structure, buildup, day_trend and the swing/volatility reads) lives in
 -- algo.intraday_sentiments, written by the market-classifier function this one
 -- invokes. One job per function: this measures, the classifier decides.
 --
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS algo.intraday_fno_data (
     -- The SMAs and RSI the classifier scores from. Computed HERE because only
     -- this function fetches the ~200-bar cross-session history sma200 needs;
     -- the classifier reads these scalars off the row rather than re-fetching
-    -- bars. The classification they feed - regime, structure, bias and the
+    -- bars. The classification they feed - regime, structure and the
     -- swing/volatility reads - is written to algo.intraday_sentiments, not here.
     sma9                   numeric NOT NULL,
     sma50                  numeric NOT NULL,

@@ -29,14 +29,14 @@ flowchart TD
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on every 5-min tick<br/>since 2026-11-14</i>"]
         TREND["<b>strategy-trend-pullback</b><br/><i>invoked on day_trend up/down<br/>sending since 2026-11-11 16:56</i>"]
-        REC["<b>pattern-recorder</b> v2.1<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
+        REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
         REC -->|"each alert, once"| TG3{{"Telegram"}}
         REC -->|"Event: each alert, once"| MGR
         REC -->|"Event: every tick, last step"| MGR
         MGR -->|"Event: every tick (TICK_PLAYBOOKS)"| SWEEP
         MGR -->|"Event: day_trend up/down"| TREND
         SWEEP --> PAL[("playbook_alerts<br/><i>the alert register</i>")]
-        SWEEP -->|"entries + trade steps,<br/>tagged current / new"| TG5{{"Telegram"}}
+        SWEEP -->|"entries + trade steps"| TG5{{"Telegram"}}
         SWEEP --> LOG{{"CloudWatch log"}}
         TREND -->|"candidate"| TG4{{"Telegram"}}
         TREND --> LOG
@@ -97,7 +97,7 @@ Read in clock order, a weekday looks like this:
 | as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram; then hands the tick to the manager (since 2026-11-14) |
 | on each v2.1 alert, once — and on every tick (since 2026-11-14) | `strategy-manager` | **invoke** | nothing |
 | then, on a `day_trend` up/down alert | `strategy-trend-pullback` | **invoke** | nothing (Telegram + its log) |
-| on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | Telegram (entries + trade steps, tagged current / new), `playbook_alerts` (the alert register, since 22:01) |
+| on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | Telegram (entries + trade steps), `playbook_alerts` (the alert register, since 22:01) |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
 **Ten schedules drive this flow, and three of them drive the same intraday
@@ -112,8 +112,8 @@ separate reading. Since 2026-11-09 it hands each committed tick to
 Everything else in the session is chained: the loader commits and invokes the
 sentiment function, which measures and invokes the classifier, which writes the
 judgement and invokes the detector, which logs. The manager is invoked by
-`pattern-recorder`, once per v2.1 alert, and routes — on the alert's `day_trend`
-first, then on `regime|bias`. Since 2026-11-14 the recorder also hands it every
+`pattern-recorder`, once per v2.1 alert, and routes on the alert's `day_trend`
+(no-trend alerts route nowhere since 2026-11-19). Since 2026-11-14 the recorder also hands it every
 tick, which goes to `TICK_PLAYBOOKS` (the sweep) whatever the regime.
 
 **Why chained rather than four crons.** Each step's input *is* the previous
@@ -421,39 +421,36 @@ flowchart TD
 
     WRITE --> CLSF["<b>market-classifier</b> - Event invoke<br/><i>row + today's bars + VIX baseline + run clock</i>"]
     WRITE -->|"no width ratio: written + dispatched, THEN"| RAISE
-    CLSF --> SCORE["<b>market-classifier layer</b>, 5-min frame<br/>structure read, SMA alignment, RSI,<br/>VWAP term, buildup; volatility = VIX move<br/>or the last 30 min &ge; 2.0&times; normal"]
-    SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, bias, buildup</i>")]
+    CLSF --> SCORE["<b>market-classifier layer</b>, 5-min frame<br/>structure read + volatility veto, buildup;<br/>volatility = VIX move<br/>or the last 30 min &ge; 2.0&times; normal"]
+    SCORE --> WRITE2[("intraday_sentiments<br/><i>regime, structure, buildup, day_trend</i>")]
 
     WRITE2 --> PD["<b>pattern-detector</b> - Event invoke<br/><i>reads the future's candle_5min</i>"]
     PD --> TURN{"abnormal-volume reversal<br/>+ buildup/OI confirm?"}
     TURN -->|"no turn"| STAND(["stand down, log the reason"])
     TURN -->|"confirmed turn"| TLOG(["log it<br/><i>log-only since 2026-11-09 16:04</i>"])
-    POLL(["intraday-fno-poller tick<br/><b>Event invoke</b>, every 5 min"]) --> REC["<b>pattern-recorder</b> v2.1<br/><i>re-derive the session, upsert</i>"]
+    POLL(["intraday-fno-poller tick<br/><b>Event invoke</b>, every 5 min"]) --> REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>re-derive the session, upsert</i>"]
     REC --> PEV[("pattern_events")]
     REC --> ALERT{"new event at a key level<br/>that day_trend allows?"}
     ALERT -->|"yes, once"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
     REC -->|"every tick, last step<br/>TICK_HANDOFF_ENABLED"| MGR
 
     MGR --> SRC{"a tick payload?"}
-    SRC -->|"tick"| TICKINV["<b>Event invoke</b> TICK_PLAYBOOKS<br/><i>whatever the regime: context v2<br/>+ today's closed candles + tick</i>"]
+    SRC -->|"tick"| TICKINV["<b>Event invoke</b> TICK_PLAYBOOKS<br/><i>whatever the regime: context v3<br/>+ today's closed candles + tick</i>"]
     SRC -->|"an alert"| DT{"detection.day_trend?"}
-    DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v2 + detection + index_bars</i>"]
+    DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v3 + detection + index_bars</i>"]
     TINV --> TPB["strategy-trend-pullback<br/><i>reads nothing</i>"]
     TPB --> TGATE{"C2 or R1 hold, with the trend,<br/>at PDH/PDL/ORH/ORL,<br/>closes 09:45-14:30?"}
     TGATE -->|"any fails"| TDOWN(["stand down,<br/>naming every reason"])
     TGATE -->|"all pass"| TOUT{{"TREND PULLBACK candidate<br/><i>entry, stop on the trend-off line,<br/>T1/T2 - Telegram + log</i>"}}
-    DT -->|"none"| KEY{"regime|bias<br/>in STRATEGY_REGISTRY?"}
-    KEY -->|"no - drift"| RAISE
-    KEY -->|"present, empty"| NONE(["no playbook is valid<br/>on this kind of day"])
-    KEY -->|"sideways|range-bound"| NOSW(["nothing: its one playbook,<br/>the sweep, is in TICK_PLAYBOOKS"])
+    DT -->|"none"| NOSW(["nothing routed: the range playbook,<br/>the sweep, runs on every tick"])
 
     TICKINV --> SWEEP["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
     SWEEP --> OWN["today's CLOSED candles from the payload<br/>+ candle_daily for ATR + today's 15-min rows<br/><i>each candle judged by the row in force then</i>"]
-    OWN --> DER["re-derive the session candle by candle<br/>under BOTH rule sets: current / new"]
+    OWN --> DER["re-derive the session candle by candle"]
     DER --> FINE{"per candle: price within the levels,<br/>regime not volatile-expansion, VIX within &plusmn;5%,<br/>adr &lt; 0.78 &times; ATR14, OR &ge; 0.15%, 09:45-15:00?"}
     FINE -->|"any fails"| DOWN(["no new entry on that candle<br/><i>an open trade is still followed</i>"])
     FINE -->|all pass| SCAN["entries at the pools; then each new-rules<br/>trade's exit / watch / re-entry"]
-    SCAN --> OUT{{"messages for the NEWEST candle<br/><i>tagged current / new / both - Telegram</i>"}}
+    SCAN --> OUT{{"messages for the NEWEST candle<br/><i>Telegram</i>"}}
     OUT --> REGW[("playbook_alerts<br/><i>the whole register, after the messages</i>")]
 
     style RAISE fill:#7f1d1d,color:#fff
@@ -483,9 +480,9 @@ that bar's own high, low and volume — is not read by anything.
 an intraday row are on one scale. They were not before: the daily path ported
 `detect_market_regime` (±7 score, TREND/RANGE/TRANSITION) and the intraday path
 a different legacy builder (±3, TREND/RANGE), and `regime` meant two different
-things depending on which table you read it from. `max_score` is stored because
-the frames are still not on one *total* — the 5-minute frame carries a VWAP term
-the daily frame cannot. The intraday classification now lives on
+things depending on which table you read it from. (Until 2026-11-19 a `max_score`
+column was stored as well, because the score's 5-minute frame carried a VWAP term
+the daily frame could not; it went with bias.) The intraday classification now lives on
 `intraday_sentiments`, written by `market-classifier`; `intraday-market-sentiment`
 only measures (`intraday_fno_data`), and the two join on `snapshot_ts`.
 
@@ -518,28 +515,22 @@ An event that is new on this tick, sits at a key level (PDH, PDL, or the opening
 range high or low), and points the way the classifier's `day_trend` allows, goes
 to Telegram and invokes the manager, once each; a quiet tick never reaches routing
 at all. The manager is handed the latest 15-min snapshot, so it routes on that
-snapshot's `regime|bias`. Before 2026-11-09 the gate was `pattern-detector`'s
+snapshot's `day_trend`. Before 2026-11-09 the gate was `pattern-detector`'s
 confirmed turn, which is now log-only; see
 [pattern-recorder](../pattern-recorder/README.md).
 
 **Trend days route on `day_trend`, not on the registry** (since 2026-11-09 22:37).
 The alert arrives as `detection`, carrying the `day_trend` that `pattern-recorder`
-judged it against. Up or down goes to `TREND_PLAYBOOKS` — `strategy-trend-pullback`
-— and never to the registry; `none` (or no `detection`) goes to the registry below.
-A trend day's hold is a breakout trade, the one filled registry cell is a range
-playbook that would fade it, and `regime|bias` lags the trend read: on 2026-11-06
-bias read range-bound 10:45–11:30, exactly during the PDH hold. The playbook reads
+judged it against. Up or down goes to `TREND_PLAYBOOKS` — `strategy-trend-pullback`;
+`none` (or no `detection`) routes nothing — the range playbook, the sweep, runs
+on every tick. The `regime|bias` registry that used to route those alerts dispatched
+nothing (its one filled cell was the sweep) and was removed with bias on 2026-11-19;
+the payload contract went to v3. The playbook reads
 nothing — the payload carries today's closed index candles and the daily read — and
 it has sent its candidates to Telegram since 2026-11-11 16:56 (`TELEGRAM_ENABLED=on`;
 unset = shadow, logged `WOULD SEND`). See
 [strategy-trend-pullback](../strategy-trend-pullback/README.md).
 
-**On a no-trend alert, routing is on `regime|bias`, and every cell is listed.** A key present and
-mapping to `[]` is a deliberate "no playbook today"; a key *missing* means the
-classifier and the registry have drifted apart, and that raises — routing
-nothing would otherwise look exactly like a correct stand-down. Eight of the
-nine cells are deliberately empty: which combinations run which playbook is a
-decision to take against observed sessions, and there are none yet.
 
 **The sweep takes today's closed candles from the tick, never a live price.** The
 only thing the manager ever called Dhan for was a live price, and this playbook never
@@ -607,7 +598,7 @@ it goes dark while appearing to succeed.
 **Two gaps remain.** Nothing watches the notifier itself, and nothing detects
 *silence* — a schedule that stops firing raises no error because nothing runs.
 The chained plane widens that second gap: a manager that is never invoked, or
-a playbook never dispatched because the registry lost its regime, is silent in
+a playbook never dispatched, is silent in
 exactly the same way as a quiet market.
 
 ## Failure handling
@@ -624,12 +615,11 @@ exactly the same way as a quiet market.
 | `intraday-data-loader` has stalled | the sentiment function fetches its own bars and never reads the loader's tables | cannot happen there; in the playbook a stale bar costs one scan the next run corrects |
 | Fewer than 200 closed 5-min bars | `MIN_BARS_TO_CLASSIFY`, before the layer is called | raise — not a score capped at ±2 |
 | An SMA absent on the newest bar | explicit `None` check in the layer | raise — never defaulted to `0.0` |
-| the classifier and the registry drift apart | `regime\|bias` key absent from `STRATEGY_REGISTRY` | raise — not an empty shortlist |
 | A trend-day alert with `TREND_PLAYBOOKS` unset | the manager's routing | logged as a deliberate stand-down — routed nowhere |
 | The trend playbook cannot place its levels or entry | trigger candle not in `index_bars`, opening range incomplete, daily read missing or stale | raise — `error-notifier` reports it; no candidate is guessed |
 | The dispatched context exceeds 256 KB | checked before `invoke` | raise, naming the two rows (a real one measures ~840 bytes) |
 | A strategy invoke is refused | `StatusCode` / `FunctionError` | every invoke attempted, then one raise naming all failures |
-| The manager's payload shape changes | `context_version` assertion in each strategy (now v2) | raise — never a gate passing on a vanished input |
+| The manager's payload shape changes | `context_version` assertion in each strategy (now v3, since 2026-11-19) | raise — never a gate passing on a vanished input |
 | A strategy fails after dispatch | its own log group → `error-notifier` | reported from there; the manager cannot see it and does not claim to |
 | The daily read is missing or stale | `stale` flag from `created_at`, set where the row is read | logged by both the reader and the router; the sweep playbook stands down on its own gate, the trend playbook raises (no PDH/PDL to place) |
 | Token JWT has no `exp` claim | claim check before write | raise — nothing stored |

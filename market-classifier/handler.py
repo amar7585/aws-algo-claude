@@ -23,7 +23,7 @@ already in algo.intraday_fno_data, written by the function that measured it.
 Writes only to Neon project "AI Trader APP" (nameless-mountain-15353651),
 database Algo, schema algo.
 
-THE DAY TREND (added 2026-11-08). Beside regime/structure/bias the row carries
+THE DAY TREND (added 2026-11-08). Beside regime/structure the row carries
 day_trend - up | down | none - from a level rule on the index's closed candles
 (PDH / PDL from the daily read, the opening range from today's bars). It is a
 separate answer, not an input to the score. See trend.py.
@@ -114,13 +114,9 @@ def build_row(fno, result, now, trend):
         "snapshot_ts": int(fno["snapshot_ts"]),
         "captured_at": int(fno["captured_at"]),
         "prev_snapshot_ts": fno.get("prev_snapshot_ts"),
-        "bias": result["bias"],
         "structure": result["structure"],
         "regime": result["regime"],
         "volatility": result["volatility"],
-        "score": int(result["score"]),
-        "max_score": int(result["max_score"]),
-        "confidence": result["confidence"],
         "buildup": buildup(
             fno.get("fut_price_change_pct"), fno.get("fut_oi_change_pct")
         ),
@@ -163,24 +159,20 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
 
     elapsed = time.monotonic() - started
     logger.info(
-        "done in %.2fs: snapshot %s bias %s structure %s regime %s buildup %s "
-        "day_trend %s (%+d/%d, confidence %.1f) - dispatched to %s",
+        "done in %.2fs: snapshot %s structure %s regime %s buildup %s "
+        "day_trend %s - dispatched to %s",
         elapsed, ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
-        row["bias"], row["structure"], row["regime"], row["buildup"],
-        row["day_trend"], row["score"], row["max_score"], row["confidence"], dispatched,
+        row["structure"], row["regime"], row["buildup"], row["day_trend"], dispatched,
     )
     return {
         "status": "success",
         "snapshot": ist_datetime(snapshot_ts).strftime("%Y-%m-%d %H:%M"),
         "instrument": instrument.get("trading_symbol"),
-        "bias": row["bias"],
         "structure": row["structure"],
         "regime": row["regime"],
         "volatility": row["volatility"],
         "buildup": row["buildup"],
         "day_trend": row["day_trend"],
-        "score": f"{row['score']:+d}/{row['max_score']}",
-        "confidence": row["confidence"],
         "dispatched_to": dispatched,
         "elapsed_seconds": round(elapsed, 2),
     }

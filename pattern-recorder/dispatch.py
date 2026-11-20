@@ -8,8 +8,8 @@ invoked. A configured invoke that does not land RAISES - a detected alert that
 never reached the manager is a silent hole.
 
 The manager routes a trend day (detection.day_trend up/down) to the trend
-playbooks and everything else on regime|bias, which live on the 15-min sentiment
-row. So the payload carries the latest 15-min snapshot (measurement + judgement
+playbooks and routes nothing else (the sweep runs on every tick); day_trend and
+regime live on the 15-min sentiment row. So the payload carries the latest 15-min snapshot (measurement + judgement
 merged, as pattern-detector sent it), the daily read, the instrument, the alert
 as `detection`, and - since 2026-11-09 - today's CLOSED index candles up to this
 tick as `index_bars`: a playbook judging a 5-min alert cannot use candle_5min,

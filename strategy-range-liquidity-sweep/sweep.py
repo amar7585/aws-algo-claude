@@ -31,8 +31,6 @@ from config import (
     ACCEPTANCE_CLOSES,
     MAX_PENETRATION_PCT,
     MIN_PENETRATION_PCT,
-    NO_FOLLOW_THROUGH_BARS,
-    NO_FOLLOW_THROUGH_RISK_FRACTION,
 )
 from levels import HIGH, LOW, ist_datetime
 
@@ -45,13 +43,6 @@ BREAKOUT = "breakout"
 NO_REJECTION = "no close back inside"
 EXTENDED = "next bar printed a new extreme"
 PENDING = "awaiting the confirmation bar"
-
-# What became of an attempt, once the bars after it are known.
-WORKED = "worked"
-CASE_A = "A"
-CASE_B = "B"
-CASE_C = "C"
-OPEN = "open"
 
 
 def _beyond(side, price, level):
@@ -182,53 +173,6 @@ def _evaluate(bars, index, pool):
     event["confirm_index"] = confirm_index
     event["confirm_ts"] = bars[confirm_index]["ts"]
     return event
-
-
-def acceptance_run(bars, level, side, from_index):
-    """
-    The longest run of consecutive closes BEYOND the level from `from_index`.
-
-    This is the single measurement that separates a broken range from a deep
-    sweep, and the playbook hangs its whole stop-out triage on it:
-    ACCEPTANCE_CLOSES consecutive closes beyond is Case A - the level did not
-    hold, the range is gone, and both sides are dead for the session. Anything
-    less, with price back inside, is Case B - the pool was deeper than the
-    first wick suggested and one re-entry is allowed.
-    """
-    longest = run = 0
-    for bar in bars[from_index:]:
-        if _beyond(side, bar["close"], level):
-            run += 1
-            longest = max(longest, run)
-        else:
-            run = 0
-    return longest
-
-
-def acceptance_at(bars, level, side, closes=None):
-    """
-    The bar index at which the Nth consecutive close beyond `level` completed.
-
-    None when it never happens. This is the moment the RANGE ITSELF broke, and
-    the playbook is unusually firm about the consequence: once a level has been
-    accepted through, that side is finished for the session AND so is the other
-    one, because "if the opening-range high has been accepted through, a later
-    sweep of the range low is not a range trade - the range no longer exists".
-
-    Computed independently of whether an attempt was ever taken, because the
-    range can break without this function having produced a candidate, and the
-    stand-down applies either way.
-    """
-    closes = ACCEPTANCE_CLOSES if closes is None else closes
-    run = 0
-    for index, bar in enumerate(bars):
-        if _beyond(side, bar["close"], level):
-            run += 1
-            if run >= closes:
-                return index
-        else:
-            run = 0
-    return None
 
 
 # --------------------------------------------------------------------------
@@ -388,53 +332,3 @@ def range_broke_at(bars, level, side):
     pool = {"name": "_range", "price": level, "side": side, "priority": 0}
     broke = [r["accepted_at"] for r in push_sweeps(bars, pool) if r["kind"] != PUSH_SWEEP]
     return min(broke) if broke else None
-
-
-def outcome(bars, event, trade):
-    """
-    What became of an attempt: WORKED, CASE_A, CASE_B, CASE_C or OPEN.
-
-    Walked forward bar by bar from the confirmation, because the order of
-    events is the whole question - a target reached before the stop is a win
-    and the same two prices in the other order is a loss, and a summary of the
-    session cannot tell them apart.
-    """
-    side = event["side"]
-    start = event.get("confirm_index", event["sweep_index"]) + 1
-    forward = bars[start:]
-    if not forward:
-        return {"outcome": OPEN, "bars_after": 0}
-
-    stop, target, entry = trade["stop"], trade["t2"], trade["entry"]
-    short = side == HIGH  # a swept high is faded short
-
-    for offset, bar in enumerate(forward, start=1):
-        hit_stop = bar["high"] >= stop if short else bar["low"] <= stop
-        hit_target = bar["low"] <= target if short else bar["high"] >= target
-        # Both in one bar is unresolvable at this resolution. The stop is
-        # assumed first: it is the conservative read, and calling it a win
-        # would flatter the record of a setup whose whole value is its
-        # risk-reward.
-        if hit_stop:
-            longest = acceptance_run(
-                bars, event["level"], side, event["sweep_index"]
-            )
-            case = CASE_A if longest >= ACCEPTANCE_CLOSES else CASE_B
-            return {
-                "outcome": case,
-                "bars_after": offset,
-                "acceptance_closes": longest,
-                "stopped_at": stop,
-            }
-        if hit_target:
-            return {"outcome": WORKED, "bars_after": offset, "reached": target}
-
-    # Neither. Case C is the playbook's "expired rather than failed": roughly
-    # NO_FOLLOW_THROUGH_BARS later, price is back around the entry and the
-    # range is intact.
-    if len(forward) >= NO_FOLLOW_THROUGH_BARS:
-        risk = abs(entry - stop)
-        drift = abs(forward[-1]["close"] - entry)
-        if risk and drift <= risk * NO_FOLLOW_THROUGH_RISK_FRACTION:
-            return {"outcome": CASE_C, "bars_after": len(forward)}
-    return {"outcome": OPEN, "bars_after": len(forward)}

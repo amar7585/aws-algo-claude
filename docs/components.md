@@ -18,9 +18,9 @@
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
-| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns → `pattern_events`, alerts to Telegram and strategy-manager once each; since 2026-11-14 also hands **every** tick to strategy-manager | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
-| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → the `regime\|bias` registry; on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — two rule sets, trade follow-up, alert register → `playbook_alerts` | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
+| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns (rules v2.2 since 2026-11-19) → `pattern_events`, alerts to Telegram and strategy-manager once each; since 2026-11-14 also hands **every** tick to strategy-manager | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
+| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → nothing (registry removed with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — one rule set since 2026-11-19, trade follow-up, alert register → `playbook_alerts` | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
 | `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
 
 Everything above the divider exists and runs. See
@@ -172,8 +172,8 @@ last retry by ~08:41) precedes the 09:35 run by at least 54 minutes and a token 
 
 Its README carries the measured facts that make it work: `fromDate` keeps only
 what is stamped after it (so intraday fetches start at 00:00), the daily
-endpoint lags a session, `security_id` alone is not unique, and the sentiment
-score is **not** predictive of forward return.
+endpoint lags a session, `security_id` alone is not unique, and the old sentiment
+score (removed with bias, 2026-11-19) was **not** predictive of forward return.
 
 ### intraday-data-loader
 
@@ -342,24 +342,20 @@ read it, because a sweep is confirmed by a *closed* bar.
 
 **Trend days route on `day_trend` first** (since 2026-11-09 22:37). The alert
 arrives as `detection`; `day_trend` up or down goes to `TREND_PLAYBOOKS`
-(`strategy-trend-pullback`), never to the registry, because the one filled cell is
-a range playbook and `regime|bias` lags the trend read. `none`, or no `detection`,
-routes as below. `detection`, `index_bars` and `source` pass through to the
-playbooks; `context_version` stays 2.
+(`strategy-trend-pullback`). `none`, or no `detection`, routes nothing.
+`detection`, `index_bars` and `source` pass through to the playbooks;
+`context_version` is 3 since 2026-11-19 (bias, score, max_score and confidence
+left the snapshot).
 
 **Every tick goes to `TICK_PLAYBOOKS`** (since 2026-11-14 18:28). `pattern-recorder`
 hands each tick over (`TICK_HANDOFF_ENABLED=on`, unset = off) and the manager sends it
 to `strategy-range-liquidity-sweep` whatever the regime, so an open sweep trade keeps
 being followed after the context changes; the playbook applies the entry cell itself.
 A playbook in `TICK_PLAYBOOKS` is taken out of alert routing, so it is never invoked
-twice for one candle — which leaves the registry's one filled cell routing nothing.
+twice for one candle. (That left the old `regime|bias` registry's one filled cell
+routing nothing; the registry was removed with bias on 2026-11-19.)
 
-**On a no-trend alert, routing is on `regime|bias`, and every one of the nine
-cells is listed.** A key present and mapping to `[]` is a deliberate "no playbook
-today"; a key *missing* means the classifier and the registry have drifted apart,
-and that raises. Eight cells are deliberately empty pending observed sessions.
-
-Full reasoning, the measured payload size, the registry and the IAM shape are in
+Full reasoning, the measured payload size and the IAM shape are in
 its [README](../strategy-manager/README.md).
 
 ### strategy-range-liquidity-sweep
@@ -391,13 +387,14 @@ per side per session, which looks like cross-invocation state; a candidate is a
 deterministic function of the bars, so re-deriving the day's whole sweep sequence
 each run reproduces the attempt count exactly and a re-run cannot double-count.
 
-**Two rule sets, and the trade after entry** (since 2026-11-14). `current` is the
-playbook's rules as built; `new` adds a 2+ close push judged structurally at its
-close back inside (with one more look on the next candle since 2026-11-16),
-one live idea per side, and an exit / watch / re-entry after
-entry. Every Telegram message says which produced it. On the same 14 entries over
-104 sessions the new trade management made +11.20R with 1 full loss against
-+9.36R with 6; its extra entries are not yet proven (see the playbook's README).
+**The rules and the trade after entry** (since 2026-11-14; one rule set since
+2026-11-19). A 2+ close push is judged structurally at its close back inside
+(with one more look on the next candle since 2026-11-16), one live idea per
+side, and an exit / watch / re-entry after entry. Until 2026-11-19 the
+playbook's original rules ("current") ran beside these and every Telegram
+message said which set produced it; Amar removed the old set on 2026-11-19
+(replayed over 45 sessions: 9 trades +318 points against the old set's 5 for
++98), and its rows in `playbook_alerts` were deleted.
 
 Its README records three places where the playbook's explicit rules and its
 worked examples disagree - the sweep-band floor, the stop buffer, and the
@@ -449,19 +446,22 @@ calibration. The rules, the replay and the reference session are in its
 Nothing is currently planned. The obvious next pieces, neither agreed nor
 designed:
 
-- **Retire the sweep's old pieces once the new build has run some live
-  sessions** (backlog, Amar 2026-11-14; when is Amar's call, after he has seen
-  the sessions):
-  - delete `strategy-range-liquidity-sweep` Lambda versions 1–6 (the
-    2026-11-14/15 restore points: `HsOac…`, `IBg6OIzl…`, `YLhNk…`,
-    `M3fvb4DI…`, `+4qimC9c…`, `CkCH…`; `$LATEST` is `RaMJeVy2…`) — they only
-    hold rollback copies;
-  - remove the old ("current") rule set, leaving only the new logic: drop
-    `walk_current` and its tags from the messages, and the `current` rows from
-    the alert register (its `logic` column then reads `new` only). Decide from
-    the live current-vs-new comparison the tagged messages and the register
-    record.
-- **Remove the bias logic system-wide** (backlog, Amar 2026-11-14 — not designed).
+- ~~Retire the sweep's old pieces~~ — **done 2026-11-19** (Amar: "we have enough
+  validation"): the old ("current") rule set and its message tags removed
+  (deployed 20:37 IST), its 12 rows in `playbook_alerts` backed up and deleted,
+  Lambda versions 1–6 deleted (version 7 kept as a rollback copy).
+- ~~Remove the bias logic system-wide~~ — **done 2026-11-19** (Amar): the layer
+  (v4), both writers, every reader and the routing registry; the four columns
+  backed up and dropped (`migrations/2026-11-19-drop-bias.sql`). Deployed
+  2026-11-19 20:49-20:50 IST after the migration: layer `market-classifier:4`
+  (`gnbkn6/6…`, on market-classifier and daily-market-sentiment), market-classifier
+  `c4BKKZW3…`, daily-market-sentiment `ONNju0RJ…`, intraday-market-sentiment
+  `xTZeJSPc…`, strategy-manager `r5D73Twk…` (payload v3), pattern-recorder
+  `pUdG7CGU…`, pattern-detector `M0EHlDzX…`, strategy-trend-pullback `DVj+KKye…`,
+  strategy-range-liquidity-sweep `HVmgAGjN…`. Checked: `classify()` identical on
+  every remaining output over 20,000 random inputs; the manager dispatches the same
+  playbooks on all 45 payload shapes; pattern-recorder's handler check passes on
+  1,490 stored ticks. The note below is the backlog entry as it stood.
   Measured 2026-11-14: as an entry gate or target rule bias made the sweep worse,
   and for trend trades "bias agrees" was the worst group (22 trades, −195 pts) —
   so it is gone from the sweep (2026-11-14 22:58). It is still calculated by the
@@ -477,8 +477,7 @@ designed:
   is its own runner, position tracker and report builder, and folding it in
   would have tripled the scope of the round that built the two functions above.
 - **More playbooks.** Trend days route on `day_trend` to
-  `strategy-trend-pullback` (since 2026-11-09), so the registry's trending cells
-  stay empty by design. The short-side `short-into-liquidity` setup exists only
+  `strategy-trend-pullback` (since 2026-11-09). The short-side `short-into-liquidity` setup exists only
   as a skill, with no Lambda.
 
 ## Shared conventions

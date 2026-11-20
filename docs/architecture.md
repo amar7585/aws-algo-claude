@@ -43,8 +43,8 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Intraday classification | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
 | Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager) |
 | F&O reading, 5-min | every 5 min, 09:36–15:31, 71×/day | EventBridge Scheduler cron (its own trio) | **built** |
-| Pattern recording + alerts (v2.1) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
-| Strategy routing | on each v2.1 alert, once | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). Routes on the alert's `day_trend` first: up/down → the trend playbook, `none` → the `regime\|bias` registry (since 2026-11-09 22:37) |
+| Pattern recording + alerts (v2.1; rules v2.2 since 2026-11-19) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
+| Strategy routing | on each v2.1 alert, once — and on every 5-min tick (since 2026-11-14) | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). An alert routes on its `day_trend`: up/down → the trend playbook, `none` → nothing (the `regime\|bias` registry it went to from 2026-11-09 22:37 was removed with bias, 2026-11-19). Every tick → `TICK_PLAYBOOKS` (the sweep) |
 | Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) |
 | Range sweep playbook | on every 5-min tick since 2026-11-14 (before that on a no-trend `sideways\|range-bound` alert); entries when price is within the levels (PDH/PDL, 15-min high/low) and the regime is not `volatile-expansion` — no bias, no trend test (since 2026-11-15 09:33) | invoke from `strategy-manager` (`TICK_PLAYBOOKS`) | **built, running** |
 
@@ -58,7 +58,7 @@ output.
 **The strategy plane is chained rather than scheduled, and it is the one
 exception.** `strategy-manager`'s input *is* the intraday snapshot, so
 `intraday-market-sentiment` invokes it once the row is written, and it invokes
-the strategies valid for the regime and bias the snapshot carries. A cron there would have to
+the strategies valid for the alert's `day_trend` (the regime|bias registry was removed with bias, 2026-11-19). A cron there would have to
 guess how long the snapshot takes, read the row back out of Postgres, and decide
 what to do when it is not there yet.
 
@@ -120,12 +120,12 @@ the cost of a wake-up on the first connection of each run.
 |---|---|---|---|
 | `instrument_master` | `security_id, trading_symbol, exchange_segment, instrument_type, lot_units, updated_at` | 15,463 | instrument-master-loader |
 | `candle_daily` | `security_id, instrument_type, candle_ts, open, high, low, close, volume` | 408 | daily-market-sentiment |
-| `daily_market_sentiment` | 26 columns — bias, regime, score, the SMA/RSI inputs, VIX-implied expected move | 1 | daily-market-sentiment |
+| `daily_market_sentiment` | 31 columns — regime, structure, previous-day levels, the SMA/RSI inputs, VIX-implied expected move (bias and score dropped 2026-11-19) | 1 | daily-market-sentiment |
 | `candle_5min` | same shape as `candle_daily` | 8,775 | intraday-data-loader |
 | `candle_15min` | same | 2,925 | intraday-data-loader |
 | `candle_1hr` | same | 819 | intraday-data-loader |
 | `intraday_fno_data` | measurement — basis, futures OI, VIX, straddle/PCR/OI/max-pain/IV for two expiries as `near_*`/`mth_*` pairs, the SMA/RSI scalars, and NIFTY 50 / NIFTY 500 advance-decline breadth | 92 | intraday-market-sentiment |
-| `intraday_sentiments` | judgement — regime, structure, bias, buildup, and the swing/volatility reads; joins `intraday_fno_data` on `snapshot_ts` | 92 | market-classifier |
+| `intraday_sentiments` | judgement — regime, structure, buildup, day_trend, and the swing/volatility reads; joins `intraday_fno_data` on `snapshot_ts` | 92 | market-classifier |
 | `option_chain_snapshot` | `… snapshot_ts, expiry_ts, strike, option_type` + the raw leg (ltp, OI, volume, IV, greeks, bid/ask) | 920 | intraday-market-sentiment |
 | `index_constituents` | `index_name, security_id, instrument_type, exchange_segment, symbol, updated_at` — the NIFTY 50 / NIFTY 500 rosters for breadth, maintained by hand | 548 (NIFTY50 50, NIFTY500 498) | seeded by hand |
 | `pattern_events` | v2 pattern events: one per (`rules_version`, trigger bar, family, subtype, direction) — level, candles, volume flags. **No OI, no outcome** (both joined at read time). [schema](../pattern-recorder/schema.sql) | created 2026-11-06; written from the 09:45 run that day (2 rows) | pattern-recorder |

@@ -19,8 +19,6 @@ def format_brief(instrument, sentiment):
         f"{instrument['trading_symbol']} daily read - {described:%a %d %b %Y}",
         "",
         sentiment["regime"].upper(),
-        f"score {sentiment['score']:+d}/{sentiment['max_score']}  "
-        f"confidence {sentiment['confidence']:.0f}%",
         f"structure {sentiment['structure']}  volatility {sentiment['volatility']}",
         "",
         f"prev day   H {sentiment['pd_high']:.2f}  L {sentiment['pd_low']:.2f}  "

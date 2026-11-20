@@ -3,7 +3,7 @@
 ← [Back to root README](../README.md) · [Architecture](../docs/architecture.md) · [Flow charts](../docs/flow.md) · [Components](../docs/components.md)
 
 Turns one **measurement** snapshot into **judgement**: reads the
-`algo.intraday_fno_data` row `intraday-market-sentiment` just wrote, scores it
+`algo.intraday_fno_data` row `intraday-market-sentiment` just wrote, classifies it
 with the shared [`market-classifier` layer](../layers/market-classifier/README.md),
 derives the futures-OI buildup, writes `algo.intraday_sentiments`, and invokes
 `pattern-detector`.
@@ -26,7 +26,7 @@ split out so each function has a single job:
 
 - **`intraday-market-sentiment` measures** — price, indicators, OI, straddle,
   VIX, the `*_change_pct` deltas → `intraday_fno_data`.
-- **this function judges** — regime, structure, bias, buildup and the
+- **this function judges** — regime, structure, buildup, day_trend and the
   swing/volatility reads → `intraday_sentiments`.
 
 The two tables join 1:1 on `(security_id, instrument_type, snapshot_ts)`.
@@ -125,7 +125,7 @@ is built from stay on the fno row.
 `day_trend` — `up` / `down` / `none` — answers one question beside the three
 classification answers: *is price trading outside today's opening range, and on
 which side?* Inside the range is no trend (rule G, Amar 2026-11-19). It is not an
-input to the score. pattern-recorder reads it to decide which patterns to
+input to `structure` or `regime`. pattern-recorder reads it to decide which patterns to
 alert (plan v3, agreed with Amar 2026-11-07/08). See [trend.py](trend.py).
 
 The rule, on the index's **closed** 5-minute candles from the 09:30 candle on:
@@ -219,16 +219,19 @@ modules in the zip are byte-identical to the deployed ones. Deployed 2026-11-19
 18:29:32 IST (CodeSha256 `0KTbE8Ht…`, previous `1X/KWrz8…` = option F), together
 with strategy-trend-pullback's matching stop. First session on it: 2026-11-20.
 
-## No option term is scored yet
+## No option term is read yet
 
 The chain aggregates (PCR, IV skew, straddle) sit on the fno row and are
-deliberately **not** fed to the score. Dhan serves no historical option chain,
-so those thresholds cannot be measured until `intraday_fno_data` rows
-accumulate; scoring them on invented numbers would make `bias` mean one thing
-before recalibration and another after. When the rows exist the agreed shape is
-a separate options overlay, not extra terms folded into `score`. See the layer
-README, "Revisit once sessions have accumulated", and
-[[classifier-deferred-calibration]] in project notes.
+deliberately **not** read by the classification — `structure`, `regime`,
+`volatility` and `day_trend` come from price, VWAP and VIX only. Dhan serves no
+historical option chain, so thresholds on those aggregates cannot be measured
+until `intraday_fno_data` rows accumulate; setting them on invented numbers
+would make the stored answers mean one thing before recalibration and another
+after. When the rows exist the agreed shape is a separate options overlay, not
+extra terms folded into the price read. (Until 2026-11-19 this section was about
+the `bias` score, removed with bias that day.) See the layer README, "Revisit
+once sessions have accumulated", and [[classifier-deferred-calibration]] in
+project notes.
 
 ## The chain
 
@@ -237,10 +240,13 @@ EventBridge (every 15 min)
   → intraday-data-loader        commits candles
   → intraday-market-sentiment   measures → intraday_fno_data, invokes with the
                                 row + today's bars + VIX baseline + run clock
-  → market-classifier           scores → intraday_sentiments, invokes ↓
-  → pattern-detector            the two-clock turn rule; on a turn, invokes ↓
-  → strategy-manager            routes on regime|bias
+  → market-classifier           classifies → intraday_sentiments, invokes ↓
+  → pattern-detector            the two-clock turn rule; log-only since 2026-11-09
 ```
+
+strategy-manager is no longer on this chain: since 2026-11-09 16:04 it is invoked
+by `pattern-recorder` on the 5-minute poller's clock, which reads this function's
+`day_trend` off `intraday_sentiments`.
 
 **Write, then invoke.** The judgement row is written before `pattern-detector`
 is invoked, so a failed invoke raises with the row already committed; the upsert

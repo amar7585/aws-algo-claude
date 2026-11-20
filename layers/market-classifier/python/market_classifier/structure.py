@@ -21,7 +21,7 @@ with k = SWING_WINDOW. Two consequences follow and both are intended:
     "sideways" rather than inventing a trend out of four bars.
 
 DIRECTION AND LABEL ARE TWO DIFFERENT ANSWERS. The swing read is directional -
-up, down, or neither - and feeds the bias score. The stored `structure` label
+up, down, or neither (stored as swing_direction). The stored `structure` label
 is trending / sideways / transitional and carries no direction. Conflating
 them is how a sideways market with one higher high reads as bullish.
 """

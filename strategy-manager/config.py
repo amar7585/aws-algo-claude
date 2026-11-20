@@ -20,7 +20,6 @@ What is left is the decision "which playbooks are valid for a market that
 looks like this", and the invoke.
 """
 
-import json
 import os
 
 # --------------------------------------------------------------------------
@@ -30,11 +29,13 @@ import os
 # context shape, so an unannounced change is a silent mismatch: the strategy
 # reads a key that is no longer there, gets None, and gates on it.
 #
+# v3 (2026-11-19) - bias, score, max_score and confidence are gone from the
+#   snapshot and the daily read: Amar removed bias system-wide. Nothing else.
 # v2 - the shape changed substantially from v1:
 #   * `classification` is gone as a separate block. The classification is now
-#     ON the snapshot (bias, structure, regime, volatility, score, max_score,
-#     confidence, sma9/50/100/200, rsi, swing_*), because the sentiment
-#     function computes and stores it.
+#     ON the snapshot (structure, regime, volatility, swing_*; bias, score,
+#     max_score and confidence until v3), because the sentiment function
+#     computes and stores it.
 #   * `candles`, `live` and `daily_atr14` are gone. Playbooks fetch their own.
 #   * `daily` is still here and may be None.
 #   * sma20 no longer exists anywhere; the frame carries sma9.
@@ -43,66 +44,15 @@ import os
 # version they were written for and raise on anything else, so a bump is loud
 # on both sides.
 # --------------------------------------------------------------------------
-CONTEXT_VERSION = 2
+CONTEXT_VERSION = 3
 
-# --------------------------------------------------------------------------
-# The registry
-#
-# ROUTING IS ON A COMBINATION, NOT ON regime ALONE. "sideways" says the swing
-# read found no progression; it does not say whether the market is leaning up,
-# leaning down, or genuinely balanced - and a playbook that is right on a
-# balanced day can be wrong on a sideways day with a bearish lean. The key is
-# therefore "<regime>|<bias>".
-#
-# EVERY COMBINATION IS LISTED, INCLUDING THE EMPTY ONES. A key that is present
-# and maps to [] is a deliberate "no playbook is valid on this kind of day". A
-# key that is MISSING means the classifier and this map have drifted apart -
-# a new regime or bias value appeared and nobody told the router - and that
-# raises, because routing nothing would otherwise look exactly like a correct
-# stand-down.
-#
-# ONLY ONE CELL IS FILLED, AND IT IS A PLACEHOLDER. Which combinations should
-# run which playbook is a decision to take against observed sessions, not one
-# to infer from the taxonomy - and there are no observed sessions yet. See
-# layers/market-classifier/README.md, "Revisit once sessions have
-# accumulated".
-#
-# Held as JSON in the environment so filling a cell is a configuration change
-# rather than a redeployment.
-# --------------------------------------------------------------------------
-_DEFAULT_REGISTRY = {
-    # range-liquidity-sweep is a range-day playbook: it fades a level that was
-    # swept and rejected, which is what a balanced market does to its own
-    # extremes. The identical pattern on a trending day is a breakout retest,
-    # and fading it is how the setup loses - so the trending cells are empty
-    # rather than absent.
-    "sideways|range-bound": ["strategy-range-liquidity-sweep"],
-    "sideways|bullish": [],
-    "sideways|bearish": [],
-
-    "trending|bullish": [],
-    "trending|bearish": [],
-    "trending|range-bound": [],
-
-    # An expanding range is the case where the structure read is least
-    # trustworthy - it is the thing being disrupted. Nothing routes here until
-    # there is evidence about what does work on such a day.
-    "volatile-expansion|bullish": [],
-    "volatile-expansion|bearish": [],
-    "volatile-expansion|range-bound": [],
-}
-
-STRATEGY_REGISTRY = json.loads(
-    os.environ.get("STRATEGY_REGISTRY", json.dumps(_DEFAULT_REGISTRY))
-)
-
-# ---- trend days route on day_trend, not on regime|bias (Amar, 2026-11-09) ------
-# A v2 alert arriving with day_trend up/down goes to the TREND playbooks below and
-# NEVER to the registry above: a trend day's hold is a breakout trade, and the
-# registry's range playbook would fade it. regime|bias lags the trend read (on
-# 2026-11-06 bias read range-bound 10:45-11:30, exactly during the PDH hold), so
-# it cannot route a trend day. day_trend none - and any payload without v2's
-# alert - routes on the registry as before.
+# ---- alerts route on day_trend (Amar 2026-11-09; registry removed 2026-11-19) ------
+# A v2 alert arriving with day_trend up/down goes to the TREND playbooks below. Any
+# other alert routes nowhere: the range playbook (the sweep) runs on every tick
+# through TICK_PLAYBOOKS, whatever the alert. Until 2026-11-19 a regime|bias
+# registry routed those other alerts; its only filled cell (sideways|range-bound
+# -> the sweep) was always left out as a tick playbook, so it dispatched nothing.
+# Amar removed bias system-wide on 2026-11-19 and the registry went with it.
 #
 # Comma-separated function names. UNSET = OFF: trend-day alerts route to nothing,
 # logged as a deliberate stand-down. Setting it needs lambda:InvokeFunction on

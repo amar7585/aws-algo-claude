@@ -8,8 +8,8 @@ logs it, and sends it to Telegram. Rules: pullback.py. Reference session
 continuation" slot of the strategy registry, with the bearish mirror.
 
 TRIGGER. strategy-manager, asynchronously, when a v2 alert arrives on a day
-whose classifier day_trend is up or down. Sweeps and no-trend days go to the
-regime|bias registry instead (the sweep playbook), never here.
+whose classifier day_trend is up or down. Sweeps and no-trend days are the sweep
+playbook's (it runs on every tick), never here.
 
 READS NOTHING. The context carries everything: v2's alert (`detection`), today's
 closed index candles up to the alert (`index_bars`, handed over by v2 - the

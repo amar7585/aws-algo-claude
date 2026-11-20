@@ -5,7 +5,7 @@ the session — futures basis and open-interest, INDIA VIX, the option-chain rea
 (straddle, PCR, OI walls, max pain, IV skew) for two expiries at once, the
 SMA/RSI indicators, and the advance/decline **breadth** of the NIFTY 50 and
 NIFTY 500 — and hands it to `market-classifier`. The **judgement** it used to
-store (regime, structure, bias, buildup) is no longer here: it moved to
+store (regime, structure, buildup, day_trend) is no longer here: it moved to
 `market-classifier` and `algo.intraday_sentiments`.
 
 | | |
@@ -166,9 +166,9 @@ The second column is the one that matters: a rally on rising OI is money coming
 in, a rally on falling OI is money leaving. **They look identical on a price
 chart.**
 
-This classifies; it does not forecast. `daily-market-sentiment` already records
-that its own score is not predictive of forward return — treat this the same
-way.
+This classifies; it does not forecast. `daily-market-sentiment` records that its
+old score (removed with bias, 2026-11-19) was not predictive of forward return —
+treat this the same way.
 
 ## The last 30 minutes' width (2026-11-12)
 

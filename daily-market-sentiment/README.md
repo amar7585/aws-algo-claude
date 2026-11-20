@@ -21,7 +21,7 @@ is not persisted as a series.
 1. **Daily candles** for NIFTY (`13`/`INDEX`) and INDIA VIX (`21`/`INDEX`) →
    `algo.candle_daily`. Incremental from the last stored `candle_ts`;
    300-calendar-day window on a cold start.
-2. **The daily read** — regime, bias, score, confidence, the SMA/RSI inputs it
+2. **The daily read** — regime, structure, the SMA/RSI inputs it
    was computed from, and the VIX-implied expected move →
    `algo.daily_market_sentiment`, one row per session.
 3. **Telegram push** of that read.
@@ -66,7 +66,7 @@ params.py        the Dhan token and Telegram config
 dhan.py          charts API client, and the measured facts about it
 db.py            Neon access and the upserts
 indicators.py    SMA / RSI / ATR, pure Python
-sentiment.py     regime, score, bias, the daily read
+sentiment.py     regime, structure, the daily read
 width_profile.py the normal 5-min width per clock slot, pure
 notify.py        Telegram
 ```
@@ -223,7 +223,7 @@ Caveats: r ≈ 0.02–0.08 is near-noise either way, n=52 for BEARISH is small, 
 2022–26 is one market character. This says the signal is weak, not that it is
 reliably invertible.
 
-**Treat `regime`/`bias` as a description of structure, not a prediction** — the
+**Treat `regime` as a description of structure, not a prediction** (bias, score and confidence were removed 2026-11-19; the measurement below is the record) — the
 same position `market-regime` takes: *"a regime is a description of what has
 already happened, not a forecast."* Do not size a trade off this column.
 
@@ -281,7 +281,7 @@ departures below all still hold.
 3. **`price` comes from intraday**, since today's daily candle does not exist.
 4. **`expected_move` is VIX-implied** — see above.
 
-`bias`, `structure` and `regime` are now three separate answers rather than a
+`bias` (removed 2026-11-19), `structure` and `regime` became three separate answers rather than a
 combined label: `structure` is the swing read alone, and `regime` is that read
 after volatility has had a veto. See the layer README for why those are not the
 same question.

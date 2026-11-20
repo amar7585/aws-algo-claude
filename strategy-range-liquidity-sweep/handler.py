@@ -9,7 +9,8 @@ candidates with entry, stop, targets and risk-reward.
 INVOKED BY strategy-manager, NOT BY A SCHEDULE. The manager is a pure
 router. Since 2026-11-14 it sends every 5-min tick here whatever the regime
 (TICK_PLAYBOOKS); before that it invoked this function only for the
-regime|bias combinations its registry allowed. It hands over the snapshot
+regime|bias combinations its registry allowed (registry and bias removed
+2026-11-19). It hands over the snapshot
 (which CARRIES its own classification), the daily read, the instrument and,
 on every-tick runs, today's closed candles.
 
@@ -43,24 +44,24 @@ SINCE 2026-11-14 IT RUNS ON EVERY 5-MIN TICK. pattern-recorder hands each tick
 to strategy-manager, which sends it here whatever the regime, with today's
 closed 5-min index candles (`index_bars`) - so this function reads those, not
 candle_5min (which the loader refreshes only every 15 minutes). Each run
-re-derives the session candle by candle under BOTH rule sets (session.py) and
-sends to Telegram every entry and trade step on the newest candle, each tagged
-with the rules that produced it: "current logic only", "new logic" or
-"current + new logic" (Amar 2026-11-14). The new rules also follow each trade
-after entry - exit, watch, re-entry, end (manage.py) - which is why it must run
+re-derives the session candle by candle (session.py) and sends to Telegram
+every entry and trade step on the newest candle. (Until 2026-11-19 an older
+rule set ran beside these and each message was tagged with the set that
+produced it; Amar removed the old set on 2026-11-19.) The rules also follow
+each trade after entry - exit, watch, re-entry, end (manage.py) - which is why it must run
 on every tick. Entries need price within the levels (PDH/PDL, 15-min high/low)
 and a regime that is not volatile-expansion - no bias (2026-11-14), no trend
 test (2026-11-15). Amar: a sweep is a level-and-volatility event.
 
 SINCE 2026-11-14 IT ALSO RECORDS AN ALERT REGISTER (register.py), when
-REGISTER_ENABLED is on: every level touched today under each rule set, its
+REGISTER_ENABLED is on: every level touched today, its
 retests, and whether it was entered, blocked by the gate, missed, invalid, ended
 or covered - rebuilt whole on every run and upserted into algo.playbook_alerts
 after the messages. Nothing reads it back (Amar: "re-derive and record").
 
 Modules:
-    session.py  the session candle by candle, both rule sets, and the messages
-    manage.py   the new rules' trade after entry: exit, watch, re-entry
+    session.py  the session candle by candle, and the messages
+    manage.py   the trade after entry: exit, watch, re-entry
     register.py the alert register - what became of every level touched today
     config.py   every threshold the playbook states, and the ones it does not
     db.py       the Neon reads, and the register's one write
@@ -96,7 +97,6 @@ from config import (
 )
 from db import closed_candles, daily_candles, day_rows, write_register
 from levels import ist_datetime, session_bars
-from session import walk_current
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -148,10 +148,6 @@ def read_context(event):
     if bars is not None and not isinstance(bars, list):
         raise RuntimeError(f"`index_bars` must be a list, got {type(bars).__name__}")
     return event
-
-
-# Today's rules, kept importable under their old name.
-walk_session = walk_current
 
 
 def _bars_from_payload(index_bars):
@@ -243,13 +239,13 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
         # announced.)
         fresh_after = int(snapshot.get("prev_snapshot_ts") or (snapshot_ts - 900)) - CANDLE_INTERVAL_SECONDS
     out = session_lib.messages(result, bars, fresh_after, int(bars[-1]["ts"]))
-    for tag, kind, text in out:
+    for kind, text in out:
         if TELEGRAM_ENABLED:
             # Fail-loud: a refused send raises so Lambda records it.
             send_telegram(text)
-            logger.info("%s [%s] sent: %s", kind, tag, text.replace("\n", " | "))
+            logger.info("%s sent: %s", kind, text.replace("\n", " | "))
         else:
-            logger.info("WOULD SEND (telegram off) %s [%s]: %s", kind, tag, text.replace("\n", " | "))
+            logger.info("WOULD SEND (telegram off) %s: %s", kind, text.replace("\n", " | "))
 
     # ---- the alert register - AFTER the messages ---------------------------------
     # Rebuilt whole from this run's derivation plus the same rules with the gate
@@ -276,10 +272,9 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
         "bars_scanned": len(bars),
         "rows_in_force": len(rows),
         "entries_allowed": newest["entry"],
-        "current_entries_today": len(result["current"]),
         "new_ideas_today": len(result["ideas"]),
         "open_ideas": sum(1 for i in result["ideas"] if i["end"] is None),
-        "messages": [{"tag": t, "kind": k, "first_line": x.splitlines()[0]} for t, k, x in out],
+        "messages": [{"kind": k, "first_line": x.splitlines()[0]} for k, x in out],
         "telegram": TELEGRAM_ENABLED,
         "register": register_summary,
     }

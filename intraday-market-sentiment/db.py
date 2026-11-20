@@ -238,11 +238,9 @@ DAILY_SENTIMENT_TABLE = "algo.daily_market_sentiment"
 
 # Everything a playbook needs off the daily row. pd_high/pd_low are the
 # previous day's extremes, upper/lower_volatility bracket the VIX-implied move,
-# and the classification columns are on the SAME scale as this row's own -
-# max_score differs between the frames, which is why it is carried.
+# and the classification columns are on the SAME scale as this row's own.
 DAILY_SENTIMENT_COLUMNS = (
-    "trade_date", "bias", "structure", "regime", "volatility",
-    "score", "max_score", "confidence",
+    "trade_date", "structure", "regime", "volatility",
     "swing_direction", "swing_high", "swing_low", "structure_determined",
     "range_used", "volatility_expanding", "gap_pct",
     "pd_high", "pd_low", "pd_close",

@@ -77,7 +77,7 @@ def message(event, stamp, clock, day_trend, bar_oi_change, fifteen):
     ]
     if fifteen:
         lines.append(
-            f"15m: buildup {fifteen.get('buildup') or '-'}, regime {fifteen.get('regime') or '-'}|"
-            f"{fifteen.get('bias') or '-'}, PE OI {_num(fifteen.get('near_pe_oi_change_pct'), '+.1f')}%,"
+            f"15m: buildup {fifteen.get('buildup') or '-'}, regime {fifteen.get('regime') or '-'}, "
+            f"PE OI {_num(fifteen.get('near_pe_oi_change_pct'), '+.1f')}%,"
             f" CE OI {_num(fifteen.get('near_ce_oi_change_pct'), '+.1f')}%")
     return "\n".join(lines)

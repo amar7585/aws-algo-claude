@@ -45,7 +45,7 @@ Deep lineage is in the memory note `pattern-detector-futures-oi-design`.
 |---|---|---|
 | `algo.candle_5min` | 5-min | OHLCV per `(security_id, instrument_type, candle_ts)`. **No OI column.** |
 | `algo.intraday_fno_data` | 15-min | `fut_price`, `fut_oi`, `fut_oi_change_pct`, `basis`, `near_pcr_oi`, `near_pe/ce_oi_change_pct`, `orb_high/low`, `day_high/low`, `near_max_oi_call/put`, `near_max_pain`, `sma*`, `rsi`, `vix`, `fut_security_id`. |
-| `algo.intraday_sentiments` | 15-min | `buildup`, `regime`, `bias`, `structure`, `volatility`, `swing_high/low`, `score`. |
+| `algo.intraday_sentiments` | 15-min | `buildup`, `regime`, `structure`, `volatility`, `swing_high/low`, `day_trend` (bias and score dropped 2026-11-19). |
 | `algo.daily_market_sentiment` | daily | previous-day levels (`pd_high`/`pd_low`) when needed. |
 | `algo.playbook_alerts` | per alert | the sweep playbook's alert register — alert candle, touches, status, entry candle (query 3). |
 | `algo.session_observations` | per event | **write target** (see schema below). |
@@ -68,7 +68,7 @@ or NULL. `entry_ts >= alert_ts` when both are set (added 2026-11-14,
     SELECT to_char(to_timestamp(f.snapshot_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') t,
       f.snapshot_ts, f.fut_security_id, f.fut_price, f.fut_oi, f.fut_oi_change_pct,
       f.basis, s.buildup, f.near_pcr_oi, f.near_pe_oi_change_pct, f.near_ce_oi_change_pct,
-      f.spot, s.regime, s.bias, f.orb_high, f.orb_low, f.day_high, f.day_low,
+      f.spot, s.regime, s.day_trend, f.orb_high, f.orb_low, f.day_high, f.day_low,
       f.near_max_oi_call, f.near_max_oi_put, f.near_max_pain, s.swing_high, s.swing_low
     FROM algo.intraday_fno_data f
     LEFT JOIN algo.intraday_sentiments s USING (security_id, instrument_type, snapshot_ts)
@@ -85,7 +85,7 @@ or NULL. `entry_ts >= alert_ts` when both are set (added 2026-11-14,
       AND to_timestamp(candle_ts) AT TIME ZONE 'Asia/Kolkata' BETWEEN 'DATE HH:MM' AND 'DATE HH:MM'
     ORDER BY candle_ts, security_id;
 
-**3) The sweep playbook's alert register for the day** (both rule sets; candle times are STARTS):
+**3) The sweep playbook's alert register for the day** (`logic` is `new` only since 2026-11-19; candle times are STARTS):
 
     SELECT logic, level_name, side, level_price,
       to_char(to_timestamp(alert_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') alert_candle, touches,
