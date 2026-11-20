@@ -443,8 +443,12 @@ calibration. The rules, the replay and the reference session are in its
 
 ## Planned
 
-Nothing is currently planned. The obvious next pieces, neither agreed nor
-designed:
+**Agreed with Amar on 2026-11-20, not built.** See [future-implementation.md](future-implementation.md) for:
+- the closing-auction rule for every playbook: no new trade after 15:00, any live trade out at 15:15. The sweep's interim is live since 2026-11-20 22:48;
+- a **risk manager**: one place for open trades, new-trade limits and the kill switch;
+- **trade management** (execution), which it reads positions from. That is a scope change, because this repo places no orders.
+
+Earlier entries, neither agreed nor designed unless marked done:
 
 - ~~Retire the sweep's old pieces~~ — **done 2026-11-19** (Amar: "we have enough
   validation"): the old ("current") rule set and its message tags removed
