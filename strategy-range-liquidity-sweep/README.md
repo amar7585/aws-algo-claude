@@ -16,8 +16,45 @@ targets and risk-reward.
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
-| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `yZ30IM0U…` since 2026-11-19 20:37 (one rule set; before it `0NUOBVS0…`, the one-more-look push test, 2026-11-16 19:14); version kept: 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `VGiH4SNG…` since 2026-11-20 22:48 IST (out at 15:15, before the closing auction); before it `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
+
+## Since 2026-11-20: out at 15:15, before the closing auction
+
+**Decided by Amar 2026-11-20 ("Out at 15:15").**
+
+- **Deployed:** 2026-11-20 22:48 IST as CodeSha256 `VGiH4SNG…`.
+- **Rollback:** version 8 (`HVmgAGjN…`) is the code from before.
+- **First live session:** Mon 2026-11-23.
+- **Status:** an interim, until the risk manager Amar asked for takes over the 15:15 exit for every playbook.
+
+The live function was not invoked after the deploy. Verified instead:
+- the uploaded zip run through the real handler on all 69 of 11-20's ticks, identical to that day's validation;
+- the downloaded live code equal to the repo on all 12 modules;
+- handler, layers and environment unchanged.
+
+**The rule.** If a trade is still in after the 15:10 candle, it is closed at that candle's close, which is the 15:15 price. It gets a new step and outcome, `CLOSED AT 15:15`, sent at the 15:16 tick. A trade that exits on the 15:10 candle ends its watch there too.
+
+**Why.** Since 2026-08-03, NSE's closing auction has stopped continuous trading in the NIFTY stocks at 15:15.
+
+- The index's 15:15 and 15:20 candles are flat lines: median range 0.00 on 76 of 76 sessions.
+- The 15:25 candle is one jump to the official close: median 24.9 pts, max 201.
+- Until now `manage.follow` judged stops and targets on that jump, and marked a trade still in to it. Nobody trades at that print.
+- The future mostly does not follow the jump. From 15:10 to 15:25 the future moved a median 9.1 pts against the index's 24.2, with correlation 0.57 (0.75 before 08-03). On 08-03 the index rose 201 pts and the future moved −1.
+
+**Replay** (read-only, the production modules on 110 sessions 06-15 .. 11-20; written up in `pattern-recorder/replay/out/auction-close-2026-11-20/`, which is git-ignored). The gate-off run reproduces the 24 entries and +11.53R in the one-more-look table below. Only 2 of the 24 trades were still in at 15:10, and the jump never hit a stop or T2:
+
+| | as before (to the 15:25 print) | out at 15:15 | followed on the future to 15:30 |
+|---|---|---|---|
+| 08-13 long, 15-min low (re-entered 11:35) | +0.38R | −0.59R | −0.65R |
+| 11-13 long, 15-min low (live) | +0.75R | +0.67R | +0.68R |
+| all 17 trades since 08-03, gate off | +9.91R | +8.87R | +8.82R |
+
+Exiting after the 15:15 candle instead (out at 15:20) gives the same +8.87R. Its close is a median 0.3 pts (max 4.8) from the 15:10 close. Amar chose 15:15, which also sends the message five minutes sooner.
+
+**What stays as it was:**
+- The register rows already written, including the live 11-13 long, which is still `open` at +0.75R. Only the current session is re-derived on each run.
+- Entries and the watch: no new entries after 15:00, and the watch ends at 15:00.
 
 ## Since 2026-11-14: every tick and the trade after entry
 
@@ -74,7 +111,7 @@ git-ignored) and deleted 20:37 IST; Lambda versions 1–6 deleted, version 7 (`R
 | a push with 2+ closes beyond | a sweep if the candle back inside closes past the whole push — or, failing that, the next candle closes inside, prints no new extreme and closes past it (one more look, since 2026-11-16; it is then the sweep candle) — the push is in the band and the candle after prints no new extreme (`sweep.push_sweeps`) |
 | "the range broke" | a 2+ close push at the opening range that failed that test (both looks), or has not come back yet (`sweep.range_broke_at`) |
 | attempts | one live idea per side |
-| after entry | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT. One exit and one re-entry per trade, as measured |
+| after entry | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT, and since 2026-11-20 CLOSED AT 15:15 (still in after the 15:10 candle: out at its close, before the closing auction). One exit and one re-entry per trade, as measured |
 
 **Messages.** All of them go to Telegram (`TELEGRAM_ENABLED` is a kill switch, on by default): every entry and every
 trade step.
@@ -205,9 +242,10 @@ handler/register checks 9/9. Smoke (the 11-13 full day, real
 Neon): 9 rows, the 11-13 long now `entered`, 2 new-logic ideas, nothing sent, no error. The 11-16 rows in the table
 stay as the live A code wrote them.
 
-**Rollback, cheapest first:** unset `REGISTER_ENABLED` (no redeploy; the register is then not written). The previous
-code is version 7 (`RaMJeVy2…`, Amar's gate without the one more look) — same table and columns, a code-only
-rollback (`aws lambda get-function --qualifier 7` gives its zip). Older code:
+**Rollback, cheapest first:** unset `REGISTER_ENABLED` (no redeploy; the register is then not written). The code
+before the 15:15 close is version 8 (`HVmgAGjN…`, main 5eb3ed1) — a code-only rollback (`aws lambda get-function
+--qualifier 8` gives its zip). Version 7 (`RaMJeVy2…`, Amar's gate without the one more look) is older still — same
+table and columns, also code-only. Older code:
 version 4 (no bias, before `derived_through_ts`) needs the column dropped or given a default first - it does not
 name the column, and it is NOT NULL; versions 1–3 likewise. The table can stay - nothing reads it.
 

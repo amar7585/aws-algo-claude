@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS algo.playbook_alerts (
     t2_price         numeric,
     risk_reward      numeric,
     grade            text,
-    outcome          text,                -- STOP HIT | TARGET REACHED | WATCH ENDED | open | watching | re-entered
+    outcome          text,                -- STOP HIT | TARGET REACHED | WATCH ENDED | CLOSED AT 15:15 (since 2026-11-20) | open | watching | re-entered
     steps            jsonb    NOT NULL,   -- [{kind, ts, price, reason}] after the entry
     first_seen_at    bigint   NOT NULL,   -- the run that first wrote the row
     updated_at       bigint   NOT NULL,   -- the latest run that rewrote it

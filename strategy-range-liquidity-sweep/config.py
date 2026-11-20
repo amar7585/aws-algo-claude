@@ -236,6 +236,21 @@ PRIME_END = datetime.time(14, 30)
 LATE_END = datetime.time(15, 0)
 
 # --------------------------------------------------------------------------
+# The closing auction - a fact about the market, NOT a tunable (no env
+# override). Since 2026-08-03 NSE's closing auction stops continuous trading
+# in the NIFTY stocks at 15:15, so the index's 15:15 and 15:20 candles are
+# flat lines (median range 0.00 on 76 of 76 sessions to 2026-11-20) and the
+# 15:25 candle is one jump to the official close (median 24.9 pts, max 201).
+# Nobody trades at that jump, and the future mostly does not follow it
+# (correlation 0.57 with the index's 15:10->15:25 move, against 0.75 before
+# 08-03). So the 15:10 candle - its close is the 15:15 price - is the last
+# candle a trade is judged on: one still in after it is closed at its close,
+# out at 15:15 by the clock (Amar 2026-11-20). Replayed on 110 sessions it
+# changes 2 of 24 trades; see manage.follow and the README.
+# --------------------------------------------------------------------------
+LAST_LIVE_INDEX_BAR = datetime.time(15, 10)
+
+# --------------------------------------------------------------------------
 # Telegram
 #
 # A qualifying candidate is a real trade signal, and the signal is pushed to

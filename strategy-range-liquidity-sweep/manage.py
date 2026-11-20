@@ -14,6 +14,13 @@ when price says the sweep has failed, with no number in it:
     ENDS       the stop trades (STOP HIT, or WATCH ENDED while out), T2 trades
                (TARGET REACHED, or WATCH ENDED while out), the re-entry is not
                allowed when it comes, or 15:00 passes while watching.
+    CLOSED AT 15:15
+               a trade still in after the 15:10 candle is closed at that
+               candle's close - the 15:15 price (Amar 2026-11-20). From 15:15
+               the closing auction freezes the index and its 15:25 candle is
+               one jump to the official close, a price nobody traded, so no
+               stop, target or exit is judged on a candle from 15:15 on.
+               config.LAST_LIVE_INDEX_BAR says why.
 
 On no-trend days this netted the same as holding (+28.0R vs +25.8R over 49
 ideas) with far fewer full-size losses (9 vs 24). One exit and one re-entry
@@ -27,7 +34,8 @@ same conservative order as sweep.outcome.
 """
 
 import gate as gate_lib
-from levels import HIGH
+from config import LAST_LIVE_INDEX_BAR
+from levels import HIGH, ist_time
 
 ENTRY = "ENTRY"
 EXIT = "EXIT"
@@ -35,6 +43,10 @@ REENTRY = "RE-ENTRY"
 WATCH_ENDED = "WATCH ENDED"
 TARGET = "TARGET REACHED"
 STOP = "STOP HIT"
+AUCTION_CLOSE = "CLOSED AT 15:15"
+
+# Read with the step's price: "... at 15:15 - out at 25139.95 (entry ...)" - the 15:10 candle's close.
+_AUCTION_REASON = "the closing auction freezes the index at 15:15 - out"
 
 OPEN, WATCHING, REENTERED, ENDED = "open", "watching", "re-entered", "ended"
 
@@ -65,6 +77,8 @@ def follow(bars, event, candidate, reentry_allowed):
 
     for i in range(start + 1, len(bars)):
         bar = bars[i]
+        # The 15:10 candle, or the first candle after it should 15:10 be missing.
+        last_live = ist_time(bar["ts"]) >= LAST_LIVE_INDEX_BAR
         if state in (OPEN, REENTERED):
             if stop_traded(bar):
                 steps.append({"kind": STOP, "index": i, "price": stop, "reason": "the stop traded"})
@@ -77,6 +91,18 @@ def follow(bars, event, candidate, reentry_allowed):
                 steps.append({"kind": EXIT, "index": i, "price": bar["close"],
                               "reason": f"closed back beyond the level {level:.2f}", "watch_for": best})
                 state = WATCHING
+            if last_live:
+                # Still in after the last candle the index trades: out at its close.
+                # Exited on this very candle: the watch ends here too, not on a
+                # frozen candle (no re-entry is allowed after 15:00 anyway).
+                if state == WATCHING:
+                    steps.append({"kind": WATCH_ENDED, "index": i, "price": bar["close"],
+                                  "reason": "the closing auction freezes the index at 15:15 - "
+                                            "the watch ends with no re-entry"})
+                else:
+                    steps.append({"kind": AUCTION_CLOSE, "index": i, "price": bar["close"],
+                                  "reason": _AUCTION_REASON})
+                return steps, ENDED, i
             continue
         # ---- watching ------------------------------------------------------
         if stop_traded(bar):
