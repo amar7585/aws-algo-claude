@@ -68,13 +68,16 @@ CREATE TABLE IF NOT EXISTS algo.session_observations (
     notes                    text,
     created_at               bigint  NOT NULL,
 
-    -- Amar's own marks on the day's snapshot chart (added 2026-11-14,
+    -- The alert / entry of the setup (added 2026-11-14,
     -- migrations/2026-11-14-session-observations-marking.sql). 5-min candle
     -- START epochs - the same convention as algo.playbook_alerts, so the two
-    -- line up directly. NULL when not marked; never inferred.
-    alert_ts                 bigint,             -- the candle he marks as the alert candle
-    entry_ts                 bigint,             -- the candle he marks as the entry candle
-    entry_price              numeric,            -- his entry price
+    -- line up directly. Since 2026-11-20 (Amar) these are the MACHINE's values -
+    -- the playbook's alert and entry - not Amar's chart marks; NULL when the
+    -- machine recorded / entered nothing. Rows 2026-11-16 .. 11-19 hold his own
+    -- marks, from before that change. See docs/session-observation-runbook.md.
+    alert_ts                 bigint,             -- the machine's first record of the setup
+    entry_ts                 bigint,             -- the playbook's entry candle
+    entry_price              numeric,            -- the playbook's entry price
 
     PRIMARY KEY (security_id, instrument_type, event_ts, pattern_type),
     FOREIGN KEY (security_id, instrument_type)

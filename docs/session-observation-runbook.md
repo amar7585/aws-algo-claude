@@ -97,7 +97,7 @@ or NULL. `entry_ts >= alert_ts` when both are set (added 2026-11-14,
       AND session_start = extract(epoch FROM ('DATE'::date::timestamp AT TIME ZONE 'Asia/Kolkata'))::bigint
     ORDER BY alert_ts, logic;
 
-`touch_log` says, per touch, why the playbook did or did not enter. Read it next to Amar's marks;
+`touch_log` says, per touch, why the playbook did or did not enter. Read it next to Amar's chart;
 there is no fixed matching window — say in `notes` which register row (if any) is the same alert,
 and where the two disagree.
 
@@ -124,9 +124,10 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 
 ## Filling the row
 
-- `event_ts` — the 5-min candle where the pattern triggered (epoch).
+- `event_ts` — the machine's entry candle when a playbook entered (as row 17); otherwise the 5-min
+  candle where the pattern triggered (epoch).
 - `nearest_snapshot_ts` — the 15-min snapshot that best reflects the event state.
-- `price_at_event` — index **close** of the event candle, unless Amar specifies a different entry.
+- `price_at_event` — index **close** of the event candle (the machine's entry price when it entered).
 - `resolved_ts` / `resolved_price` — **data-driven, not a fixed window**: the leg resolves at the
   next reversal / leg-end on the same session, or the **15:25 close** if none. Intraday only.
 - `forward_return_pct` = `(resolved_price - price_at_event) / price_at_event * 100`.
@@ -134,16 +135,22 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 - `signal_agreement` — did the stored `buildup`/PCR/OI **at `nearest_snapshot_ts`** agree with the
   outcome (`confirmed|contradicted|no_data`)? Use the state **at the nearest snapshot** for the
   label (keeps rows comparable); put any +1-tick flip in `notes`. `no_data` before 09:45.
-- `alert_ts` / `entry_ts` — **Amar's own marks** on the day's snapshot: the 5-min candle he marks as
-  the alert candle and the one he marks as the entry candle, each as its **START** epoch (the same
-  convention as `candle_5min.candle_ts` and `algo.playbook_alerts`). NULL when he has not marked
-  one (e.g. a move too quick to have an alert candle). **Never infer them** — if a mark is unclear
-  on the chart, ask.
-- `entry_price` — Amar's entry price. If he marks only the candle, propose that candle's close and
-  confirm before INSERT.
+- `alert_ts` / `entry_ts` / `entry_price` — **the machine's values, not Amar's marks** (Amar,
+  2026-11-20: his chart is a high-level setup, not exact marks). Candles as their **START** epoch
+  (the same convention as `candle_5min.candle_ts` and `algo.playbook_alerts`):
+  - `alert_ts` — the candle of the machine's first record of the setup: the sweep register's
+    `alert_ts` for a sweep, otherwise the `pattern_events` row that first recorded it (the break,
+    the touch), sent or not.
+  - `entry_ts` / `entry_price` — the playbook's entry: the sweep register's `entry_ts` /
+    `entry_price`, or the trend playbook candidate's trigger candle and its index close. The
+    one-day validation report (sections D–F) lists both.
+  - NULL when the machine recorded / entered nothing — say so in `notes`; the miss is the finding.
+  - Amar's own chart levels (his box: entry, stop, target) go in `notes`, for reference only.
+  - Rows 12–16 (2026-11-16 → 11-19) hold Amar's own marks, from before this change; row 17
+    (2026-11-20) on holds the machine's.
 - `notes` — the full two-clock read, levels + distances, raw numbers, any live
-  pattern-detector cross-check, and how Amar's alert / entry candles compare with the sweep
-  register (query 3).
+  pattern-detector cross-check, where the machine's alert / entry came from and how it compares
+  with Amar's chart, and the sweep register (query 3).
 
 ## Pattern vocabulary logged so far
 
@@ -182,21 +189,23 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 3. Two-clock read + level proximity for each pattern.
 4. Cross-check the live pattern-detector's decision if useful, and, once pattern-recorder is
    live, what v2 recorded around the event: `algo.pattern_events` for that day,
-   `trigger_ts` within ~15 min of `event_ts`. Run query 3 and line Amar's marked alert / entry
-   candles up with the sweep register's rows.
+   `trigger_ts` within ~15 min of `event_ts`. Run query 3, and take the machine's alert / entry
+   from the sweep register or the trend playbook's candidate.
 5. **Propose** the `session_observations` row(s), values filled, and **surface the judgment calls**
-   (pattern_type name, entry/event candle, resolution point, signal_agreement, and the
-   alert / entry marks as read from the chart).
+   (pattern_type name, entry/event candle, resolution point, signal_agreement, and which machine
+   record the alert / entry values came from).
 6. On Amar's OK, INSERT; then update the memory note `pattern-detector-futures-oi-design` with
    the session's result and the new row count.
 
 ## State so far
 
-`session_observations` has **11 rows**, all NIFTY INDEX, counted 2026-11-14:
-- 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04, 2× 2026-11-13;
+`session_observations` has **17 rows**, all NIFTY INDEX, counted 2026-11-20:
+- 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04, 2× 2026-11-13,
+  2× 2026-11-16, 1× 2026-11-17, 1× 2026-11-18, 1× 2026-11-19, 1× 2026-11-20;
 - verified against Dhan REST where noted;
-- none carries `alert_ts` / `entry_ts` / `entry_price` yet (the columns were added 2026-11-14;
-  nothing was backfilled).
+- the first 11 carry no `alert_ts` / `entry_ts` / `entry_price` (the columns were added
+  2026-11-14; nothing was backfilled); rows 12–16 carry Amar's own marks; row 17 carries the
+  machine's values.
 
 Standing plan: keep hand-logging each session until the rules are clear enough to automate.
 - The detector is deployed log-only.
