@@ -6,6 +6,15 @@ kinds in priority order, and the whole setup is about price reaching for one,
 failing, and rotating away - so getting these levels wrong does not produce a
 worse trade, it produces a trade against a level nobody's stops are at.
 
+THREE OF THE FOUR ARE BUILT (Amar 2026-11-21: "drop it"). The fourth, the
+session (day) high / low made after the opening range, was removed. It was
+computed over every candle passed in, which includes the candle being tested,
+so no candle could trade beyond it: it never produced a sweep, live or in
+replay. A working version (the level frozen at the session extreme standing
+before the sweep candle) was replayed first, on 110 sessions, gate off: 8 more
+trades, -0.55R, -67 pts, one more full loss. Removing it changes no trade and
+no register row. See the README, "Since 2026-11-21".
+
 EVERY POOL CARRIES A SIDE. A `high` pool is one price sweeps upward through
 and a `low` pool one it sweeps downward through. The side decides the
 direction of the resulting trade - a swept high is faded short - and keeping
@@ -98,27 +107,11 @@ def _minus_one_bar(end_time):
     return (marker - datetime.timedelta(minutes=5)).time()
 
 
-def session_extremes(bars):
-    """
-    The high and low made AFTER the opening range.
-
-    After, because the opening range's own extremes are already pools 1 and 2;
-    a session extreme that is simply the opening-range extreme is not a fourth
-    pool, it is the same pool counted twice.
-    """
-    window = [bar for bar in bars if ist_time(bar["ts"]) >= ORB_END]
-    if not window:
-        return None
-    return {
-        "high": max(bar["high"] for bar in window),
-        "low": min(bar["low"] for bar in window),
-        "bars": len(window),
-    }
-
-
 def build_pools(bars, previous_day=None, snapshot=None):
     """
-    Every pool the sweep can target, with its side.
+    Every pool the sweep can target, with its side: the 15-min high/low, PDH/PDL
+    and the 1Hr high/low. No session (day) high/low since 2026-11-21 - see the
+    module docstring.
 
     `previous_day` carries pd_high/pd_low off the daily read. When it is
     absent - which happens on the 09:35 run, before daily-market-sentiment has
@@ -143,11 +136,6 @@ def build_pools(bars, previous_day=None, snapshot=None):
     if hour:
         pools.append(_pool("1Hr high", hour["high"], HIGH, 3))
         pools.append(_pool("1Hr low", hour["low"], LOW, 3))
-
-    extremes = session_extremes(bars)
-    if extremes:
-        pools.append(_pool("session high", extremes["high"], HIGH, 4))
-        pools.append(_pool("session low", extremes["low"], LOW, 4))
 
     return pools, orb
 

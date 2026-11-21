@@ -129,7 +129,7 @@ def _fresh_start(bars, side, level, k):
 def touch_notes(bars, contexts, gated, ungated):
     """{(pool name, side, touch index): [(decided at index or None, text)]}."""
     out = collections.defaultdict(list)
-    pools = [p for p in contexts[-1]["pools"] if not p["name"].startswith("session")]
+    pools = contexts[-1]["pools"]
     g_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(gated, bars)}
     u_keys = {(t["key"], t["event"]["sweep_index"]) for t in trades(ungated, bars)}
 

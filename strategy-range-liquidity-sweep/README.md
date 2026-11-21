@@ -16,8 +16,44 @@ targets and risk-reward.
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
-| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `VGiH4SNG…` since 2026-11-20 22:48 IST (out at 15:15, before the closing auction); before it `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `TRtj+AW8…` since 2026-11-21 10:38 IST (session high / low pools removed); before it `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
+
+## Since 2026-11-21: no session (day) high / low pools
+
+**Decided by Amar 2026-11-21 ("ok drop it now").**
+
+- **Deployed:** 2026-11-21 10:38 IST (Amar ran the upload) as CodeSha256 `TRtj+AW8…`.
+- **Rollback:** version 9 (`VGiH4SNG…`, main edbb47e, published 2026-11-21) is the code from before.
+- **First live session:** Mon 2026-11-23.
+- **Changes no trade, message or register row** (verified below). Only `levels.py` and `register.py` changed.
+
+The live function was not invoked after the deploy: an invoke writes the register and can send Telegram. Verified instead:
+- the downloaded live code equals the repo on all 12 modules;
+- handler, layers and environment (`REGISTER_ENABLED=on`) are unchanged.
+
+**Why.** The playbook's fourth pool, the high / low made after the opening range, could never fire.
+- `levels.session_extremes` took the max / min of every candle passed in. `session.context_at` passes `bars[: n + 1]`, which includes the candle being tested and the sweep candle before it.
+- So no candle could trade beyond the level: `sweep.detect` needs a wick strictly beyond it, and `push_sweeps` needs closes beyond it.
+- The live register never held a session row: 0 of 21, 11-13 .. 11-20.
+- The literal fix, leaving out the newest candle, is inert: a sweep is confirmed one or two candles after the sweep candle.
+
+**The one visible effect was a false stack.** The moving level usually equals the sweep's own extreme, so it showed as a stacked pool on 13 of the 24 gate-off replayed trades. It changed no grade, T3 or after-14:30 decision on this sample, because each of those trades also had another stack.
+
+**Replay** (read-only, the production modules on 110 sessions 06-15 .. 11-20, 46 with stored 15-min rows; written up in the side-session notes, `sweep-session-pools-2026-11-20.md`):
+
+| | gate as stored (46 sessions) | gate off (110 sessions) |
+|---|---|---|
+| before = after this change | 6 trades, +6.85R, +359.9 pts, 0 full losses | 24, +10.48R, +459.8 pts, 2 |
+| fixed instead (the level frozen at the session extreme standing before the sweep candle) | 9, +7.04R, +332.2 pts, 1 | 32, +9.93R, +392.9 pts, 3 |
+
+The fix would also have added 66 register rows on the 46 sessions (38 of them `invalid`), and needed a register rule for a level that moves. Amar chose to remove the pool.
+
+**Verified before the deploy** (the new zip against the deployed `VGiH4SNG…`):
+- **All 110 sessions:** every trade, step, outcome and message is identical, gated and gate off. The register is identical on all 46 sessions with stored rows. 15 trades lose only the `session high` / `session low` entry in their stacked list.
+- **The real handler on all 69 of 11-20's ticks:** identical, and equal to that day's validation run.
+
+**Still open (not changed here).** The 1Hr pool has the same flaw while it forms, 09:45-10:10: its level is the running extreme, including the tested candle. On 4 of the 24 gate-off trades, its "stack" is the sweep's own wick. That affects the T3 only; no outcome changes.
 
 ## Since 2026-11-20: out at 15:15, before the closing auction
 
@@ -412,9 +448,9 @@ swept high.
    `orb_high`/`orb_low`. The two are cross-checked and a mismatch is logged.
 2. **Previous day high/low** — from the daily read, absent before 09:35.
 3. **First-hour high/low** — 09:15–10:15.
-4. **Session high/low made after the opening range** — after, because the
-   opening range's own extremes are already pools 1; a session extreme that is
-   simply the opening-range extreme is the same pool counted twice.
+4. **Session high/low made after the opening range** — **removed 2026-11-21**
+   (see "Since 2026-11-21" above). It was computed including the candle being
+   tested, so it could never be swept; the playbook's own list still names it.
 
 **Stacking distance is the least-evidenced number here.** The playbook names
 stacked pools repeatedly and never says how near is near. It is set from the
@@ -476,6 +512,9 @@ refuse. With the gate bypassed to exercise the scan, the same session yields:
   11:05  1Hr high       0.15 (0.001%)  -> too shallow
 opening-range high accepted through at 10:10
 ```
+
+(Recorded before 2026-11-21, when the session high / low pools were removed.
+The same run would now list 6 pools and no `session low` line.)
 
 Note the interaction: the one qualifying sweep is at 10:20, but the opening
 range was **accepted through at 10:10**, so the range had already gone and the
