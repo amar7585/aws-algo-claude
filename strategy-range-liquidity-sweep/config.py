@@ -339,3 +339,25 @@ REGISTER_ENABLED = os.environ.get("REGISTER_ENABLED", "").strip().lower() in ("1
 REGISTER_TABLE = "algo.playbook_alerts"
 # This playbook's name in the register's `playbook` column - the function name.
 REGISTER_PLAYBOOK = "strategy-range-liquidity-sweep"
+
+# --------------------------------------------------------------------------
+# The paper position record (P2a, Amar 2026-11-22) - record.py
+#
+# Every trade this playbook ENTERS is also recorded in algo.position_master
+# through order-manager (the one common order manager; its own Lambda, called
+# synchronously, one signal per call). Its messages stay its own: every signal
+# carries message null, so order-manager records and sends nothing.
+#
+# READ, THEN CATCH UP (Amar 2026-11-22): each run reads today's positions of
+# this playbook (one SELECT, read-only - order-manager is the only writer) and
+# sends only what the record is missing - normally nothing; one step on a tick
+# where something happened; the backlog after a tick that failed for good.
+#
+# UNSET = OFF: the function name of order-manager. Unset, the playbook behaves
+# byte for byte as before P2a - the rollback, without a redeploy.
+# --------------------------------------------------------------------------
+ORDER_MANAGER_FUNCTION = os.environ.get("ORDER_MANAGER_FUNCTION", "").strip()
+ORDER_MANAGER_CONTRACT_VERSION = 1
+POSITION_TABLE = "algo.position_master"
+# This playbook's name in position_master's `playbook` column - the function name.
+POSITION_PLAYBOOK = "strategy-range-liquidity-sweep"

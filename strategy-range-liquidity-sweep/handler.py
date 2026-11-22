@@ -60,8 +60,14 @@ retests, and whether it was entered, blocked by the gate, missed, invalid, ended
 or covered - rebuilt whole on every run and upserted into algo.playbook_alerts
 after the messages. Nothing reads it back (Amar: "re-derive and record").
 
+SINCE P2a (Amar 2026-11-22) IT ALSO RECORDS EVERY ENTERED TRADE in algo.position_master,
+through order-manager (record.py / ordermgr.py), when ORDER_MANAGER_FUNCTION is set: after the
+messages, before the register; read, then catch up; messages unchanged (message null).
+
 Modules:
     session.py  the session candle by candle, and the messages
+    record.py   the paper position record - the signals order-manager is missing (P2a)
+    ordermgr.py the synchronous call to order-manager (P2a)
     manage.py   the trade after entry: T1, exit, watch, re-entry
     register.py the alert register - what became of every level touched today
     config.py   every threshold the playbook states, and the ones it does not
@@ -79,6 +85,7 @@ import time
 from market_classifier import wilder_atr
 from neon_access import connect, ist_midnight_epoch, read_neon_connection_string
 
+import record as record_lib
 import register as register_lib
 import report
 import session as session_lib
@@ -90,13 +97,15 @@ from config import (
     EXPECTED_CONTEXT_VERSION,
     HISTORY_5MIN_BARS,
     HISTORY_DAILY_BARS,
+    ORDER_MANAGER_FUNCTION,
+    POSITION_PLAYBOOK,
     REGISTER_ENABLED,
     REGISTER_PLAYBOOK,
     ROW_VISIBLE_LAG_SECONDS,
     TELEGRAM_ENABLED,
     TICK_SOURCE,
 )
-from db import closed_candles, daily_candles, day_rows, write_register
+from db import closed_candles, daily_candles, day_rows, read_positions, write_register
 from levels import ist_datetime, session_bars
 
 logger = logging.getLogger()
@@ -248,6 +257,30 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
         else:
             logger.info("WOULD SEND (telegram off) %s: %s", kind, text.replace("\n", " | "))
 
+    # ---- the paper position record (P2a) - AFTER the messages, BEFORE the register ----
+    # Every entered trade is recorded in algo.position_master through order-manager
+    # (synchronous, one signal per call, message null - the messages above stay this
+    # playbook's own). Read, then catch up: only what the record is missing is sent -
+    # normally nothing. A failed call raises: Lambda's retry reruns the tick (the
+    # messages go again, as with the register; order-manager answers `duplicate` for
+    # what it already has). ORDER_MANAGER_FUNCTION unset = off, byte for byte as before.
+    record_summary = {"enabled": bool(ORDER_MANAGER_FUNCTION)}
+    if ORDER_MANAGER_FUNCTION:
+        import ordermgr
+        derived = record_lib.signals(bars, result, ctx["instrument"], day_start, POSITION_PLAYBOOK)
+        stored = read_positions(conn, ctx["instrument"], POSITION_PLAYBOOK, day_start)
+        todo = record_lib.pending(derived, stored, int(bars[-1]["ts"]))
+        answers = [ordermgr.send(s) for s in todo]
+        by_result = {}
+        for s, a in zip(todo, answers):
+            by_result[a["result"]] = by_result.get(a["result"], 0) + 1
+            logger.info("record: %s %s entry %s candle %s -> %s (%s)", s["kind"], s["direction"],
+                        ist_datetime(s["entry_ts"]).strftime("%H:%M"), ist_datetime(s["candle_ts"]).strftime("%H:%M"),
+                        a["result"], a.get("why"))
+        record_summary.update(positions=len(derived), stored=len(stored), sent=len(todo), results=by_result)
+        logger.info("record: %d entered trades today, %d stored, %d signal(s) sent %s", len(derived), len(stored),
+                    len(todo), by_result or "")
+
     # ---- the alert register - AFTER the messages ---------------------------------
     # Rebuilt whole from this run's derivation plus the same rules with the gate
     # open (for `blocked` rows), and upserted on this connection. A failed write
@@ -278,4 +311,5 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
         "messages": [{"kind": k, "first_line": x.splitlines()[0]} for k, x in out],
         "telegram": TELEGRAM_ENABLED,
         "register": register_summary,
+        **({"record": record_summary} if ORDER_MANAGER_FUNCTION else {}),
     }

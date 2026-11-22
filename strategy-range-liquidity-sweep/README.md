@@ -16,7 +16,7 @@ targets and risk-reward.
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
-| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `VwA8XnWp…` since 2026-11-22 15:44 IST (2 of 3 lots booked at T1, the range midpoint); before it `TRtj+AW8…`, 2026-11-21 10:38 IST (session high / low pools removed), and `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 10 = `TRtj+AW8…` (main c6ab155, published 2026-11-22 before T1 was added), 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `6+z2tBAr…` since 2026-11-22 22:16 IST (P2a: every entered trade also recorded in `algo.position_master` through `order-manager`; `ORDER_MANAGER_FUNCTION=order-manager`; version 11 = `VwA8XnWp…`, the rollback); before it `VwA8XnWp…`, 2026-11-22 15:44 IST (2 of 3 lots booked at T1, the range midpoint); before it `TRtj+AW8…`, 2026-11-21 10:38 IST (session high / low pools removed), and `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 10 = `TRtj+AW8…` (main c6ab155, published 2026-11-22 before T1 was added), 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
 
 ## Since 2026-11-22: 2 of 3 lots booked at T1, the range midpoint
@@ -662,21 +662,90 @@ what it reads:
 | `ROW_VISIBLE_LAG_SECONDS` | 100 | a 15-min row is in force for a candle once written by the candle's close + this |
 | `TELEGRAM_ENABLED` | `on` | kill switch: `off` logs every message as `WOULD SEND` instead of sending |
 | `REGISTER_ENABLED` | unset (= off) | `on` writes the alert register to `algo.playbook_alerts` after the messages; unset again to stop without a redeploy |
+| `ORDER_MANAGER_FUNCTION` | unset (= off) | P2a: the function name of `order-manager` (`order-manager`). Set, every entered trade is recorded in `algo.position_master` through it. Unset, no recording at all, and the playbook behaves byte for byte as before P2a. That is the rollback without a redeploy |
+
+## Since P2a (2026-11-22): every entered trade recorded in `position_master` — DEPLOYED 2026-11-22 22:16 IST
+
+**Deployed 2026-11-22** (Amar: "Deploy P2a"; local `aws` CLI, ap-south-1):
+- **IAM:** inline policy `invoke-order-manager` added to `strategy-range-liquidity-sweep-role`. Its document was read back, and simulated: `lambda:InvokeFunction` is **allowed** on `order-manager` (it matches this policy) and **implicitDeny** on `strategy-manager`.
+- **Rollback version:** `VwA8XnWp…` (main `a908e85`) published as **version 11**.
+- **Code:** CodeSha256 **`6+z2tBArJd/bIJqG0eh0O1OeXVTp+N3zkcmoBmDsCNQ=`** (51,160 B) == the tested zip, updated 22:16:10 IST.
+- **Environment:** `REGISTER_ENABLED=on`, `ORDER_MANAGER_FUNCTION=order-manager`.
+- **Smoke:** 11-20's final tick (75 candles), a day with no sweep trade, sent to the live function.
+  - StatusCode 200, no FunctionError, no message;
+  - `record: 0 entered trades today, 0 stored, 0 signal(s) sent` (the `position_master` read ran);
+  - the register rewrote 11-20's same 4 rows (all `invalid`, the same status candles);
+  - `position_master` still 0 rows;
+  - 2.7 s cold (+0.7 s init), 102 MB of 256.
+- **Not yet exercised:** the first live sweep trade is the first real `order-manager` call. Check it with the one-day runner after that session.
+- **Rollback:** unset `ORDER_MANAGER_FUNCTION`, which stops all recording at once with no redeploy. Or redeploy version 11's code: `aws lambda get-function --function-name strategy-range-liquidity-sweep --qualifier 11` gives its zip.
+
+**Decided by Amar 2026-11-22:**
+- the sweep only (trend records in P2b, with its exit mode);
+- read, then catch up;
+- the switch `ORDER_MANAGER_FUNCTION`;
+- P2a runs until two live sessions **with a sweep trade** match: record = messages = register.
+
+The plan is in the side-session notes, `p2a-build-plan-2026-11-22.md`.
+
+**What it does:**
+- Every trade the playbook **entered** (the gated ideas that sent `SWEEP SIGNAL`, never the register's `blocked` rows) is also recorded in `algo.position_master`.
+- It goes through [`order-manager`](../order-manager/README.md): synchronous, one signal per call, `message: null`.
+- **The messages stay this playbook's own, word for word.**
+- **Order each run:** derive → messages → **record** → register.
+
+| Sweep step | `order-manager` signal |
+|---|---|
+| the entry (`SWEEP SIGNAL`) | `ENTRY`: 3 lots at the confirming candle's close (the fill at the signal), with the stop, T1 (the midpoint, or none), T2 and `risk_pts` |
+| `T1 REACHED` | `T1`, 2 lots |
+| `EXIT` | `EXIT`, `watch: true` |
+| `RE-ENTRY` | `RE-ENTRY`, 3 lots |
+| `WATCH ENDED` | `WATCH ENDED` |
+| `TARGET REACHED` / `STOP HIT` / `CLOSED AT 15:15` | `TARGET` / `STOP` / `TIME EXIT` |
+
+**Read, then catch up ([record.py](record.py)):**
+- Each run reads today's positions of this playbook: one read-only `SELECT` (`db.read_positions`). `order-manager` stays the only writer.
+- It then sends only what the record is missing:
+  - an ENTRY with no row, with every step so far;
+  - for a row, every step after its last applied candle;
+  - a step **on** that candle only if its effect is not in the row (T1 + EXIT, or EXIT + WATCH ENDED, can share a candle).
+- So a quiet tick sends nothing.
+- **A stored position this run cannot explain raises:** entered on a candle the run has seen, but not derived. Rows from a newer run (a late tick) are left alone.
+
+**Failure:** a failed `order-manager` call raises after the messages and before the register write. Lambda's retry reruns the tick: the messages go again (the same trade-off as the register), and the record completes. See [ordermgr.py](ordermgr.py).
+
+**Verified offline, 2026-11-22.** The real handler was run on every tick of the 46 stored sessions with 15-min rows (3,146 ticks, data pull of 11-20), with an in-memory `order-manager` running its real `positions.py` and `validate()`. Harness: `prelim/p0/p2a_replay.py` + `p2a_compare.py` + `p2a_unit.py` in the notes.
+- **Switch off == the deployed code (`VwA8XnWp`), tick for tick:** every Telegram text, every handler message, and the register.
+- **Switch on:**
+  - the texts and the register are unchanged;
+  - 6 positions and 20 steps, each recorded **once**, on its own candle's tick;
+  - 3,126 quiet ticks made **0** calls;
+  - the record equals an independent ledger from the register's entered rows (3 lots × 65 at `signal_close`): 43,676.75 point-units = 671.95 lot-points, every position `CLOSED`.
+- **Ticks dropped** (about 1 in 5): the record caught up 6 late steps, and the final state is identical.
+- **Every tick twice, plus a late older tick:** still exactly 20 calls, identical.
+- **10 injected order-manager failures, each retried once like Lambda:** no register written on a failed attempt, the record finished identical, and the 10 already-sent messages went again.
+- **`pending`:** the same-candle pairs (T1 + EXIT, EXIT + WATCH ENDED) and the drift raise are checked. Three source mutations are each caught.
+- **One case was not tested, because it cannot occur:** a T1 not being the first step on its candle.
+- **`ordermgr.send`:** a good answer passes; a `FunctionError`, a non-200 status and an unusable answer each raise. The request is synchronous, contract v1, with no dry-run flag.
 
 ## Deployment shape
 
-Zip the twelve modules at the **zip root**. Handler `handler.lambda_handler`,
-set under Code → Runtime settings → Edit. **Three layers:** `neon-db-driver`,
-`neon-access` and `market-classifier`. **One environment variable is set:
-`REGISTER_ENABLED=on`** — without it the register is not written (unset = off).
-Every other tunable has a default in `config.py`. The register needs no IAM
-change: it writes through the same `/algo/neon/connection` the reads use.
+Zip the **fourteen** modules at the **zip root**, with LF endings (`record.py` and `ordermgr.py` since P2a). Handler `handler.lambda_handler`, set under Code → Runtime settings → Edit.
 
-**Its own execution role**, with two inline policies: `lambda-logs`
-(`logs:CreateLogStream` + `logs:PutLogEvents` on this function's own log group)
-and `algo-ssm-read` (`ssm:GetParameter` on `/algo/neon/connection` alone, plus
-`kms:Decrypt` conditioned on `kms:ViaService = ssm.<region>.amazonaws.com`). No
-Lambda invoke — nothing runs after this. Never borrow another function's role:
+**Three layers:** `neon-db-driver`, `neon-access` and `market-classifier`.
+
+**Environment variables:**
+- `REGISTER_ENABLED=on`. Without it the register is not written (unset = off).
+- From P2a, `ORDER_MANAGER_FUNCTION=order-manager`. Without it nothing is recorded (unset = off).
+
+Every other tunable has a default in `config.py`. The register needs no IAM change: it writes through the same `/algo/neon/connection` the reads use.
+
+**Its own execution role**, with these inline policies:
+- `lambda-logs`: `logs:CreateLogStream` + `logs:PutLogEvents` on this function's own log group;
+- `algo-ssm-read`: `ssm:GetParameter` on `/algo/neon/connection` and `/algo/telegram/brief`, plus `kms:Decrypt` conditioned on `kms:ViaService = ssm.<region>.amazonaws.com`;
+- from P2a, `invoke-order-manager` ([iam/](iam/)): `lambda:InvokeFunction` on `order-manager`'s ARN only.
+
+Before P2a the sweep invoked nothing. Never borrow another function's role:
 the console-generated policies here are scoped to a single log group ARN and a
 borrowed one produces **no logs at all**, which for a function whose only
 output is its log means it produces nothing whatsoever while appearing to
@@ -687,5 +756,7 @@ Subscribe its log group to `error-notifier`.
 ## What it does not do
 
 No orders, no position sizing, no strike selection, no database write other
-than the alert register (a record nothing reads back), no recommendation to take the trade. The playbook is explicit: "This is analysis of
+than the alert register (a record nothing reads back) — from P2a its trades reach
+`algo.position_master` only through `order-manager`, which writes them; this function only reads that table —
+no recommendation to take the trade. The playbook is explicit: "This is analysis of
 what price has already done."

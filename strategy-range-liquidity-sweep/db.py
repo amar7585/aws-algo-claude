@@ -293,3 +293,29 @@ def write_register(conn, instrument, playbook, session_start, records, now, deri
         logger.info("%s: %d register rows upserted for session %d, derived through %d",
                     REGISTER_TABLE, written, int(session_start), thru)
     return {"written": written, "newer_kept": newer}
+
+
+# ---------------------------------------------------------------------------
+# The paper position record (P2a, record.py) - ONE READ, never a write
+# ---------------------------------------------------------------------------
+def read_positions(conn, instrument, playbook, session_start):
+    """
+    Today's positions of this playbook in algo.position_master - READ-ONLY.
+
+    order-manager is the only writer of that table; this read only tells the run what the
+    record already holds, so it sends order-manager just the steps that are missing (Amar
+    2026-11-22, "read, then catch up"). The read transaction is ended at once (commit of a
+    SELECT), so nothing stays open while order-manager is called.
+    """
+    from config import POSITION_TABLE
+    cursor = conn.cursor()
+    cols = ("position_id", "entry_ts", "position_type", "status", "last_update", "t1_booked_ts", "reentry_ts",
+            "closed_ts", "exit_reason")
+    cursor.execute(
+        f"SELECT {', '.join(cols)} FROM {POSITION_TABLE} "
+        f"WHERE security_id = %s AND instrument_type = %s AND playbook = %s AND session_start = %s",
+        (str(instrument["security_id"]), str(instrument["instrument_type"]), playbook, int(session_start)),
+    )
+    rows = [dict(zip(cols, r)) for r in cursor.fetchall()]
+    conn.commit()
+    return rows
