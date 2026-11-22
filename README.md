@@ -28,6 +28,7 @@ deterministic to read.
 | [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**, on each v2.1 alert: `day_trend` up/down → `TREND_PLAYBOOKS` (`strategy-trend-pullback`); `none` → nothing (the regime\|bias registry went with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` (`strategy-range-liquidity-sweep`) whatever the regime |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **sending since 2026-11-14 18:25** (first live session 2026-11-16) — the 15-min opening-range sweep playbook, run on **every 5-min tick**: re-derives the session (one rule set since 2026-11-19 — the old `current` set was removed), follows each trade after entry (exit, watch, re-entry; out at 15:15 before the closing auction since 2026-11-20 22:48; since 2026-11-22 15:44, 3 lots with 2 booked at T1, the 15-min range midpoint, and the last lot to T2 on an unmoved stop), takes entries only when price is **within the levels** (PDH/PDL, 15-min high/low) and volatility is not high (regime not `volatile-expansion`) — no bias, no trend test (since 2026-11-15 09:33) — and records its **alert register** to `playbook_alerts` (since 2026-11-14 22:01) |
 | [strategy-trend-pullback](strategy-trend-pullback/README.md) | **sending since 2026-11-11 16:56** (shadow from 2026-11-09 22:33) — the trend-day hold playbook: a v2 hold (C2/R1) at PDH/PDL/ORH/ORL with the day trend → entry, stop on the trend-off line, T1/T2, to Telegram and its log. Reads and writes nothing |
+| [order-manager](order-manager/README.md) | **deployed 2026-11-22 21:16 IST, called by nothing yet** (P1 of the paper position record) — the one common order manager. One signal per synchronous call → `position_master` (paper mode: no order is saved, the step updates the position) + the caller's own message, sent once. The playbooks start calling it in P2a, the risk manager in P2b |
 
 ## Documentation
 
@@ -36,7 +37,7 @@ deterministic to read.
 | [**Architecture**](docs/architecture.md) | System context, the two planes, data store, invariants, why it is Lambda and not containers |
 | [**Flow charts**](docs/flow.md) | A trading day end to end, each plane in detail, how a failure reaches you |
 | [**Components**](docs/components.md) | Component register, what is built vs planned, shared conventions, source lineage |
-| [**Future implementation**](docs/future-implementation.md) | Agreed, not built (2026-11-20): the closing-auction rule for every playbook, the risk manager (open trades, new-trade limits, kill switch), trade management |
+| [**Future implementation**](docs/future-implementation.md) | Agreed 2026-11-20: the closing-auction rule for every playbook, the risk manager (open trades, new-trade limits, kill switch), trade management. Since 2026-11-22: the paper-position plan decided, and its first phase built (`order-manager` + `position_master`) |
 
 ### Component docs
 
@@ -52,6 +53,7 @@ deterministic to read.
 | [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads nothing at all, the payload contract (v3 since bias was removed, 2026-11-19) |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory, every-tick runs with the trade after entry (one rule set since 2026-11-19; 2 of 3 lots booked at the range midpoint since 2026-11-22, with the split replay behind it), and the alert register (`playbook_alerts`) |
 | [strategy-trend-pullback](strategy-trend-pullback/README.md) | The 2026-11-06 reference session, the rules (setup, window, S3 stop, T1/T2, no RR gate), the replay behind them, the shadow switch |
+| [order-manager](order-manager/README.md) | The contract (one signal per synchronous call), the state machine (a step applies only if it moves the position forward), units = lots × the near-month NIFTY future's lot size, the offline and Neon verification, the measured ~1.5 s per call |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 | [layers/market-classifier](layers/market-classifier/README.md) | The taxonomy, the swing read, the volatility tests, the score terms removed with bias (2026-11-19, kept as the record), and the decisions deferred until sessions accumulate |

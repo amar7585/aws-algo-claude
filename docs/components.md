@@ -22,6 +22,7 @@
 | `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → nothing (registry removed with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — one rule set since 2026-11-19, trade follow-up (since 2026-11-22: 2 of 3 lots booked at T1, the 15-min range midpoint; the last lot to T2), alert register → `playbook_alerts` | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
 | `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
+| `order-manager` | Lambda function | synchronous invoke, one signal per call — **called by nothing yet** (P1); the playbooks from P2a, the risk manager from P2b. The only writer of `position_master` | **built, deployed 2026-11-22 21:16 IST** (`TdBvzcXF…`), idle | [README](../order-manager/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -447,6 +448,12 @@ calibration. The rules, the replay and the reference session are in its
 - the closing-auction rule for every playbook: no new trade after 15:00, any live trade out at 15:15. The sweep's interim is live since 2026-11-20 22:48;
 - a **risk manager**: one place for open trades, new-trade limits and the kill switch;
 - **trade management** (execution), which it reads positions from. That is a scope change, because this repo places no orders.
+
+**Since 2026-11-22 the paper-position plan is decided, and its first phase (P1) is built.** See section 5 of [future-implementation.md](future-implementation.md):
+- `order-manager` and `algo.position_master` are deployed and called by nothing yet;
+- the playbooks record through it in P2a;
+- a new `risk-manager` Lambda in front of strategy-manager comes in P2b;
+- Dhan orders and Dhan's kill switch come last, each behind its own approval.
 
 Earlier entries, neither agreed nor designed unless marked done:
 

@@ -4,7 +4,7 @@
 
 This file records work Amar has agreed to but that is not built yet. For each piece it gives the decision (in Amar's words where they matter), what exists today, and what is still open. Discussed 2026-11-20. Numbers are measured and dated, and must be re-measured, not edited, when behaviour changes.
 
-Nothing in sections 2 and 3 is built. Section 1 is built for one playbook (the sweep).
+Section 1 is built for one playbook (the sweep). Sections 2 and 3 were planned in detail on 2026-11-22, and the first phase of that plan (P1) is built. See section 5.
 
 ---
 
@@ -139,3 +139,76 @@ Amar: open positions will come from trade management, "when we implement trade m
 1. Plan trade management.
 2. Plan the risk manager, including the replay for the limit numbers and the Dhan kill-switch check.
 3. Build both, each behind its own approval.
+
+The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1d9493b` on branch `claude/auction-followups-35e682`, not yet on main. Section 5 below carries the decisions taken after it.
+
+---
+
+## 5. Paper positions + the risk manager: decided 2026-11-22, P1 built
+
+**Amar's decisions, 2026-11-22.** The full plan with the options and their trade-offs is outside the repo, in the side-session notes: `paper-positions-risk-manager-plan-2026-11-22.md`, `p0-limits-findings-2026-11-22.md` and `p1-build-plan-2026-11-22.md`.
+
+### What runs where
+
+- **A new `risk-manager` Lambda, in front of strategy-manager:** pattern-recorder → risk-manager → strategy-manager → playbooks.
+- It runs on **every** tick and alert:
+  - it checks the kill switch and the open positions;
+  - it stops duplicate entries;
+  - it decides which function each playbook runs (entry or exit).
+- **Kill switch on:** strategy-manager is not invoked, and the risk manager closes the open positions itself.
+- **strategy-manager stays a pure router.** This replaces the 11-20 answers "runs only when a trade is open" and "the check is in strategy-manager".
+
+### Who owns which rule
+
+- **Hard rules are the risk manager's only:** no new trade after 15:00, and every trade out at 15:15. The sweep's own 15:15 step and 15:00 cut-off are removed when it goes live.
+- **Strategy rules are the playbooks':** SL, target and exit conditions. The playbook closes the position.
+- **15:15 is a "time exit" instruction.** The playbook applies its own SL / target on the 15:10 candle first, then closes the rest at the 15:10 close.
+
+### One common order manager, its own Lambda
+
+- **`order-manager`**, "like what we have in algo_trading app just dont save order directly save the position in position master". Its contract:
+  - the playbooks decide, and hand each step over as one signal per synchronous call;
+  - in paper mode no order is saved: the step updates `position_master`;
+  - Dhan orders go through it later.
+- **The playbook writes the message text**, and the order manager sends it only when the step is applied.
+- **No extra limit check when an entry is written.** The risk manager's decision is the only limit check. Same-candle duplicates are stopped by the table's unique key.
+
+### Data model, sizing and pricing
+
+- **Data model:** `position_master`, after trading-algo's. One row per position, balance = remaining quantity. The sweep writes its order when it sends.
+- **Lots:** **3 for both playbooks, 2 sold at T1, 1 at T2.** Each playbook's own rules say *when*:
+  - sweep: T1 = the range midpoint;
+  - trend: T1 = entry + 2R; the last lot takes stop-to-entry at 1R, the previous-candle trail and the time exit.
+- **Quantities in units:** lots × the near-month NIFTY future's lot size, 65 at 2026-11-22, stored per position.
+- **Paper fill at the signal:** the sweep's confirming-candle close; trend's trigger close.
+- **Loss unit:** index points × lots.
+
+### Messages and the kill switch
+
+- **A refused signal is still sent, marked REJECTED with the reason,** and is stored as `REFUSED`.
+- **The DB kill switch resets each morning**, like Dhan's own switch.
+
+### The limits
+
+- **O1: max open 4, max 8 trades per day, daily loss 500 point-lots. Trend repeats allowed.**
+- They come from the read-only replay over 87 sessions with the decided rules:
+  - no limits: +5,248 point-lots, worst day −408, max drawdown −514;
+  - every binding limit cost points, and none lowered the drawdown;
+  - a daily-loss exit at 150–250 did harm;
+  - O1 costs −7%.
+
+### Build order
+
+| Phase | What | State |
+|---|---|---|
+| P0 | the limits replay | **done** 2026-11-22 |
+| **P1** | `algo.position_master` ([migration](../migrations/2026-11-22-position-master.sql)) + [`order-manager`](../order-manager/README.md), paper mode | **deployed 2026-11-22 21:16 IST, called by nothing.** Offline tests, the Neon temp-table test and a dry-run smoke all passed |
+| P2a | both playbooks record through `order-manager`, their own messages unchanged | its own plan + approval |
+| P2b | `risk-manager` (with `risk_control`), the context v4 `run` decision, trend exit mode with the decided rule, time / forced exits, REJECTED signals; the sweep's own 15:15 and 15:00 removed | its own plan + approval |
+| P3 | the O1 limits into `risk_control` | — |
+| P5 / P6 | Dhan order placement / Dhan's kill switch | each its own plan + approval; **they act on the live account** |
+
+### Measured at the P1 deploy, open to decide
+
+- **A warm `order-manager` call takes ~1.5 s** (a fresh Neon TLS connection each call), so each step's message will arrive about 1.5 s later than today. Reusing the connection would cut that.
+- **Memory is 100 of 128 MB.**
