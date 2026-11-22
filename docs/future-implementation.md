@@ -122,7 +122,9 @@ Amar wants them as one component.
 
 Amar: open positions will come from trade management, "when we implement trade management then we will check from there".
 
-**This is a scope change.** This repo places no orders today. A playbook sends a Telegram signal and Amar trades it himself. Trade management means placing and tracking orders through Dhan, recording positions, and reconciling them with the broker. It needs its own plan, covering what a position is, the tables, error and retry handling, and the Dhan calls. It comes before, or alongside, the risk manager's position check.
+**This is a scope change.** This repo places no orders today. A playbook sends a Telegram signal and Amar trades it himself. Trade management means placing and tracking orders through Dhan, recording positions, and reconciling them with the broker. It needs its own plan, covering what a position is, the tables, error and retry handling, and the Dhan calls.
+
+Since 2026-11-22 (see "Order" below), it starts as a **paper-mode position record**, planned together with the risk manager. Dhan orders come last.
 
 ---
 
@@ -136,13 +138,25 @@ Amar: open positions will come from trade management, "when we implement trade m
 | Classifier and sentiment rows at 15:15 / 15:25, pattern-detector (log-only), the poller's basis at 15:20 / 15:25 | cosmetic: nothing acts on them after 15:00. No change |
 | [architecture.md](architecture.md) / [flow.md](flow.md) describing the freeze | not yet. This file is the record for now |
 
-## Proposed order (not agreed)
+## Order (decided by Amar 2026-11-22: "B: paper first")
 
-1. Plan trade management.
-2. Plan the risk manager, including the replay for the limit numbers and the Dhan kill-switch check.
-3. Build both, each behind its own approval.
+Three orders were put to Amar:
 
-The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1d9493b` on branch `claude/auction-followups-35e682`, not yet on main. Section 5 below carries the decisions taken after it.
+- **A:** trade management with Dhan orders first, then the risk manager. This was the earlier proposal.
+- **B:** one plan for both, with a paper-mode position record first.
+- **C:** the risk manager first, on an interim position source that trade management would later replace.
+
+He chose B:
+
+1. **One plan covers both** trade management and the risk manager. It includes the replay that sets the limit numbers.
+2. **First build: trade management's position record, in paper mode.**
+   - A playbook's sent signal opens a position.
+   - The playbook's exit strategy, or the risk manager, closes it.
+   - Every exit is a Telegram message. No order is placed.
+3. **The risk manager runs on that record.** It applies no new trade after 15:00, out at 15:15, the limits, and the database kill-switch flag.
+4. **Last, each behind its own approval:** Dhan order placement, and Dhan's account kill switch. Both act on Amar's live account.
+
+This section records the order only. The plan was written the same day, and section 5 holds the decisions taken under it: where the risk manager runs, the data model, the lots, the limits, and the trend playbook's exit rule (backlog item 5). What an exit does once Dhan orders exist is still open; it belongs to P5 in section 5's build order.
 
 ---
 
