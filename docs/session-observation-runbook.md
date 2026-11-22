@@ -91,11 +91,15 @@ or NULL. `entry_ts >= alert_ts` when both are set (added 2026-11-14,
       to_char(to_timestamp(alert_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') alert_candle, touches,
       status, to_char(to_timestamp(status_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') status_candle,
       direction, to_char(to_timestamp(entry_ts) AT TIME ZONE 'Asia/Kolkata','HH24:MI') entry_candle,
-      entry_price, outcome, reason, touch_log
+      entry_price, t1_price, outcome, steps, reason, touch_log
     FROM algo.playbook_alerts
     WHERE security_id = '13' AND instrument_type = 'INDEX'
       AND session_start = extract(epoch FROM ('DATE'::date::timestamp AT TIME ZONE 'Asia/Kolkata'))::bigint
     ORDER BY alert_ts, logic;
+
+Since 2026-11-22 a sweep trade is 3 lots, and 2 of them are booked at `t1_price`, the 15-min range
+midpoint. `steps` shows that as a `T1 REACHED` step. `outcome` is then the last lot's end: `TARGET REACHED`
+means the last lot reached T2.
 
 `touch_log` says, per touch, why the playbook did or did not enter. Read it next to Amar's chart;
 there is no fixed matching window — say in `notes` which register row (if any) is the same alert,

@@ -88,7 +88,7 @@ On every 5-minute tick:
 5. **A flat playbook runs its entry strategy only if every limit allows it**: before 15:00, fewer open trades than the maximum, fewer trades today than the maximum, and the daily loss limit not hit.
 
 Every playbook has both an **entry strategy and an exit strategy**:
-- sweep: exit on a close back beyond the level, then watch and allow one re-entry;
+- sweep: 3 lots; book 2 at T1, the 15-min range midpoint, and run the last to T2 on a stop that never moves; exit on a close back beyond the level, then watch and allow one re-entry (T1 built in the sweep itself, live since 2026-11-22 15:44, to be revisited after trade-journal validation);
 - trend: S3, a close back inside the 15-min range, then break-even after T1.
 
 The common rules (15:00, 15:15, the limits, the kill switch) live in **one place**, so a new playbook gets them without copying them.
