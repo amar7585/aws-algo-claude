@@ -70,7 +70,7 @@ def stop_buffer(bars, upto_index, level):
     return round(buffer_points, 2), round(fixed, 2), round(mean_range, 2)
 
 
-def build(event, bars, orb, vwap, stacked, previous_day=None):
+def build(event, bars, orb, stacked, previous_day=None):
     """
     Turn a confirmed sweep into a candidate with prices, or say why not.
 
@@ -92,22 +92,14 @@ def build(event, bars, orb, vwap, stacked, previous_day=None):
 
     orb_mid = (orb["high"] + orb["low"]) / 2 if orb else None
 
-    # ---- T1: VWAP or the opening-range midpoint, whichever comes first ----
-    t1_candidates = [
-        ("VWAP", vwap),
-        ("opening-range midpoint", orb_mid),
-    ]
-    reachable = [
-        (name, value)
-        for name, value in t1_candidates
-        if value is not None and (value < entry if short else value > entry)
-    ]
-    if reachable:
-        # "Whichever price reaches first" is the nearest one in the direction
-        # of the trade.
-        t1_name, t1 = min(
-            reachable, key=lambda pair: abs(pair[1] - entry)
-        )
+    # ---- T1: the opening-range midpoint, where 2 of 3 lots are booked -------
+    # (Amar 2026-11-22, "2 of 3"; manage.follow books it). Only when it lies
+    # ahead of the entry: an entry already past the midpoint has no T1 and the
+    # whole position runs to T2. Until 2026-11-22 T1 was the nearer of VWAP and
+    # the midpoint and was never booked; replayed on 110 sessions, moving it
+    # changed no trade, grade or after-14:30 decision - only the T1 shown.
+    if orb_mid is not None and (orb_mid < entry if short else orb_mid > entry):
+        t1_name, t1 = "opening-range midpoint", orb_mid
     else:
         t1_name, t1 = None, None
 
@@ -143,6 +135,9 @@ def build(event, bars, orb, vwap, stacked, previous_day=None):
         "stop_buffer_terms": {"fixed": fixed_term, "half_recent_range": range_term},
         "t1": round(t1, 2) if t1 is not None else None,
         "t1_name": t1_name,
+        # The midpoint even when it is not T1 at entry: a re-entered position
+        # gets T1 when the midpoint is ahead of its re-entry (manage.follow).
+        "range_mid": round(orb_mid, 2) if orb_mid is not None else None,
         "t2": round(t2, 2),
         "t2_name": t2_name,
         "t3": round(t3, 2) if t3 is not None else None,

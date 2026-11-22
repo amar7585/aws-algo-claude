@@ -16,8 +16,96 @@ targets and risk-reward.
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
-| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `TRtj+AW8…` since 2026-11-21 10:38 IST (session high / low pools removed); before it `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
+| Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `VwA8XnWp…` since 2026-11-22 15:44 IST (2 of 3 lots booked at T1, the range midpoint); before it `TRtj+AW8…`, 2026-11-21 10:38 IST (session high / low pools removed), and `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 10 = `TRtj+AW8…` (main c6ab155, published 2026-11-22 before T1 was added), 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
+
+## Since 2026-11-22: 2 of 3 lots booked at T1, the range midpoint
+
+**Decided by Amar 2026-11-22 ("2 of 3"; "there is only one change ... add t1 in midway and instead of 2 enter 3 lots
+and book 2 in midway").**
+
+- **Deployed:** 2026-11-22 15:44:57 IST (Amar: "Deploy it") as CodeSha256 `VwA8XnWp…`.
+- **Rollback:** version 10 (`TRtj+AW8…`, main c6ab155, published just before) is the code from before.
+- **First live session:** Mon 2026-11-23.
+- **Not invoked after the deploy:** an invoke writes the register and can send Telegram. Checked instead: the
+  downloaded live code equals the repo on all 12 modules, and the handler, runtime, layers, role, timeout, memory
+  and environment (`REGISTER_ENABLED=on`) are unchanged.
+- **The only change:**
+  - enter 3 lots;
+  - when T1 trades (a touch), book 2 of them at T1;
+  - the last lot runs to T2, the opposite side of the opening range.
+- **T1 is the 15-min opening-range midpoint**, `(orb high + orb low) / 2`, with no VWAP. Until now T1 was the nearer
+  of VWAP and the midpoint, and nothing was booked there.
+- **Everything else is as it was, on whatever is still open:**
+  - the same structural stop, on a touch, never moved;
+  - the same T2;
+  - EXIT on a 5-min close back beyond the swept level, then one RE-ENTRY on a new best close;
+  - WATCH ENDED, TARGET REACHED, STOP HIT, CLOSED AT 15:15.
+- **No T1 when the entry is already past the midpoint.** All 3 lots run to T2.
+- **A re-entered position gets T1** only when T1 was not booked before and the midpoint is still ahead of the
+  re-entry close.
+- **Order within one candle:** the stop, then T2, then T1, then the close. This is the replay's order. No candle in
+  the 110 replayed sessions traded T1 together with the stop or T2.
+
+**What changed in the code:**
+- `trade.build`: T1 = the midpoint when it is ahead of the entry, else none. It no longer takes VWAP. It also keeps
+  `range_mid` on the candidate.
+- `manage.follow`: the new T1 REACHED step.
+- `session.step_text`: the T1 message.
+- `config.LOTS` / `T1_LOTS_BOOKED`: these name the split. They are a decision, not a tunable, so there is no env
+  override.
+
+The candidate's T1 is used in the SIGNAL message, the register's `t1_price`, the grade's "no T1" reason and the
+after-14:30 "a near target is required" rule. All four now see the midpoint. **No migration:** the T1 step goes into
+`steps` (jsonb, no constraint), and since T1 never ends a trade, `outcome` keeps its values. `TARGET REACHED` after a
+T1 means the last lot reached T2.
+
+**The new message**, sent on the tick after the candle that traded T1, like every step. 11-16, offline:
+
+```
+SWEEP T1 REACHED SHORT 15min high - 2026-11-16 10:35
+the range midpoint 25253.03 traded - book 2 of 3 lots at 25253.03 (entry 25288.95)
+the last lot runs to T2 25195.35, stop 25350.29 unchanged
+from: sweep playbook
+```
+
+The SIGNAL's T1 line keeps its format; only the number is now the midpoint (11-16: `T1 25253.03`, was the VWAP
+`25276.98`). Every other message is word for word as before. As in every other step, "(entry …)" is the playbook's
+entry, even after a re-entry.
+
+**Why.** Amar replayed T1 variants on the sweep's trades (110 sessions, deployed code `TRtj+AW8…`, only
+`manage.follow` swapped; `pattern-recorder/replay/out/trend-exits-2026-11-21/sweep_t1.py` / `sweep_t1.md`,
+git-ignored). With the stop left where it is, the total falls in a straight line as the booked share grows, and the
+win count rises:
+
+| booked at the midpoint | gate as live (6 trades) | gate off (24 trades) |
+|---|---|---|
+| none — all to T2 (before) | +6.85R, 5 won | +10.48R, 10 won |
+| 1 of 4 | +6.19R, 6 won | +9.61R, 11 won |
+| 1 of 3 | +5.98R, 6 won | +9.32R, 12 won |
+| 1 of 2 | +5.54R, 6 won | +8.73R, 13 won |
+| **2 of 3 (this)** | **+5.10R, 6 won** | **+8.15R, 14 won** |
+| all | +4.23R, 6 won | +6.98R, 14 won |
+
+Half at the midpoint with the stop then moved to entry was worse again (+4.09R / +6.56R). Amar chose 2 of 3 for the win rate: 6 of 6 live-gate
+trades won. Results are in R, so every row is at the same risk; 3 lots on the same stop risk 1.5x the money of 2.
+
+**Verified offline, 2026-11-22** (read-only; 110 sessions 06-15 .. 11-20, 46 with stored 15-min rows):
+- **The replay, trade for trade:** all 30 trades (6 gated, 24 gate off) equal `sweep_t1.py` mode `mid_hold_23` on
+  every step's kind, time and price, the end, T1 reached or not, the points and the R. The points are computed from
+  the new code's own steps. Totals are identical: +5.10R / +250.3 pts gated, +8.15R / +346.2 pts gate off. The
+  midpoint is rounded to 2 decimals, like the stop and T2, while the replay kept the half cent (23963.175 vs
+  23963.17); that moved no touch.
+- **Unchanged where T1 is not involved,** against the deployed code: the same ideas and refusals. Candidates are equal
+  apart from T1 (the value changed on 11 of 30). Every non-T1 step is identical on kind, candle, price and reason.
+  Messages are identical on 134 of 156 session-gates. The other 22 differ only by the 19 added T1 REACHED messages
+  and, on 11 trades, the SIGNAL's T1 number (counting gated and gate off separately).
+- **The register** (46 sessions, 165 rows): equal apart from `t1_price` (8 rows) and the added T1 step (7 rows).
+- **The real handler** (offline stubs as `validation-2026-11-20/stage4_sweep.py`):
+  - On all 69 of 11-20's ticks: identical to the deployed code and to that day's validation. There was no trade
+    that day.
+  - Tick by tick on the five live-gate T1 days (09-25, 10-01, 10-30, 11-13, 11-16): every message was sent once, on
+    its own candle's tick, and equals the full-day derivation. The final register equals the replay's.
 
 ## Since 2026-11-21: no session (day) high / low pools
 
@@ -147,7 +235,7 @@ git-ignored) and deleted 20:37 IST; Lambda versions 1–6 deleted, version 7 (`R
 | a push with 2+ closes beyond | a sweep if the candle back inside closes past the whole push — or, failing that, the next candle closes inside, prints no new extreme and closes past it (one more look, since 2026-11-16; it is then the sweep candle) — the push is in the band and the candle after prints no new extreme (`sweep.push_sweeps`) |
 | "the range broke" | a 2+ close push at the opening range that failed that test (both looks), or has not come back yet (`sweep.range_broke_at`) |
 | attempts | one live idea per side |
-| after entry | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT, and since 2026-11-20 CLOSED AT 15:15 (still in after the 15:10 candle: out at its close, before the closing auction). One exit and one re-entry per trade, as measured |
+| after entry | `manage.follow`: EXIT (close back beyond the level, now watching), RE-ENTRY (a new best close the trade's way, only when an entry would be allowed: cell + before 15:00), WATCH ENDED, TARGET REACHED, STOP HIT, and since 2026-11-20 CLOSED AT 15:15 (still in after the 15:10 candle: out at its close, before the closing auction). One exit and one re-entry per trade, as measured. Since 2026-11-22 also T1 REACHED: 2 of 3 lots booked at the range midpoint (see "Since 2026-11-22" above) |
 
 **Messages.** All of them go to Telegram (`TELEGRAM_ENABLED` is a kill switch, on by default): every entry and every
 trade step.
@@ -551,6 +639,7 @@ playbook are marked.
 | `MIN_PENETRATION_PCT` | 0.04 | playbook — but see disagreement 1 |
 | `MAX_PENETRATION_PCT` | 0.30 | playbook |
 | `MIN_RISK_REWARD` | 1.5 | playbook |
+| `LOTS` / `T1_LOTS_BOOKED` | 3 / 2 | Amar 2026-11-22: enter 3 lots, book 2 at T1 (the range midpoint). A decision, no env override; only said in the messages - nothing is sized |
 | `MAX_VIX_CHANGE_PCT` | 5.0 | playbook |
 | `MAX_RANGE_USED_VS_ATR` | 0.78 | playbook's re-scaled equivalent of 0.9 |
 | `MIN_ORB_RANGE_PCT` | 0.15 | playbook |

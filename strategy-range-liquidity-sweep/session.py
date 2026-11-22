@@ -11,7 +11,8 @@ announce each step once - on the run whose newest candle it is.
 THE RULES: first-candle detection PLUS a 2+ close push judged structurally at
 its close back inside, with one more look on the next candle (Amar 2026-11-16,
 sweep.push_sweeps); "range broke" only when such a push failed or has not come
-back; one live idea per side; and the exit / watch / re-entry rule after entry
+back; one live idea per side; and the exit / watch / re-entry rule after entry,
+with 2 of 3 lots booked at T1, the range midpoint, since 2026-11-22
 (manage.follow). Until 2026-11-19 these ran beside the older rule set
 ("current": 2 closes beyond = the range broke, 2 attempts per side, no trade
 management) and every message said which produced it; Amar removed the old set
@@ -30,7 +31,9 @@ import sweep as sweep_lib
 import trade as trade_lib
 from config import (
     ALLOWED_REGIMES,
+    LOTS,
     ROW_VISIBLE_LAG_SECONDS,
+    T1_LOTS_BOOKED,
 )
 from levels import HIGH, LOW, build_pools, ist_datetime, stacked_with
 
@@ -134,8 +137,7 @@ def derive(bars, rows, daily, atr14, gated=True, contexts=None):
     for n, ctx in enumerate(contexts):
         if not ctx["entry"] or ctx["window"] not in ENTRY_WINDOWS:
             continue
-        so_far, pools, orb, row = bars[: n + 1], ctx["pools"], ctx["orb"], ctx["row"]
-        vwap = row.get("vwap")
+        so_far, pools, orb = bars[: n + 1], ctx["pools"], ctx["orb"]
 
         events = [e for e in sweep_lib.detect(so_far, pools) if not e["reject_reason"] and e.get("confirm_index") == n]
         for pool in pools:
@@ -161,7 +163,7 @@ def derive(bars, rows, daily, atr14, gated=True, contexts=None):
             if ctx["window"] == gate_lib.WINDOW_LATE and not stacked:
                 rejected.setdefault(n, []).append((event, "after 14:30 only a stacked-pool sweep qualifies"))
                 continue
-            candidate, reason = trade_lib.build(event, so_far, orb, vwap, stacked, daily)
+            candidate, reason = trade_lib.build(event, so_far, orb, stacked, daily)
             if candidate is None:
                 rejected.setdefault(n, []).append((event, reason))
                 continue
@@ -233,6 +235,10 @@ def step_text(bars, idea, step):
                 f"re-entry on a close {way} {step['watch_for']:.2f} while the stop {c['stop']} holds")
     elif step["kind"] == manage.REENTRY:
         body = f"{step['reason']} - entry {step['price']:.2f} stop {c['stop']} T2 {c['t2']}"
+    elif step["kind"] == manage.T1:
+        body = (f"the range midpoint {step['price']:.2f} traded - book {T1_LOTS_BOOKED} of {LOTS} lots at "
+                f"{step['price']:.2f} (entry {c['entry']})\n"
+                f"the last lot runs to T2 {c['t2']}, stop {c['stop']} unchanged")
     else:
         body = f"{step['reason']} at {step['price']:.2f} (entry {c['entry']}, stop {c['stop']}, T2 {c['t2']})"
     return f"{head}\n{body}\nfrom: sweep playbook"

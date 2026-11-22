@@ -26,18 +26,34 @@ On no-trend days this netted the same as holding (+28.0R vs +25.8R over 49
 ideas) with far fewer full-size losses (9 vs 24). One exit and one re-entry
 per trade, as measured: a re-entered trade holds to its stop or T2.
 
+T1 (Amar 2026-11-22, "2 of 3"). Enter 3 lots; when T1 - the opening-range
+midpoint - trades, book 2 of them there (T1 REACHED). The last lot carries on
+under every rule above, unchanged: the stop never moves, T2 is the same, and
+the exit, the re-entry and the 15:15 close apply to what is still open. No T1
+when the entry is already past the midpoint (trade.build): all 3 lots run to
+T2. A re-entered position gets T1 only when it was not booked before and the
+midpoint is still ahead of the re-entry close. T1 never ends a trade, so the
+trade's last step - and the register's outcome - stays one of the kinds above.
+Replayed before it was built (110 sessions, deployed code TRtj+AW8, only this
+function swapped): gate as live 6 trades +5.10R, 6 won (all to T2: +6.85R,
+5 won); gate off 24 trades +8.15R, 14 won (+10.48R, 10 won). config.LOTS has
+every split measured.
+
 PURE. A trade's whole path is a function of the bars, so it is re-derived on
 every run - nothing is stored, and a re-run reaches the same steps.
 
-Within one candle the stop is checked first, then T2, then the close: the
-same conservative order as sweep.outcome.
+Within one candle the stop is checked first, then T2, then T1, then the close:
+the same conservative order as sweep.outcome, with T1 after T2 as replayed (a
+candle that trades both is a T2 for the whole position - it never happened in
+the 110 replayed sessions).
 """
 
 import gate as gate_lib
-from config import LAST_LIVE_INDEX_BAR
+from config import LAST_LIVE_INDEX_BAR, LOTS, T1_LOTS_BOOKED
 from levels import HIGH, ist_time
 
 ENTRY = "ENTRY"
+T1 = "T1 REACHED"
 EXIT = "EXIT"
 REENTRY = "RE-ENTRY"
 WATCH_ENDED = "WATCH ENDED"
@@ -75,6 +91,12 @@ def follow(bars, event, candidate, reentry_allowed):
     def back_beyond(bar):
         return bar["close"] > level if short else bar["close"] < level
 
+    # T1 - the range midpoint, only when it lies ahead of the entry (trade.build).
+    t1, mid, booked = candidate.get("t1"), candidate.get("range_mid"), False
+
+    def t1_traded(bar):
+        return bar["low"] <= t1 if short else bar["high"] >= t1
+
     for i in range(start + 1, len(bars)):
         bar = bars[i]
         # The 15:10 candle, or the first candle after it should 15:10 be missing.
@@ -86,6 +108,12 @@ def follow(bars, event, candidate, reentry_allowed):
             if target_traded(bar):
                 steps.append({"kind": TARGET, "index": i, "price": t2, "reason": "T2 traded"})
                 return steps, ENDED, i
+            if not booked and t1 is not None and t1_traded(bar):
+                # 2 of 3 lots out at T1; the last lot carries on - same stop, same T2.
+                steps.append({"kind": T1, "index": i, "price": t1,
+                              "reason": f"the range midpoint traded - {T1_LOTS_BOOKED} of {LOTS} lots booked, "
+                                        f"the last lot runs to T2, stop unchanged"})
+                booked = True
             if state == OPEN and back_beyond(bar):
                 best = max(toward * b["close"] for b in bars[start:i + 1]) * toward
                 steps.append({"kind": EXIT, "index": i, "price": bar["close"],
@@ -126,4 +154,8 @@ def follow(bars, event, candidate, reentry_allowed):
             steps.append({"kind": REENTRY, "index": i, "price": bar["close"],
                           "reason": f"a new best close the trade's way (beyond {best:.2f})"})
             state = REENTERED
+            if not booked:
+                # The re-entered position gets T1 only while the midpoint is still ahead of it.
+                ahead = mid is not None and (mid < bar["close"] if short else mid > bar["close"])
+                t1 = mid if ahead else None
     return steps, state, None

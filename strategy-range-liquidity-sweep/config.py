@@ -224,6 +224,28 @@ STOP_BUFFER_LOOKBACK_BARS = int(os.environ.get("STOP_BUFFER_LOOKBACK_BARS", "6")
 MIN_RISK_REWARD = float(os.environ.get("MIN_RISK_REWARD", "1.5"))
 
 # --------------------------------------------------------------------------
+# T1 - booking part of the trade at the opening-range midpoint (Amar 2026-11-22,
+# "2 of 3")
+#
+# Enter 3 lots; when the range midpoint trades, book 2 of them there; the last
+# lot runs to T2 on the same stop (manage.follow). A decision, NOT a tunable (no
+# env override). The split was replayed before it was chosen (110 sessions,
+# deployed code TRtj+AW8, stop never moved) - the total falls in a straight line
+# as the booked share grows, and the win count rises:
+#     booked at the midpoint   gate as live (6 trades)   gate off (24 trades)
+#     none (all to T2)         +6.85R, 5 won             +10.48R, 10 won
+#     1 of 4                   +6.19R, 6 won             +9.61R, 11 won
+#     1 of 3                   +5.98R, 6 won             +9.32R, 12 won
+#     1 of 2                   +5.54R, 6 won             +8.73R, 13 won
+#     2 of 3 (this)            +5.10R, 6 won             +8.15R, 14 won
+#     all                      +4.23R, 6 won             +6.98R, 14 won
+# Amar chose 2 of 3 for the win rate. The function sizes nothing: the numbers
+# are only said in its messages.
+# --------------------------------------------------------------------------
+LOTS = 3
+T1_LOTS_BOOKED = 2
+
+# --------------------------------------------------------------------------
 # Time filters
 #
 # 09:15-09:45  the range is still forming, no scanning

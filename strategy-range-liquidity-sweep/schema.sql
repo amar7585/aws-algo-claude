@@ -46,12 +46,12 @@ CREATE TABLE IF NOT EXISTS algo.playbook_alerts (
     entry_price      numeric,             -- the playbook's entry (the close back inside)
     signal_close     numeric,             -- the entry candle's close (a market fill at the signal)
     stop_price       numeric,
-    t1_price         numeric,
+    t1_price         numeric,             -- the range midpoint, where 2 of 3 lots are booked (since 2026-11-22; NULL = entry past it)
     t2_price         numeric,
     risk_reward      numeric,
     grade            text,
     outcome          text,                -- STOP HIT | TARGET REACHED | WATCH ENDED | CLOSED AT 15:15 (since 2026-11-20) | open | watching | re-entered
-    steps            jsonb    NOT NULL,   -- [{kind, ts, price, reason}] after the entry
+    steps            jsonb    NOT NULL,   -- [{kind, ts, price, reason}] after the entry; kind T1 REACHED since 2026-11-22 (never the last step)
     first_seen_at    bigint   NOT NULL,   -- the run that first wrote the row
     updated_at       bigint   NOT NULL,   -- the latest run that rewrote it
 

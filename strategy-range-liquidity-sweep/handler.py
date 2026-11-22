@@ -48,7 +48,8 @@ re-derives the session candle by candle (session.py) and sends to Telegram
 every entry and trade step on the newest candle. (Until 2026-11-19 an older
 rule set ran beside these and each message was tagged with the set that
 produced it; Amar removed the old set on 2026-11-19.) The rules also follow
-each trade after entry - exit, watch, re-entry, end (manage.py) - which is why it must run
+each trade after entry - T1 (2 of 3 lots booked at the range midpoint, since
+2026-11-22), exit, watch, re-entry, end (manage.py) - which is why it must run
 on every tick. Entries need price within the levels (PDH/PDL, 15-min high/low)
 and a regime that is not volatile-expansion - no bias (2026-11-14), no trend
 test (2026-11-15). Amar: a sweep is a level-and-volatility event.
@@ -61,7 +62,7 @@ after the messages. Nothing reads it back (Amar: "re-derive and record").
 
 Modules:
     session.py  the session candle by candle, and the messages
-    manage.py   the trade after entry: exit, watch, re-entry
+    manage.py   the trade after entry: T1, exit, watch, re-entry
     register.py the alert register - what became of every level touched today
     config.py   every threshold the playbook states, and the ones it does not
     db.py       the Neon reads, and the register's one write
