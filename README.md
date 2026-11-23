@@ -14,7 +14,7 @@ deterministic to read.
 | [instrument-master-loader](instrument-master-loader/README.md) | **running** — 15,463 instruments, monthly |
 | [auth-dhan-broker](auth-dhan-broker/README.md) | **running** — TOTP token to SSM, weekdays 07:30 Mon → 08:30 Fri; also the holiday gate that arms the day's schedules |
 | [trading-calendar](trading-calendar/README.md) | **live** — `algo.trading_holiday`, all 16 NSE holidays for 2026 |
-| [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + Telegram, weekdays 09:35 |
+| [daily-market-sentiment](daily-market-sentiment/README.md) | **running** — daily candles + daily read + the morning brief, weekdays 09:35; the evening brief, 15:45 (since 2026-11-23) |
 | [neon-db-driver layer](layers/neon-db-driver/README.md) | **built** — pg8000 |
 | [neon-access layer](layers/neon-access/README.md) | **built** — shared epoch/IST, Neon connection, SSM reads |
 | [market-classifier layer](layers/market-classifier/README.md) | **built** — ONE classification, run on daily candles and on 5-minute candles |
@@ -78,7 +78,7 @@ aws-algo-claude/
 ├── auth-dhan-broker/             Lambda: keeps a live Dhan token in SSM
 │   ├── handler.py
 │   └── README.md
-├── daily-market-sentiment/       Lambda: daily candles, daily read, Telegram
+├── daily-market-sentiment/       Lambda: daily candles, daily read, morning + evening brief
 │   ├── handler.py                entry point
 │   ├── config.py params.py       tunables; the Dhan and Telegram parameters
 │   ├── dhan.py db.py             charts client; Neon upserts
@@ -178,9 +178,15 @@ Two planes on different clocks, deliberately uncoupled:
   So no session function authenticates itself, nothing is refreshed by hand, and
   nothing is invoked on a holiday at all.
 - **Each weekday at 09:35** — `daily-market-sentiment` fetches daily candles for
-  NIFTY and INDIA VIX, computes the daily read from them, and pushes it to
-  Telegram. Then it builds today's `intraday_width_profile` — the normal 5-min
-  candle width at each clock slot over the previous 20 sessions (2026-11-12).
+  NIFTY and INDIA VIX, computes the daily read from them, and sends the morning
+  brief to Telegram (since 2026-11-22: the gap, the open daily levels, today's
+  option-chain pain points read live, the VIX move). Then it builds today's
+  `intraday_width_profile` — the normal 5-min candle width at each clock slot
+  over the previous 20 sessions (2026-11-12).
+- **Each weekday at 15:45** (since 2026-11-23) — the same function, on a second
+  schedule, sends the evening brief: the close, VIX, the levels filled, the
+  option chain, the day's trend, the alerts and the paper trades, tomorrow's
+  levels. It only reads. Both schedules are in `auth-dhan-broker`'s holiday gate.
 - **Every 15 minutes from 09:45 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
   for NIFTY and the current-month future. 25 invocations a trading day, and

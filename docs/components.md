@@ -9,7 +9,7 @@
 | `instrument-master-loader` | Lambda function | monthly | **built, running** | [README](../instrument-master-loader/README.md) |
 | `auth-dhan-broker` | Lambda function | daily, weekdays 07:30 Mon → 08:30 Fri — also the holiday gate | **built, running** | [README](../auth-dhan-broker/README.md) |
 | `trading-calendar` | reference data, no Lambda | seeded by hand, yearly | **seeded** | [README](../trading-calendar/README.md) |
-| `daily-market-sentiment` | Lambda function | daily, weekdays 09:35 | **built, running** | [README](../daily-market-sentiment/README.md) |
+| `daily-market-sentiment` | Lambda function | weekdays 09:35 (daily read + morning brief) and 15:45 (evening brief, since 2026-11-23) | **built, running** | [README](../daily-market-sentiment/README.md) |
 | `neon-db-driver` | Lambda layer | — | **built** | [README](../layers/neon-db-driver/README.md) |
 | `neon-access` | Lambda layer | — | **built** | [README](../layers/neon-access/README.md) |
 | `intraday-data-loader` | Lambda function | every 15 min, 09:45–15:35 — **the only intraday cron**, as three rules | **built, running** | [README](../intraday-data-loader/README.md) |
@@ -36,9 +36,10 @@ doing the daily fetch and the daily read in one function on one schedule, and a
 single intraday cron on `intraday-data-loader` - two Scheduler rules, one
 function - that chains the rest.
 
-**Ten schedules, and three of them are intraday.** Monthly for the instrument
+**Eleven schedules, and three of them are intraday.** Monthly for the instrument
 master, one per weekday for the token (07:30 Monday, fifteen minutes later each
-day to 08:30 Friday), 09:35 for the daily read, and the loader's own
+day to 08:30 Friday), 09:35 for the daily read and the morning brief, 15:45 for
+the evening brief (since 2026-11-23, the same function), and the loader's own
 trio: `intraday-data-loader-open` at 09:45, `intraday-data-loader-session`
 every 15 minutes from 10:00 to 14:45, then `intraday-data-loader-close` at
 15:00/15:15/15:30/15:35. The split exists
@@ -120,7 +121,7 @@ function has to authenticate itself and no token is refreshed by hand.
 | Schedule | `auth-dhan-broker-mon` … `-fri`, `Asia/Kolkata`: 07:30, 07:45, 08:00, 08:15, 08:30, each with retries at +5 and +10 min (from 2026-11-09; until then `cron(0 8 ? * MON-FRI *)`) |
 | Reads | `algo.trading_holiday`, `/algo/neon/connection`, `/algo/telegram/brief` |
 | Writes | `/algo/dhan/token` (SSM `SecureString`) |
-| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open`, `intraday-fno-poller-session`, `intraday-fno-poller-close`, `intraday-fno-poller-open` — all seven, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy, and a schedule with its own target role needs that role in `iam:PassRole`) |
+| Switches | `daily-market-sentiment-daily`, `intraday-data-loader-session`, `intraday-data-loader-close`, `intraday-data-loader-open`, `intraday-fno-poller-session`, `intraday-fno-poller-close`, `intraday-fno-poller-open`, `daily-market-sentiment-evening` (since 2026-11-23) — all eight, by name, from `MANAGED_SCHEDULE_NAMES` (each also needs its ARN in the role's policy, and a schedule with its own target role needs that role in `iam:PassRole`) |
 | Secrets | `DHAN_CLIENT_ID`, `DHAN_PIN`, `DHAN_TOTP_SECRET` as env vars |
 
 Mints a token from client id + PIN + TOTP and writes it to the parameter. An
@@ -131,7 +132,7 @@ failure raises; there is no fallback path.
 **It also decides whether the trading day happens at all.** A holiday is a
 weekday, so that weekday's schedule still fires on one: this is the only thing that
 runs before every session, which makes it the one symmetric decision point.
-On a holiday it disables all seven session schedules, sends a Telegram notice and
+On a holiday it disables all eight session schedules, sends a Telegram notice and
 mints nothing; otherwise it mints, stores, and enables them. The session
 functions are therefore never invoked on a holiday rather than invoked and
 skipping. The calendar is [`algo.trading_holiday`](../trading-calendar/README.md),
@@ -152,19 +153,28 @@ in its [README](../auth-dhan-broker/README.md).
 ### daily-market-sentiment
 
 Fetches daily candles for NIFTY and INDIA VIX into `algo.candle_daily`, computes
-the daily read into `algo.daily_market_sentiment`, and pushes it to Telegram.
-Since 2026-11-12 it then builds **today's width profile** into
+the daily read into `algo.daily_market_sentiment`, and sends the **morning brief**
+to Telegram (since 2026-11-22: the gap and the first 15 minutes, the open daily
+levels and FVGs, today's option-chain pain points read live, the VIX move against
+its last 20 sessions). Since 2026-11-12 it then builds **today's width profile** into
 `algo.intraday_width_profile` — the median 5-min candle width at each clock slot
 over the previous 20 sessions, the yardstick `intraday-market-sentiment` judges
-its last 30 minutes against. Four Dhan calls (12.9 s before the fourth, measured
-2026-11-12).
+its last 30 minutes against. Seven Dhan calls at 09:35 (27.5 s on 2026-11-23).
+
+A second schedule at 15:45 (since 2026-11-23) runs it with `{"brief": "evening"}`:
+the **evening brief** — the close against PDC, VIX, the levels filled today, the
+option chain, the day's trend, the alerts and the paper trades from
+`position_master`, tomorrow's levels. That run only reads (three Dhan calls) and
+writes nothing. Both briefs are always sent: a missing input becomes a marked line,
+logged at ERROR, never raised (a raise would make the retries re-send the brief).
 
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules |
+| Runtime | Python 3.14, zip package, 11 modules |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` |
-| Schedule | `cron(35 9 ? * MON-FRI *)`, `Asia/Kolkata` |
+| Schedule | `daily-market-sentiment-daily`, `cron(35 9 ? * MON-FRI *)`; `daily-market-sentiment-evening`, `cron(45 15 ? * MON-FRI *)` with input `{"brief": "evening"}` — both in `auth-dhan-broker`'s holiday gate |
+| Switches | `MORNING_BRIEF_V2=on`, `EVENING_BRIEF=on` (unset = shadow: built and logged, not sent) |
 | Secrets | `/algo/dhan/token`, `/algo/telegram/brief`, `/algo/neon/connection` |
 
 It reads the Dhan token from `/algo/dhan/token` rather than holding broker

@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph SESSION["09:15-15:30"]
-        DAILY["daily-market-sentiment<br/><i>cron, 09:35</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment<br/>intraday_width_profile")]
+        DAILY["daily-market-sentiment<br/><i>cron, 09:35 + 15:45</i>"] --> DTBL[("candle_daily<br/>daily_market_sentiment<br/>intraday_width_profile")]
         DAILY --> TG1{{"Telegram"}}
 
         CANDLES["intraday-data-loader<br/><i><b>the only intraday cron</b><br/>every 15 min<br/>09:45-15:30 + 15:35</i>"] --> CTBL[("candle_5min<br/>candle_15min<br/>candle_1hr")]
@@ -100,7 +100,7 @@ Read in clock order, a weekday looks like this:
 |---|---|---|---|
 | monthly | `instrument-master-loader` | cron | `instrument_master` |
 | 07:30 Mon, 15 min later each day to 08:30 Fri | `auth-dhan-broker` | cron | `/algo/dhan/token` |
-| 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram, `intraday_width_profile` (today's normal 5-min width per slot, since 2026-11-12) |
+| 09:35 | `daily-market-sentiment` | cron | `candle_daily`, `daily_market_sentiment`, Telegram (the morning brief, since 2026-11-22), `intraday_width_profile` (today's normal 5-min width per slot, since 2026-11-12) |
 | 09:45–15:30 every 15 min, + 15:35 | `intraday-data-loader` | **cron** | the three candle tables |
 | immediately after each of those 25 runs | `intraday-market-sentiment` | **invoke** | `intraday_fno_data`, `option_chain_snapshot` |
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
@@ -112,12 +112,14 @@ Read in clock order, a weekday looks like this:
 | then, on a `day_trend` up/down alert — and on every tick while it holds a position (since 2026-11-23) | `strategy-trend-pullback` | **invoke** | nothing itself: its entry and steps go to `order-manager` |
 | on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | `playbook_alerts` (the alert register, since 22:01); its entries + trade steps go to `order-manager` (recorded since 2026-11-22, messaged since 2026-11-23) |
 | on each playbook step, and each kill-switch close | `order-manager` | **synchronous invoke** | `position_master`, Telegram (the playbook's message, once) |
+| 15:45 (since 2026-11-23) | `daily-market-sentiment` — the evening brief | cron (its second schedule, input `{"brief": "evening"}`) | Telegram only — it reads, writes nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
-**Ten schedules drive this flow, and three of them drive the same intraday
+**Eleven schedules drive this flow, and three of them drive the same intraday
 cron.** `instrument-master-loader` monthly, `auth-dhan-broker` once per weekday
 (five schedules, 07:30 Monday to 08:30 Friday),
-`daily-market-sentiment` at 09:35, and `intraday-data-loader`'s three
+`daily-market-sentiment` at 09:35 and again at 15:45 (the evening brief, since
+2026-11-23), and `intraday-data-loader`'s three
 EventBridge rules — an `-open` rule at 09:45, a quarter-hourly `-session` rule
 for 10:00 to 14:45, and a `-close` rule for 15:00 to 15:35. (The
 `intraday-fno-poller` trio, every five minutes from 09:36 to 15:31, is a

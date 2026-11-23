@@ -13,16 +13,16 @@ refresh failure should raise its own alarm rather than fail a session.
 
 1. Skips a weekend. Only reachable by hand — the cron is `MON-FRI`.
 2. Asks `algo.trading_holiday` whether today is a closure.
-3. **On a holiday** — disables all seven session schedules
+3. **On a holiday** — disables all eight session schedules
    (`daily-market-sentiment-daily`, `intraday-data-loader-session`,
    `intraday-data-loader-close`, `intraday-data-loader-open`,
    `intraday-fno-poller-session`, `intraday-fno-poller-close`,
-   `intraday-fno-poller-open`), sends a Telegram notice, and stops. No token is
-   minted.
+   `intraday-fno-poller-open`, `daily-market-sentiment-evening`), sends a
+   Telegram notice, and stops. No token is minted.
 4. **Otherwise** — generates a TOTP code from the stored authenticator seed,
    calls `POST /app/generateAccessToken` with client id + PIN + that code,
    reads the expiry out of the returned JWT's `exp` claim, writes token and
-   expiry to `/algo/dhan/token`, and **then** enables those seven schedules.
+   expiry to `/algo/dhan/token`, and **then** enables those eight schedules.
 
 Any failure raises. There is no fallback, because there is nothing to fall back
 to — see below.
@@ -47,19 +47,37 @@ the system trading, which costs a few no-op invocations, instead of making it go
 quiet, which nothing here can detect. See
 [trading-calendar](../trading-calendar/README.md).
 
-### The seven schedules, and the one that is never touched
+### The eight schedules, and the one that is never touched
 
 `MANAGED_SCHEDULE_NAMES` must never list **this function's own schedule**. It is
 the heartbeat that makes the decision, so a run that switched it off could never
 switch it back on, and the system would stay dark until someone noticed by hand.
 
-It lists seven: `daily-market-sentiment-daily`, **all three** of the loader's
+It lists eight: `daily-market-sentiment-daily`, **all three** of the loader's
 rules (`intraday-data-loader-session`, `intraday-data-loader-close`,
-`intraday-data-loader-open`), and **all three** of
+`intraday-data-loader-open`), **all three** of
 [`intraday-fno-poller`](../intraday-fno-poller/README.md)'s
 (`intraday-fno-poller-session`, `intraday-fno-poller-close`,
-`intraday-fno-poller-open`, added 2026-10-16, last). Any one left out keeps
-firing on a holiday.
+`intraday-fno-poller-open`, added 2026-10-16), and
+[`daily-market-sentiment`](../daily-market-sentiment/README.md)'s evening brief,
+`daily-market-sentiment-evening` (15:45, added 2026-11-23, last). Any one left out
+keeps firing on a holiday.
+
+**The evening brief's schedule was the same gap again.** It was created on
+2026-11-23 (10:59 IST) and not added here, so it would have fired on the 2026-11-24
+holiday at 15:45: its run reads the token before its own holiday check, so it fails
+on the expired token and sends a "run FAILED" line - up to three, with Lambda's
+async retries. Added the same night (Amar: "Add to holiday gate"), before that
+holiday's 07:45 run. It needed only two edits: it reuses the 09:35 schedule's
+Scheduler role (`Amazon_EventBridge_Scheduler_LAMBDA_7a49de2026`), already in
+`PassScheduleTargetRoles`. Verified with `iam simulate-principal-policy`:
+`GetSchedule` / `UpdateSchedule` allowed on it (and on the existing seven), an
+unlisted schedule denied, `PassRole` on its role allowed. **Rollback:** version 1 of
+this function (published just before, CodeSha256 `RJzHWxGN…`) holds the seven-name
+configuration; the policy's previous document is the one without the evening ARN.
+**The code default in [config.py](config.py) still lists the seven** - the deployed
+variable is always set, so the default is not exercised; it is aligned at the next
+code deploy of this function, not with a deploy of its own.
 
 **That is not hypothetical.** `-open` (09:45) was created by the 2026-09-18
 retime and never added here. On 2026-10-02 (Gandhi Jayanti) this function
@@ -120,8 +138,9 @@ Next session: Tue 15 Sep 2026
 
 That is the notice as actually sent on 2026-09-14, the first holiday this gate
 saw — one line per managed schedule. Three then; since 2026-10-02 there were
-four, with `intraday-data-loader-open` last; since 2026-10-16 there are seven,
-with the three `intraday-fno-poller-*` rules last.
+four, with `intraday-data-loader-open` last; since 2026-10-16 seven, with the
+three `intraday-fno-poller-*` rules last; since 2026-11-23 eight, with
+`daily-market-sentiment-evening` last.
 
 Most rows have no name, and the notice says `unnamed holiday` rather than
 guessing — see [trading-calendar](../trading-calendar/README.md).
@@ -347,7 +366,7 @@ claim cannot be read, the function raises rather than storing a guessed expiry.
 | `HTTP_TIMEOUT_SECONDS` | no | `30` |
 | `TOTP_RETRIES` | no | `2` — retries after an `Invalid TOTP`; more do not fit Lambda's 15-minute cap at the default delay |
 | `TOTP_RETRY_DELAY_SECONDS` | no | `300` |
-| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close,intraday-data-loader-open,intraday-fno-poller-session,intraday-fno-poller-close,intraday-fno-poller-open` — the deployed value sets the same seven explicitly (since 2026-10-16); each also needs its ARN in the IAM policy, and a new target role needs `iam:PassRole` |
+| `MANAGED_SCHEDULE_NAMES` | no | `daily-market-sentiment-daily,intraday-data-loader-session,intraday-data-loader-close,intraday-data-loader-open,intraday-fno-poller-session,intraday-fno-poller-close,intraday-fno-poller-open` (the code default, seven) — **the deployed value sets eight** since 2026-11-23: these seven, then `daily-market-sentiment-evening`; each also needs its ARN in the IAM policy, and a new target role needs `iam:PassRole` |
 | `SCHEDULE_GROUP_NAME` | no | `default` |
 | `NEXT_SESSION_HORIZON_DAYS` | no | `10` |
 
@@ -385,7 +404,7 @@ least loud.
 this function on the grounds that it only writes. Reading the holiday calendar
 means reading the Neon connection string, so both return.
 
-**Scope to the managed schedule ARNs — all seven, one per name in
+**Scope to the managed schedule ARNs — all eight, one per name in
 `MANAGED_SCHEDULE_NAMES` — and widen this function's own policy** — never
 attach a role built for another function. Both console-generated roles in this
 project are scoped to a single resource and fail *silently* when borrowed: a
