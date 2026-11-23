@@ -537,7 +537,8 @@ and tick goes first to `risk-manager`. It reads the `risk_control` row in force 
 `position_master`. With the kill switch on for this session it closes every open position through
 `order-manager` and invokes nothing. Otherwise it gives each playbook its mode as `run` — no new
 trade on a candle closing at or after 15:00, `force_exit` from the 15:10 candle so every trade is
-out at that close, and the limits (off until P3). The playbooks keep their own stops and targets
+out at that close, and the limits (O1 since P3, 2026-11-23: max open 4, 8 trades a day, daily loss
+500 point-lots; a binding limit means exit-only, and a refused entry is still sent, headed REJECTED). The playbooks keep their own stops and targets
 and apply them first. Every entry and step then goes to `order-manager`, which records it and
 sends the playbook's own text once: a retried or late tick catches up what the record lacks and
 never sends a message twice.

@@ -4,7 +4,7 @@
 
 This file records work Amar has agreed to but that is not built yet. For each piece it gives the decision (in Amar's words where they matter), what exists today, and what is still open. Discussed 2026-11-20. Numbers are measured and dated, and must be re-measured, not edited, when behaviour changes.
 
-Section 1 is built for every playbook: since P2b (2026-11-23) the risk manager owns both rules. Sections 2 and 3 were planned in detail on 2026-11-22; P1, P2a and P2b of that plan are live (2026-11-23), while P3 (the limits) and the Dhan phases are not built. See section 5.
+Section 1 is built for every playbook: since P2b (2026-11-23) the risk manager owns both rules. Sections 2 and 3 were planned in detail on 2026-11-22; P1, P2a, P2b and P3 (the O1 limits) of that plan are live (2026-11-23), while the Dhan phases are not built. See section 5.
 
 ---
 
@@ -160,7 +160,7 @@ This section records the order only. The plan was written the same day, and sect
 
 ---
 
-## 5. Paper positions + the risk manager: decided 2026-11-22, P1 + P2a + P2b live (2026-11-23)
+## 5. Paper positions + the risk manager: decided 2026-11-22, P1 + P2a + P2b + P3 live (2026-11-23)
 
 **Amar's decisions, 2026-11-22.** The full plan with the options and their trade-offs is outside the repo, in the side-session notes: `paper-positions-risk-manager-plan-2026-11-22.md`, `p0-limits-findings-2026-11-22.md` and `p1-build-plan-2026-11-22.md`.
 
@@ -212,6 +212,13 @@ This section records the order only. The plan was written the same day, and sect
   - every binding limit cost points, and none lowered the drawdown;
   - a daily-loss exit at 150–250 did harm;
   - O1 costs −7%.
+- **In force since P3, 2026-11-23 18:42 IST:** one `risk_control` row (`set_at` 1795439523, kill switch off, 4 / 8 / 500). Plan: `p3-limits-plan-2026-11-23.md` in the side-session notes.
+  - **What they count:**
+    - max open counts OPEN positions only, not WATCHING, REFUSED or CLOSED;
+    - max trades counts every non-REFUSED position of the session; a sweep re-entry is the same trade;
+    - the daily loss is realised + marked at the newest index close.
+  - **A binding limit means exit-only for every playbook.** A refused entry is still sent, headed REJECTED, and stored as REFUSED. A sweep re-entry ends the watch, even at 8/8, as P0 measured it.
+  - **The newest row is the whole state.** A kill-switch row must carry the limits in force; the statements that do it are in the [risk-manager README](../risk-manager/README.md).
 
 ### Build order
 
@@ -221,7 +228,7 @@ This section records the order only. The plan was written the same day, and sect
 | **P1** | `algo.position_master` ([migration](../migrations/2026-11-22-position-master.sql)) + [`order-manager`](../order-manager/README.md), paper mode | **deployed 2026-11-22 21:16 IST**, called by nothing until P2a (22:16 that day). Offline tests, the Neon temp-table test and a dry-run smoke all passed |
 | P2a | the sweep records every entered trade through `order-manager` (trend moved into P2b), its own messages unchanged | **deployed 2026-11-22 22:16 IST** (sweep `6+z2tBAr…`). Its two-session live check was skipped: no sweep trade ran through it before P2b, on Amar's call |
 | P2b | `risk-manager` (with `risk_control`), the context v4 `run` decision, trend exit mode with the decided rule, time / forced exits, REJECTED signals, every trade message through `order-manager` (the sweep's own 15:00 / 15:15 kept as the register's record) | **live 2026-11-23 17:22 IST**, deployed after the close; first session Wed 2026-11-25. Offline: whole-chain replay on 87 sessions = P0 (161 positions, 5,248.11 point-lots; O1 4,901.89), 29/29 mutations caught; the smoke on 11-23's final tick sent nothing. Deploy log + rollbacks in the [risk-manager README](../risk-manager/README.md) |
-| P3 | the O1 limits into `risk_control` | — |
+| P3 | the O1 limits into `risk_control` | **in force 2026-11-23 18:42 IST** (Amar: "Approve P3, insert O1 now"): one row, no code change, no deploy; first session Wed 2026-11-25. Before it: the O1 chain re-run on the deployed code = 4,901.89 point-lots, 4 REFUSED (all trend: 10-27 max trades, 11-02 max open). After it: the live row through risk-manager's own rules offline, 14/14 |
 | P5 / P6 | Dhan order placement / Dhan's kill switch | each its own plan + approval; **they act on the live account** |
 
 ### Measured at the P1 deploy, open to decide

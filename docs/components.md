@@ -461,11 +461,11 @@ calibration. The rules, the replay and the reference session are in its
 - a **risk manager**: one place for open trades, new-trade limits and the kill switch;
 - **trade management** (execution), which it reads positions from. That is a scope change, because this repo places no orders.
 
-**Since 2026-11-22 the paper-position plan is decided; P1, P2a and P2b are live by 2026-11-23.** See section 5 of [future-implementation.md](future-implementation.md):
+**Since 2026-11-22 the paper-position plan is decided; P1, P2a, P2b and P3 are live by 2026-11-23.** See section 5 of [future-implementation.md](future-implementation.md):
 - P1: `order-manager` and `algo.position_master` (2026-11-22 21:16);
 - P2a: the sweep records every entered trade through it (2026-11-22 22:16);
 - P2b: `risk-manager` in front of strategy-manager with `risk_control`; trend follows its trades; every trade message goes through `order-manager` (2026-11-23, live from 17:22; first session 2026-11-25);
-- next: P3, the O1 limits into `risk_control` (max open 4 / 8 trades a day / daily loss 500 point-lots);
+- P3: the O1 limits in `risk_control` (max open 4 / 8 trades a day / daily loss 500 point-lots), in force since 2026-11-23 18:42 IST — one row, no code change; first session 2026-11-25;
 - Dhan orders and Dhan's kill switch come last, each behind its own approval.
 
 Earlier entries, neither agreed nor designed unless marked done:
