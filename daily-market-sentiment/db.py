@@ -200,3 +200,118 @@ def upsert_width_profile(conn, instrument, trade_date, rows, used_midnights, cre
     cursor.execute(PROFILE_UPSERT.format(values=placeholders), params)
     conn.commit()
     return len(rows)
+
+
+# ---- the morning brief (2026-11-22): READ-ONLY ---------------------------------
+PREV_SNAPSHOT_FIELDS = (
+    "snapshot_ts", "captured_at", "spot", "near_expiry_ts", "near_atm_strike",
+    "near_max_oi_call", "near_max_oi_put", "near_max_pain", "near_pcr_oi",
+    "near_ce_oi_total", "near_pe_oi_total",
+)
+
+
+def read_prev_session_snapshot(conn, instrument, day_start):
+    """
+    The previous session's LAST intraday-fno-poller snapshot (its 15:25 tick):
+    yesterday's walls, max pain, PCR and OI totals, for the brief's
+    "yesterday's close" line and today's OI change. Read only. None when the
+    table holds nothing before today (sessions before the poller existed).
+    """
+    cursor = conn.cursor()
+    cursor.execute(
+        f"SELECT {', '.join(PREV_SNAPSHOT_FIELDS)} FROM algo.fno_5m_snapshot "
+        "WHERE security_id = %s AND instrument_type = %s AND snapshot_ts < %s "
+        "ORDER BY snapshot_ts DESC LIMIT 1",
+        (instrument["security_id"], instrument["instrument_type"], int(day_start)),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    return {f: (float(v) if v is not None and f not in ("snapshot_ts", "captured_at", "near_expiry_ts") else v)
+            for f, v in zip(PREV_SNAPSHOT_FIELDS, row)}
+
+
+# ---- the evening brief (2026-11-23): READ-ONLY ---------------------------------
+# Each returns today's rows (or a count) and never writes; the handler guards each
+# one separately, so a table that cannot be read costs only its own section.
+_INTS = ("ts", "snapshot_ts", "near_expiry_ts", "trigger_ts", "telegram_sent_at", "manager_sent_at",
+         "entry_ts", "lot_size", "t1_booked_ts")
+
+
+def _rows(conn, sql, params, fields):
+    cursor = conn.cursor()
+    cursor.execute(sql, params)
+    out = []
+    for row in cursor.fetchall():
+        rec = {}
+        for f, v in zip(fields, row):
+            if v is None or isinstance(v, str):
+                rec[f] = v
+            elif f in _INTS:
+                rec[f] = int(v)
+            else:
+                rec[f] = float(v)
+        out.append(rec)
+    return out
+
+
+def read_day_bars(conn, instrument, day_start):
+    """Today's stored 5-min candles of the instrument (the loader's), oldest first."""
+    return _rows(conn,
+                 "SELECT candle_ts, open, high, low, close FROM algo.candle_5min "
+                 "WHERE security_id = %s AND instrument_type = %s AND candle_ts >= %s AND candle_ts < %s "
+                 "ORDER BY candle_ts",
+                 (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
+                 ("ts", "open", "high", "low", "close"))
+
+
+def read_day_sentiments(conn, instrument, day_start):
+    """Today's 15-min rows: when they were stamped and the day_trend each carried."""
+    return _rows(conn,
+                 "SELECT snapshot_ts, day_trend FROM algo.intraday_sentiments "
+                 "WHERE security_id = %s AND instrument_type = %s AND snapshot_ts >= %s AND snapshot_ts < %s "
+                 "ORDER BY snapshot_ts",
+                 (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
+                 ("snapshot_ts", "day_trend"))
+
+
+def count_day_fno_rows(conn, instrument, day_start):
+    cursor = conn.cursor()
+    cursor.execute("SELECT count(*) FROM algo.intraday_fno_data "
+                   "WHERE security_id = %s AND instrument_type = %s AND snapshot_ts >= %s AND snapshot_ts < %s",
+                   (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400))
+    return int(cursor.fetchone()[0])
+
+
+SNAPSHOT_FIELDS = ("snapshot_ts", "near_expiry_ts", "near_atm_strike", "near_max_oi_call", "near_max_oi_put",
+                   "near_max_pain", "near_pcr_oi")
+
+
+def read_day_snapshots(conn, instrument, day_start):
+    """Today's intraday-fno-poller 5-min snapshots (the walls, max pain, PCR), oldest first."""
+    return _rows(conn,
+                 f"SELECT {', '.join(SNAPSHOT_FIELDS)} FROM algo.fno_5m_snapshot "
+                 "WHERE security_id = %s AND instrument_type = %s AND snapshot_ts >= %s AND snapshot_ts < %s "
+                 "ORDER BY snapshot_ts",
+                 (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
+                 SNAPSHOT_FIELDS)
+
+
+def read_day_alerts(conn, instrument, day_start):
+    """Today's pattern-recorder events that went to Telegram (and whether the manager got them)."""
+    return _rows(conn,
+                 "SELECT trigger_ts, family, direction, level, telegram_sent_at, manager_sent_at FROM algo.pattern_events "
+                 "WHERE security_id = %s AND instrument_type = %s AND trigger_ts >= %s AND trigger_ts < %s "
+                 "AND telegram_sent_at IS NOT NULL ORDER BY trigger_ts",
+                 (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
+                 ("trigger_ts", "family", "direction", "level", "telegram_sent_at", "manager_sent_at"))
+
+
+def read_day_positions(conn, day_start):
+    """Today's paper positions (order-manager's algo.position_master, P2a: the sweep)."""
+    return _rows(conn,
+                 "SELECT playbook, entry_ts, position_type, status, lot_size, realized_profit, exit_reason, t1_booked_ts "
+                 "FROM algo.position_master WHERE session_start = %s ORDER BY entry_ts",
+                 (int(day_start),),
+                 ("playbook", "entry_ts", "position_type", "status", "lot_size", "realized_profit", "exit_reason",
+                  "t1_booked_ts"))

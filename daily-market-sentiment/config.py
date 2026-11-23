@@ -9,6 +9,34 @@ import os
 
 CHARTS_BASE = os.environ.get("DHAN_CHARTS_BASE", "https://api.dhan.co/v2/charts/")
 
+# The option chain, read by the morning brief only (2026-11-22). The same
+# endpoints intraday-fno-poller uses; the chain is NOT under the expiry list's
+# path (see dhan.py).
+OPTIONCHAIN_URL = os.environ.get("DHAN_OPTIONCHAIN_URL", "https://api.dhan.co/v2/optionchain")
+EXPIRYLIST_URL = os.environ.get(
+    "DHAN_EXPIRYLIST_URL", "https://api.dhan.co/v2/optionchain/expirylist"
+)
+# The aggregates (PCR, OI totals, max pain, walls) over ATM +-20 strikes - the
+# poller's AGGREGATE_STRIKES_PER_SIDE, so the brief's walls are the numbers
+# the poller stores (chain.py is its verbatim copy).
+AGGREGATE_STRIKES_PER_SIDE = int(os.environ.get("AGGREGATE_STRIKES_PER_SIDE", "20"))
+
+# THE MORNING BRIEF SWITCH (Amar, 2026-11-22). Unset = SHADOW: the old 09:35
+# message is sent exactly as before, and the new brief is built AFTER the
+# width profile and only LOGGED. "on" = the new brief is sent in its place.
+MORNING_BRIEF_V2 = os.environ.get("MORNING_BRIEF_V2", "").strip().lower() in ("1", "on", "true", "yes")
+
+# THE EVENING BRIEF SWITCH (Amar, 2026-11-23, step 2). The ~15:45 schedule invokes
+# this function with {"brief": "evening"}. Unset = SHADOW: the brief is built and
+# only LOGGED. "on" = it is sent to Telegram. The evening run never writes.
+EVENING_BRIEF = os.environ.get("EVENING_BRIEF", "").strip().lower() in ("1", "on", "true", "yes")
+
+# The VIX line compares today's move with the daily moves of the last N
+# sessions (Amar 2026-11-22: "vs its own last 20 days", no fixed band).
+VIX_RANK_SESSIONS = int(os.environ.get("VIX_RANK_SESSIONS", "20"))
+# ADR over the last N completed sessions - Amar's ADR10.
+ADR_SESSIONS = int(os.environ.get("ADR_SESSIONS", "10"))
+
 TOKEN_PARAMETER_NAME = os.environ.get("TOKEN_PARAMETER_NAME", "/algo/dhan/token")
 TELEGRAM_PARAMETER_NAME = os.environ.get(
     "TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief"

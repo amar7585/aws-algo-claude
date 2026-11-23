@@ -47,7 +47,9 @@ from neon_access import SSL_CONTEXT, ist_datetime
 from config import (
     API_PACING_SECONDS,
     CHARTS_BASE,
+    EXPIRYLIST_URL,
     HTTP_TIMEOUT_SECONDS,
+    OPTIONCHAIN_URL,
     SESSION_END,
     SESSION_START,
 )
@@ -56,18 +58,26 @@ logger = logging.getLogger()
 
 
 class DhanClient:
-    def __init__(self, token):
+    def __init__(self, token, client_id=None):
         self._token = token
+        # The option-chain family (expirylist, the chain) also wants a
+        # client-id header; charts need only access-token. Passed only when
+        # the morning brief reads the chain (2026-11-22).
+        self._client_id = client_id
         self._last_call_at = 0.0
         self.calls = 0
 
     def _post(self, path, payload, retries=3):
-        url = CHARTS_BASE + path
+        return self._request(CHARTS_BASE + path, payload, retries)
+
+    def _request(self, url, payload, retries=3):
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
             "access-token": self._token,
         }
+        if self._client_id:
+            headers["client-id"] = self._client_id
         for attempt in range(retries + 1):
             elapsed = time.monotonic() - self._last_call_at
             if elapsed < API_PACING_SECONDS:
@@ -126,6 +136,50 @@ class DhanClient:
                 "toDate": f"{day.isoformat()} 23:59:00",
             },
         )
+
+    # ---- the option chain, for the morning brief (2026-11-22) -------------
+    # Copied from intraday-fno-poller/dhan.py, same endpoints and the same
+    # shape checks. The chain is NOT under the expiry list's path: expirylist
+    # is /v2/optionchain/expirylist, the chain itself the flat /v2/optionchain
+    # (measured 2026-09-12 in the poller). The chain HAS a {"status","data"}
+    # envelope; the charts do not.
+
+    def expiry_list(self, underlying_scrip, underlying_seg):
+        """Option expiry dates, ascending, as YYYY-MM-DD strings."""
+        if not self._client_id:
+            raise RuntimeError("expiry_list needs a client id - DhanClient(token, client_id)")
+        payload = self._request(
+            EXPIRYLIST_URL,
+            {"UnderlyingScrip": int(underlying_scrip), "UnderlyingSeg": underlying_seg},
+        )
+        dates = payload.get("data") if isinstance(payload, dict) else None
+        if not dates:
+            raise RuntimeError(f"expiry list empty or unexpected: {payload!r}")
+        return [str(d)[:10] for d in dates]
+
+    def option_chain(self, underlying_scrip, underlying_seg, expiry):
+        """
+        The full chain for one expiry: the `data` block {"last_price", "oc"}.
+        Raises if the envelope is not the measured shape - every calculation
+        indexes into `oc`, and a changed shape must not become an empty chain.
+        """
+        if not self._client_id:
+            raise RuntimeError("option_chain needs a client id - DhanClient(token, client_id)")
+        payload = self._request(
+            OPTIONCHAIN_URL,
+            {"UnderlyingScrip": int(underlying_scrip), "UnderlyingSeg": underlying_seg,
+             "Expiry": str(expiry)[:10]},
+        )
+        data = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(data, dict) or not isinstance(data.get("oc"), dict):
+            raise RuntimeError(
+                f"option chain for {expiry} is not the measured "
+                f'{{"status","data":{{"last_price","oc"}}}} shape: '
+                f"{json.dumps(payload)[:300]}"
+            )
+        if not data["oc"]:
+            raise RuntimeError(f"option chain for {expiry} carries no strikes")
+        return data
 
 
 def to_candles(payload):
