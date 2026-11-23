@@ -18,11 +18,12 @@
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
-| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns (rules v2.2 since 2026-11-19) → `pattern_events`, alerts to Telegram and strategy-manager once each; since 2026-11-14 also hands **every** tick to strategy-manager | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
-| `strategy-manager` | Lambda function | on each v2.1 alert — a pure router: `day_trend` up/down → the trend playbook, `none` → nothing (registry removed with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
-| `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — one rule set since 2026-11-19, trade follow-up (since 2026-11-22: 2 of 3 lots booked at T1, the 15-min range midpoint; the last lot to T2), alert register → `playbook_alerts` | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
-| `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
-| `order-manager` | Lambda function | synchronous invoke, one signal per call — **called by nothing yet** (P1); the playbooks from P2a, the risk manager from P2b. The only writer of `position_master` | **built, deployed 2026-11-22 21:16 IST** (`TdBvzcXF…`), idle | [README](../order-manager/README.md) |
+| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns (rules v2.2 since 2026-11-19) → `pattern_events`, alerts to Telegram and on to the strategy plane once each; since 2026-11-14 also hands **every** tick on — to strategy-manager until 2026-11-23 17:22, to `risk-manager` since | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
+| `risk-manager` | Lambda function | on each v2.1 alert and every 5-min tick, invoked by `pattern-recorder` — the kill switch, the hard rules (15:00, the 15:15 time exit), the limits; hands strategy-manager the payload + `run` | **built, running** (P2b, live 2026-11-23 17:22 IST, `KsSFZbsj…`; first session 2026-11-25) | [README](../risk-manager/README.md) |
+| `strategy-manager` | Lambda function | on each v2.1 alert, invoked by `risk-manager` since 2026-11-23 (context v4: each playbook gets the risk manager's mode) — a pure router: `day_trend` up/down → the trend playbook, `none` → nothing (registry removed with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
+| `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — one rule set since 2026-11-19, trade follow-up (since 2026-11-22: 2 of 3 lots booked at T1, the 15-min range midpoint; the last lot to T2), alert register → `playbook_alerts`; trades recorded through `order-manager` since P2a (2026-11-22), messages through it since P2b (2026-11-23) | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
+| `strategy-trend-pullback` | Lambda function | on an alert whose `day_trend` is up or down — the trend-day hold playbook; since P2b (2026-11-23) also on every tick while it holds a position: entries through `order-manager`, the decided trail after entry | **built, running** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) | [README](../strategy-trend-pullback/README.md) |
+| `order-manager` | Lambda function | synchronous invoke, one signal per call — from the sweep (P2a, since 2026-11-22 22:16), trend and risk-manager (P2b, since 2026-11-23). The only writer of `position_master` and the only sender of trade messages | **built, running** (P1 2026-11-22 21:16 IST; `EUUQoC7Y…`, the kept connection + 256 MB since 2026-11-23 15:32) | [README](../order-manager/README.md) |
 
 Everything above the divider exists and runs. See
 [architecture.md](architecture.md) for why none of these sit inside a state
@@ -47,7 +48,8 @@ there is a second, independent intraday trio, `intraday-fno-poller-open/
 -session/-close` — every five minutes, 09:36 to 15:31, one minute past each
 mark except 15:26 (it would re-stamp the 15:25 bar), 71 runs a day. It is
 chained from nothing, and since 2026-11-09 it hands each committed tick to
-`pattern-recorder`, which sends the v2.1 alerts and invokes `strategy-manager`;
+`pattern-recorder`, which sends the v2.1 alerts and, through `risk-manager` since
+2026-11-23, invokes `strategy-manager`;
 see [intraday-fno-poller](../intraday-fno-poller/README.md). The loader
 invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
@@ -319,7 +321,7 @@ them. It evaluates no playbook, emits no signal and writes nothing.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Trigger | **asynchronous invoke from `pattern-recorder`**, once per v2.1 alert (since 2026-11-09 16:04; before that from `pattern-detector` on a confirmed turn), and on **every 5-min tick** since 2026-11-14 18:28 - no schedule |
+| Trigger | **asynchronous invoke from `risk-manager`** since 2026-11-23 17:22 (P2b), which `pattern-recorder` hands each v2.1 alert and every tick; before that from `pattern-recorder` directly, once per v2.1 alert (since 2026-11-09 16:04; before that from `pattern-detector` on a confirmed turn), and on **every 5-min tick** since 2026-11-14 18:28 - no schedule |
 | Writes | **nothing** |
 | Secrets | `/algo/dhan/token`, `/algo/neon/connection` |
 
@@ -345,8 +347,15 @@ read it, because a sweep is confirmed by a *closed* bar.
 arrives as `detection`; `day_trend` up or down goes to `TREND_PLAYBOOKS`
 (`strategy-trend-pullback`). `none`, or no `detection`, routes nothing.
 `detection`, `index_bars` and `source` pass through to the playbooks;
-`context_version` is 3 since 2026-11-19 (bias, score, max_score and confidence
-left the snapshot).
+`context_version` is 4 since 2026-11-23 (P2b: the risk manager's `run`) and was 3
+from 2026-11-19 (bias, score, max_score and confidence left the snapshot).
+
+**Behind the risk manager since 2026-11-23 17:22 (P2b).** `risk-manager` adds `run` — its
+decision per playbook: `entry_exit`, `exit_only` with the reason, or `force_exit` (the 15:15 time
+exit, the daily-loss exit). A payload without `run` raises, so no playbook can run without the
+kill-switch and limit check. A playbook the risk manager left out is not invoked; on a tick, the
+trend playbook is invoked when `run` lists it (it holds a position). Each playbook gets its own
+entry of `run`, one dispatch each.
 
 **Every tick goes to `TICK_PLAYBOOKS`** (since 2026-11-14 18:28). `pattern-recorder`
 hands each tick over (`TICK_HANDOFF_ENABLED=on`, unset = off) and the manager sends it
@@ -367,11 +376,11 @@ fails to hold, closes back inside, and rotates back across the range.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 12 modules |
+| Runtime | Python 3.14, zip package, 14 modules (`record.py` + `ordermgr.py` since P2a) |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` - the last for Wilder ATR only |
-| Trigger | asynchronous invoke from `strategy-manager` - on **every 5-min tick** since 2026-11-14 (before that, on a no-trend `sideways\|range-bound` alert) |
+| Trigger | asynchronous invoke from `strategy-manager` - on **every 5-min tick** since 2026-11-14 (before that, on a no-trend `sideways\|range-bound` alert); since 2026-11-23 with the risk manager's mode in `run` |
 | Reads | today's closed 5-min index candles from the payload, `candle_daily` for ATR, today's 15-min rows (`intraday_fno_data` + `intraday_sentiments`) - no broker API |
-| Writes | `playbook_alerts` - the alert register (on since 2026-11-14 22:01, `REGISTER_ENABLED=on`). Its other output is Telegram and its log |
+| Writes | `playbook_alerts` - the alert register (on since 2026-11-14 22:01, `REGISTER_ENABLED=on`). Every entered trade goes to `order-manager` since P2a (2026-11-22), every message since P2b (2026-11-23): order-manager writes `position_master` and sends the text. Its own other output is its log |
 | Secrets | `/algo/neon/connection` |
 
 The regime context arrives in the payload, and on every-tick runs so do today's
@@ -416,11 +425,11 @@ trend. It is not a sweep and not a fade; sweeps stay with
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules, **no layers**; 30 s, 128 MB |
-| Trigger | asynchronous invoke from `strategy-manager` (`TREND_PLAYBOOKS`), for a v2.1 alert whose `day_trend` is up or down |
-| Reads | **nothing** - the context carries the alert, today's closed index candles, the 15-min snapshot and the daily read |
-| Writes | **nothing** - its Telegram message and its log are its output |
-| Secrets | `/algo/telegram/brief` |
+| Runtime | Python 3.14, zip package, 8 modules since P2b (`exits.py`, `record.py`, `ordermgr.py`), **no layers**; 30 s, 128 MB |
+| Trigger | asynchronous invoke from `strategy-manager` (`TREND_PLAYBOOKS`), for a v2.1 alert whose `day_trend` is up or down; since P2b (2026-11-23) also on every tick while it holds a position |
+| Reads | **nothing** - the context carries the alert, today's closed index candles, the 15-min snapshot and the daily read; on a tick, its own open positions (the risk manager's `run`) |
+| Writes | **no table itself** - since P2b every entry and step goes to `order-manager`, which records it in `position_master` and sends the message; its log |
+| Secrets | `/algo/telegram/brief` (unused since P2b; the role keeps it) |
 | Switch | `TELEGRAM_ENABLED=on` since 2026-11-11 16:56; unset = shadow (logged `WOULD SEND`) |
 
 The rules, all on the index: a v2 **C2** (retest/hold) or **R1** (hold candle)
@@ -430,9 +439,12 @@ a 5-min close back inside the opening range — below its high for a long, above
 low for a short — the line where the day trend turns off, in the classifier and the
 playbook alike (rule G, 2026-11-19: the day trend is on only while price trades
 outside the 15-min range; inside it is no trend). A trigger candle that has itself
-closed back inside the range stands down. T1 is the session extreme before the
-trigger, then stop to break-even; T2 holds the rest to the 15:10 close. No
-risk-reward gate. It raises rather than guessing when the trigger candle, the
+closed back inside the range stands down. No risk-reward gate. **Since P2b (2026-11-23) the trade after entry is the decided
+"Previous-candle trail"** (Amar 2026-11-22): 3 lots; T1 = entry + 2R, 2 of 3 sold there; the stop
+moves to entry once price touches +1R and then trails the previous closed 5-min candle; the range
+close stays the stop; the risk manager's time exit closes the rest at the 15:10 close. Before P2b,
+T1 was the session extreme before the trigger, then break-even, T2 the rest to 15:10 - in the
+message only, nothing followed. It raises rather than guessing when the trigger candle, the
 opening range or a fresh daily read is missing.
 
 Its first full session, 2026-11-11 (in shadow), had 5 dispatches: 3 candidates
@@ -449,10 +461,11 @@ calibration. The rules, the replay and the reference session are in its
 - a **risk manager**: one place for open trades, new-trade limits and the kill switch;
 - **trade management** (execution), which it reads positions from. That is a scope change, because this repo places no orders.
 
-**Since 2026-11-22 the paper-position plan is decided, and its first phase (P1) is built.** See section 5 of [future-implementation.md](future-implementation.md):
-- `order-manager` and `algo.position_master` are deployed and called by nothing yet;
-- the playbooks record through it in P2a;
-- a new `risk-manager` Lambda in front of strategy-manager comes in P2b;
+**Since 2026-11-22 the paper-position plan is decided; P1, P2a and P2b are live by 2026-11-23.** See section 5 of [future-implementation.md](future-implementation.md):
+- P1: `order-manager` and `algo.position_master` (2026-11-22 21:16);
+- P2a: the sweep records every entered trade through it (2026-11-22 22:16);
+- P2b: `risk-manager` in front of strategy-manager with `risk_control`; trend follows its trades; every trade message goes through `order-manager` (2026-11-23, live from 17:22; first session 2026-11-25);
+- next: P3, the O1 limits into `risk_control` (max open 4 / 8 trades a day / daily loss 500 point-lots);
 - Dhan orders and Dhan's kill switch come last, each behind its own approval.
 
 Earlier entries, neither agreed nor designed unless marked done:

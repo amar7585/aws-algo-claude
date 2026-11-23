@@ -26,19 +26,27 @@ flowchart TD
 
     subgraph STRAT["The strategy plane - chained, not scheduled"]
         PD["<b>pattern-detector</b><br/><i>invoked - the two-clock turn rule<br/>LOG-ONLY since 2026-11-09 16:04</i>"]
+        RM["<b>risk-manager</b><br/><i>invoked - kill switch, hard rules, limits<br/>live since 2026-11-23 17:22</i>"]
         MGR["<b>strategy-manager</b><br/><i>invoked - a PURE ROUTER</i>"]
+        OM["<b>order-manager</b><br/><i>sync, one signal per call<br/>the only writer of position_master</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on every 5-min tick<br/>since 2026-11-14</i>"]
-        TREND["<b>strategy-trend-pullback</b><br/><i>invoked on day_trend up/down<br/>sending since 2026-11-11 16:56</i>"]
+        TREND["<b>strategy-trend-pullback</b><br/><i>invoked on day_trend up/down,<br/>and on ticks while it holds a position</i>"]
         REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
         REC -->|"each alert, once"| TG3{{"Telegram"}}
-        REC -->|"Event: each alert, once"| MGR
-        REC -->|"Event: every tick, last step"| MGR
+        REC -->|"Event: each alert, once"| RM
+        REC -->|"Event: every tick, last step"| RM
+        RC[("risk_control<br/><i>kill switch, limits</i>")] -.-> RM
+        RM -->|"Event: payload + run"| MGR
+        RM -.->|"kill switch on: closes"| OM
         MGR -->|"Event: every tick (TICK_PLAYBOOKS)"| SWEEP
-        MGR -->|"Event: day_trend up/down"| TREND
+        MGR -->|"Event: day_trend up/down,<br/>a tick while it holds a position"| TREND
         SWEEP --> PAL[("playbook_alerts<br/><i>the alert register</i>")]
-        SWEEP -->|"entries + trade steps"| TG5{{"Telegram"}}
+        SWEEP -->|"sync: entries + trade steps"| OM
+        TREND -->|"sync: the entry, then its steps"| OM
+        OM --> POS[("position_master<br/><i>the paper position record</i>")]
+        POS -.today's positions.-> RM
+        OM -->|"the playbook's message, once"| TG5{{"Telegram"}}
         SWEEP --> LOG{{"CloudWatch log"}}
-        TREND -->|"candidate"| TG4{{"Telegram"}}
         TREND --> LOG
     end
 
@@ -75,6 +83,10 @@ flowchart TD
     style DTBL fill:#14532d,color:#fff
     style IM fill:#14532d,color:#fff
     style PAL fill:#14532d,color:#fff
+    style POS fill:#14532d,color:#fff
+    style RC fill:#14532d,color:#fff
+    style RM fill:#1e3a8a,color:#fff
+    style OM fill:#1e3a8a,color:#fff
     style CLSF fill:#1e3a8a,color:#fff
     style PD fill:#1e3a8a,color:#fff
     style MGR fill:#1e3a8a,color:#fff
@@ -94,10 +106,12 @@ Read in clock order, a weekday looks like this:
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
 | immediately after | `pattern-detector` | **invoke** | no table (log only since 2026-11-09 16:04) |
 | 09:36–15:31 every 5 min (71 runs) | `intraday-fno-poller` | **cron** (its own trio) | `fno_5m_snapshot`, `fno_5m_leg` |
-| as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram; then hands the tick to the manager (since 2026-11-14) |
-| on each v2.1 alert, once — and on every tick (since 2026-11-14) | `strategy-manager` | **invoke** | nothing |
-| then, on a `day_trend` up/down alert | `strategy-trend-pullback` | **invoke** | nothing (Telegram + its log) |
-| on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | Telegram (entries + trade steps), `playbook_alerts` (the alert register, since 22:01) |
+| as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram; then hands the tick on (since 2026-11-14) — to `risk-manager` since 2026-11-23 |
+| on each v2.1 alert and every tick (since 2026-11-23 17:22) | `risk-manager` | **invoke** | nothing (reads `risk_control`, today's `position_master`; kill-switch closes through `order-manager`) |
+| on each v2.1 alert, once — and on every tick (since 2026-11-14); from `risk-manager` since 2026-11-23 | `strategy-manager` | **invoke** | nothing |
+| then, on a `day_trend` up/down alert — and on every tick while it holds a position (since 2026-11-23) | `strategy-trend-pullback` | **invoke** | nothing itself: its entry and steps go to `order-manager` |
+| on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | `playbook_alerts` (the alert register, since 22:01); its entries + trade steps go to `order-manager` (recorded since 2026-11-22, messaged since 2026-11-23) |
+| on each playbook step, and each kill-switch close | `order-manager` | **synchronous invoke** | `position_master`, Telegram (the playbook's message, once) |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
 **Ten schedules drive this flow, and three of them drive the same intraday
@@ -404,7 +418,8 @@ and invokes `intraday-market-sentiment`, which MEASURES and invokes
 `market-classifier`, which JUDGES and invokes `pattern-detector`, which logs.
 Since 2026-11-09 16:04 `strategy-manager` is invoked by `pattern-recorder` on
 each v2.1 alert, on the poller's 5-minute clock, and routes. Since 2026-11-14 it is
-also handed every tick, which it sends to the sweep.
+also handed every tick, which it sends to the sweep. **Since 2026-11-23 17:22 both pass
+through `risk-manager` first**, and every trade step goes through `order-manager`.
 
 ```mermaid
 flowchart TD
@@ -431,17 +446,23 @@ flowchart TD
     POLL(["intraday-fno-poller tick<br/><b>Event invoke</b>, every 5 min"]) --> REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>re-derive the session, upsert</i>"]
     REC --> PEV[("pattern_events")]
     REC --> ALERT{"new event at a key level<br/>that day_trend allows?"}
-    ALERT -->|"yes, once"| MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator</i>"]
-    REC -->|"every tick, last step<br/>TICK_HANDOFF_ENABLED"| MGR
+    ALERT -->|"yes, once"| RM["<b>risk-manager</b> (since 2026-11-23)<br/><i>reads risk_control + today's positions</i>"]
+    REC -->|"every tick, last step<br/>TICK_HANDOFF_ENABLED"| RM
+    RM --> KS{"kill switch on<br/>for this session?"}
+    KS -->|"on"| KCL(["close every open position<br/>through order-manager,<br/>strategy-manager NOT invoked"])
+    KS -->|"off"| MODE["each playbook's mode, as run:<br/>entry_exit / exit_only (after 15:00, a limit)<br/>/ force_exit (15:15 time exit, daily loss)"]
+    MODE --> MGR["<b>strategy-manager</b> - a pure router<br/><i>no database, no API, no indicator,<br/>no run = raise</i>"]
 
     MGR --> SRC{"a tick payload?"}
-    SRC -->|"tick"| TICKINV["<b>Event invoke</b> TICK_PLAYBOOKS<br/><i>whatever the regime: context v3<br/>+ today's closed candles + tick</i>"]
+    SRC -->|"tick"| TICKINV["<b>Event invoke</b> TICK_PLAYBOOKS<br/><i>whatever the regime: context v4 + run<br/>+ today's closed candles + tick</i>"]
+    SRC -->|"tick, trend holds a position"| TEX["strategy-trend-pullback, exit mode<br/><i>the decided trail over today's candles<br/>-> only the steps the record lacks</i>"]
+    TEX --> OMX{{"order-manager<br/><i>records + sends each step once</i>"}}
     SRC -->|"an alert"| DT{"detection.day_trend?"}
-    DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v3 + detection + index_bars</i>"]
+    DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v4 + run + detection + index_bars</i>"]
     TINV --> TPB["strategy-trend-pullback<br/><i>reads nothing</i>"]
     TPB --> TGATE{"C2 or R1 hold, with the trend,<br/>at PDH/PDL/ORH/ORL,<br/>closes 09:45-14:30?"}
     TGATE -->|"any fails"| TDOWN(["stand down,<br/>naming every reason"])
-    TGATE -->|"all pass"| TOUT{{"TREND PULLBACK candidate<br/><i>entry, stop on the trend-off line,<br/>T1/T2 - Telegram + log</i>"}}
+    TGATE -->|"all pass"| TOUT{{"ENTRY through order-manager<br/><i>3 lots, stop on the trend-off line, T1 = entry + 2R,<br/>REJECTED outside entry_exit</i>"}}
     DT -->|"none"| NOSW(["nothing routed: the range playbook,<br/>the sweep, runs on every tick"])
 
     TICKINV --> SWEEP["strategy-range-liquidity-sweep<br/><b>asserts context_version</b>"]
@@ -450,7 +471,7 @@ flowchart TD
     DER --> FINE{"per candle: price within the levels,<br/>regime not volatile-expansion, VIX within &plusmn;5%,<br/>adr &lt; 0.78 &times; ATR14, OR &ge; 0.15%, 09:45-15:00?"}
     FINE -->|"any fails"| DOWN(["no new entry on that candle<br/><i>an open trade is still followed</i>"])
     FINE -->|all pass| SCAN["entries at the pools; then each new-rules<br/>trade's exit / watch / re-entry"]
-    SCAN --> OUT{{"messages for the NEWEST candle<br/><i>Telegram</i>"}}
+    SCAN --> OUT{{"what the record lacks -> order-manager<br/><i>it records each step and sends its message once,<br/>REJECTED / time exit by the mode</i>"}}
     OUT --> REGW[("playbook_alerts<br/><i>the whole register, after the messages</i>")]
 
     style RAISE fill:#7f1d1d,color:#fff
@@ -464,9 +485,11 @@ flowchart TD
     style TOUT fill:#14532d,color:#fff
     style REGW fill:#14532d,color:#fff
     style NOSW fill:#78350f,color:#fff
+    style KCL fill:#7f1d1d,color:#fff
+    style OMX fill:#14532d,color:#fff
 ```
 
-Nine things in that diagram are load-bearing:
+Ten things in that diagram are load-bearing:
 
 **`snapshot_ts` is the newest bar returned, forming one included.** At a 10:00
 run the bucket stamped 10:00 has just opened, so the row is stamped 10:00 and
@@ -508,6 +531,16 @@ got `None` — every playbook gating on the daily read was gating on nothing.
 **The manager reads, computes and writes nothing.** The classification is
 computed by `market-classifier` and stored on `intraday_sentiments`; the data
 fetch moved *down* into the playbooks. What is left is the routing decision.
+
+**The risk manager decides before anything routes** (since 2026-11-23 17:22, P2b). Every alert
+and tick goes first to `risk-manager`. It reads the `risk_control` row in force and today's
+`position_master`. With the kill switch on for this session it closes every open position through
+`order-manager` and invokes nothing. Otherwise it gives each playbook its mode as `run` — no new
+trade on a candle closing at or after 15:00, `force_exit` from the 15:10 candle so every trade is
+out at that close, and the limits (off until P3). The playbooks keep their own stops and targets
+and apply them first. Every entry and step then goes to `order-manager`, which records it and
+sends the playbook's own text once: a retried or late tick catches up what the record lacks and
+never sends a message twice.
 
 **The manager runs only on a v2.1 alert** (since 2026-11-09 16:04). On each
 5-minute poller tick, `pattern-recorder` re-derives the session's pattern events.
@@ -562,8 +595,10 @@ flowchart LR
     F9["strategy-range-liquidity-sweep"] --> LG9[/"log group"/]
     F10["pattern-recorder"] --> LG10[/"log group"/]
     F11["strategy-trend-pullback"] --> LG11[/"log group"/]
+    F12["order-manager"] --> LG12[/"log group"/]
+    F13["risk-manager"] --> LG13[/"log group"/]
 
-    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 & LG10 & LG11 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
+    LG1 & LG2 & LG3 & LG4 & LG5 & LG6 & LG7 & LG8 & LG9 & LG10 & LG11 & LG12 & LG13 -->|"subscription filter<br/>?ERROR ?Traceback<br/>?Task timed out<br/>?Unable to import"| EN["error-notifier"]
     EN --> TG(["Telegram"])
     EN -.->|"never subscribe<br/>its own log group"| EN
 
@@ -587,7 +622,10 @@ written and the invoke was accepted. Their own log groups are the only place
 their failures appear. An unsubscribed `market-classifier` would stop the whole
 chain below it and no alarm would fire anywhere. (All nine groups, including the
 two new functions', are subscribed. `strategy-trend-pullback`'s has been since it
-was created, 2026-11-09 22:33.)
+was created, 2026-11-09 22:33; `order-manager`'s since 2026-11-22 and `risk-manager`'s
+since 2026-11-23, each from its creation.) A failed `order-manager` call raises in
+its caller too: the calls are synchronous, so the playbook's run fails, Lambda
+retries it, and the retry catches up the record without a second message.
 
 This compounds with the execution-role trap. A borrowed role allows
 `logs:PutLogEvents` on one log group ARN only, so a function using it produces

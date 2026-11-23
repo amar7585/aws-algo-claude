@@ -44,10 +44,11 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager) |
 | F&O reading, 5-min | every 5 min, 09:36–15:31, 71×/day | EventBridge Scheduler cron (its own trio) | **built** |
 | Pattern recording + alerts (v2.1; rules v2.2 since 2026-11-19) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
-| Strategy routing | on each v2.1 alert, once — and on every 5-min tick (since 2026-11-14) | invoke from `pattern-recorder` (unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). An alert routes on its `day_trend`: up/down → the trend playbook, `none` → nothing (the `regime\|bias` registry it went to from 2026-11-09 22:37 was removed with bias, 2026-11-19). Every tick → `TICK_PLAYBOOKS` (the sweep) |
-| Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33) |
-| Order manager (the paper position record) | one signal per synchronous call, from a playbook or the risk manager | invoke | **built, idle**: deployed 2026-11-22 21:16 IST and called by nothing until P2a. The only writer of `position_master`; paper mode, no order saved or placed |
-| Range sweep playbook | on every 5-min tick since 2026-11-14 (before that on a no-trend `sideways\|range-bound` alert); entries when price is within the levels (PDH/PDL, 15-min high/low) and the regime is not `volatile-expansion` — no bias, no trend test (since 2026-11-15 09:33); after entry, 3 lots: 2 booked at T1, the 15-min range midpoint, the last to T2 on a stop that never moves, plus the exit / one re-entry and the 15:15 close (since 2026-11-22) | invoke from `strategy-manager` (`TICK_PLAYBOOKS`) | **built, running** |
+| Risk decision (P2b) | on each v2.1 alert and every 5-min tick, before any routing | invoke from `pattern-recorder` (since 2026-11-23 17:22) | **built, live** — the kill switch (resets each morning), the hard rules (no new trade after 15:00, the 15:15 time exit at the 15:10 close), the limits (off until P3); hands strategy-manager the payload + `run` |
+| Strategy routing | on each v2.1 alert, once — and on every 5-min tick (since 2026-11-14) | invoke from `risk-manager` since 2026-11-23 (from `pattern-recorder` directly 2026-11-09 → 11-23; unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). An alert routes on its `day_trend`: up/down → the trend playbook, `none` → nothing (the `regime\|bias` registry it went to from 2026-11-09 22:37 was removed with bias, 2026-11-19). Every tick → `TICK_PLAYBOOKS` (the sweep) |
+| Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33). Since P2b (2026-11-23) also on every tick while it holds a position: its exit mode, the decided trail |
+| Order manager (the paper position record) | one signal per synchronous call, from a playbook or the risk manager | invoke | **built, running**: deployed 2026-11-22 21:16 IST; called by the sweep since P2a (22:16 that day), by trend and risk-manager since P2b (2026-11-23). The only writer of `position_master` and the only sender of trade messages; paper mode, no order saved or placed |
+| Range sweep playbook | on every 5-min tick since 2026-11-14 (before that on a no-trend `sideways\|range-bound` alert); entries when price is within the levels (PDH/PDL, 15-min high/low) and the regime is not `volatile-expansion` — no bias, no trend test (since 2026-11-15 09:33); after entry, 3 lots: 2 booked at T1, the 15-min range midpoint, the last to T2 on a stop that never moves, plus the exit / one re-entry and the 15:15 close (since 2026-11-22); since P2b (2026-11-23) its messages go through `order-manager`, and after 15:00 / at 15:15 it acts on the risk manager's mode | invoke from `strategy-manager` (`TICK_PLAYBOOKS`) | **built, running** |
 
 **No Step Functions state machine was built.** An earlier design had one
 sequencing History → Regime → Strategy; what exists instead is a set of
@@ -57,8 +58,8 @@ a session — and it removed the plane where secrets would have travelled as ste
 output.
 
 **The strategy plane is chained rather than scheduled, and it is the one
-exception.** `strategy-manager`'s input *is* the intraday snapshot, so
-`intraday-market-sentiment` invokes it once the row is written, and it invokes
+exception.** `strategy-manager`'s input *is* the recorder's alert or tick, so
+`pattern-recorder` hands each one on once it is written — through `risk-manager` since 2026-11-23 — and the manager invokes
 the strategies valid for the alert's `day_trend` (the regime|bias registry was removed with bias, 2026-11-19). A cron there would have to
 guess how long the snapshot takes, read the row back out of Postgres, and decide
 what to do when it is not there yet.
@@ -131,17 +132,19 @@ the cost of a wake-up on the first connection of each run.
 | `index_constituents` | `index_name, security_id, instrument_type, exchange_segment, symbol, updated_at` — the NIFTY 50 / NIFTY 500 rosters for breadth, maintained by hand | 548 (NIFTY50 50, NIFTY500 498) | seeded by hand |
 | `pattern_events` | v2 pattern events: one per (`rules_version`, trigger bar, family, subtype, direction) — level, candles, volume flags. **No OI, no outcome** (both joined at read time). [schema](../pattern-recorder/schema.sql) | created 2026-11-06; written from the 09:45 run that day (2 rows) | pattern-recorder |
 | `playbook_alerts` | the **alert register**: one row per alert — a level a playbook watched, touched on one side, under one rule set (`current` / `new`) — with its retests (`touch_log`: per touch, why it did or did not give an entry), its `status` (watching / entered / blocked / missed / invalid / ended / covered) and, when entered or blocked by the gate, the trade and its steps. Candle times are 5-min candle starts. Rebuilt and upserted on every run; **nothing reads it back**. `derived_through_ts` (the newest candle of the run that wrote a row) stops a late, older tick from overwriting a newer register (since 2026-11-14 23:08). [schema](../strategy-range-liquidity-sweep/schema.sql) | created 2026-11-14, just before 22:01 IST; 9 rows (2026-11-13, from the deploy's smoke runs) | strategy-range-liquidity-sweep, when `REGISTER_ENABLED=on` (on since 2026-11-14 22:01) |
-| `position_master` | the **paper position record**, one row per position a playbook signalled (or `REFUSED`). The shape follows trading-algo's `position_master`: buy / sell quantity and average, balance = remaining quantity, `realized_profit`, stops and targets, status `OPEN` / `WATCHING` / `CLOSED` / `REFUSED`. **Quantities are units** (lots × the near-month NIFTY future's lot size, 65 at 2026-11-22). One position per playbook, entry candle and direction. No order is saved in paper mode. [schema](../order-manager/schema.sql) | created 2026-11-22 ~21:16 IST; 0 rows (called by nothing yet) | order-manager only |
+| `position_master` | the **paper position record**, one row per position a playbook signalled (or `REFUSED`). The shape follows trading-algo's `position_master`: buy / sell quantity and average, balance = remaining quantity, `realized_profit`, stops and targets, status `OPEN` / `WATCHING` / `CLOSED` / `REFUSED`. **Quantities are units** (lots × the near-month NIFTY future's lot size, 65 at 2026-11-22). One position per playbook, entry candle and direction. No order is saved in paper mode. [schema](../order-manager/schema.sql) | created 2026-11-22 ~21:16 IST; 0 rows at 2026-11-23 17:22 (no trade taken through it yet) | order-manager only |
+| `risk_control` | the **kill switch and the limits**, append-only: the row in force is the newest with `set_at` ≤ now. `kill_switch` is on for the session it is set in, or for the next one if set outside session hours (it resets each morning, with no reset row); `max_open`, `max_trades_per_day`, `daily_loss_limit` (index points × lots) — NULL = off. [schema](../risk-manager/schema.sql) | created 2026-11-23 15:32 IST; 1 row (the seed: off, no limits) | Amar's own INSERTs (in the [risk-manager README](../risk-manager/README.md)); read only by risk-manager |
 | `session_observations` | hand-logged ground truth: one row per pattern Amar flags — event candle, `pattern_type`, outcome, signal agreement, notes — and, since 2026-11-14, `alert_ts` / `entry_ts` (5-min candle starts, the same convention as `playbook_alerts`) and `entry_price` — Amar's own marks on 2026-11-16 → 11-19, the machine's values (the playbook's alert and entry) from 2026-11-20. [schema](../observations/schema.sql) · [runbook](session-observation-runbook.md) | 17 (2026-11-20) | by hand, on Amar's sign-off — never a function |
 
-**Since 2026-11-22 a third table exists: `position_master`, the paper position record.** It is written only by `order-manager` and nothing writes it yet (P1, called by nothing). From P2a the playbooks hand every step to `order-manager`, and from P2b the risk manager reads it. Unlike the alert register, it **is** read back. That is the point of it, and why every write goes through one function with a duplicate-proof state machine ([order-manager README](../order-manager/README.md)).
+**Since 2026-11-22 a third table exists, `position_master`, the paper position record, and since 2026-11-23 a fourth, `risk_control`.** `position_master` is written only by `order-manager`: the sweep hands it every step since P2a (2026-11-22), trend and the risk manager's kill-switch closes since P2b (2026-11-23). `risk-manager` reads it on every alert and tick, and passes trend its own rows in `run`, so trend still reads no table. Unlike the alert register, it **is** read back. That is the point of it, and why every write goes through one function with a duplicate-proof state machine ([order-manager README](../order-manager/README.md)).
 
-**The strategy plane has two writers.** `pattern-recorder` records what the v2
+**The strategy plane has three writers.** `pattern-recorder` records what the v2
 rules recognise to `pattern_events`; since 2026-11-14 `strategy-range-liquidity-sweep`
-records its alert register to `playbook_alerts`. Neither ever writes the hand-logged
+records its alert register to `playbook_alerts`; since 2026-11-22 `order-manager` writes
+`position_master`, and nothing else does. Neither ever writes the hand-logged
 `session_observations`. Since v2.1 (live 2026-11-09 16:04) it also sends the alerts:
-each event that passes the alert rule goes to Telegram and to strategy-manager, once
-each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the sends.
+each event that passes the alert rule goes to Telegram and (through risk-manager since
+2026-11-23) to strategy-manager, once each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the sends.
 
 **Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` runs on every 5-min
@@ -150,8 +153,10 @@ and reads `candle_daily` for ATR and today's 15-min rows (`intraday_fno_data` +
 `intraday_sentiments`, each as in force at the candle it judges).
 `strategy-trend-pullback` reads nothing: the payload `pattern-recorder` builds and
 the manager passes through carries the alert, today's closed index candles and the
-daily read. The manager and the trend playbook write nothing; the sweep writes
-only its alert register, a record rebuilt whole on every run that nothing reads
+daily read. The manager, `risk-manager` and the trend playbook write no table themselves (trend's
+steps and the kill-switch closes go through `order-manager`); `risk-manager` reads
+`risk_control`, `trading_holiday` and today's `position_master`. The sweep writes
+only its alert register itself, a record rebuilt whole on every run that nothing reads
 back. The
 regime the manager classifies travels in the invocation payload and each
 strategy records it in its own log alongside what it found, so the decision is

@@ -4,7 +4,7 @@
 
 This file records work Amar has agreed to but that is not built yet. For each piece it gives the decision (in Amar's words where they matter), what exists today, and what is still open. Discussed 2026-11-20. Numbers are measured and dated, and must be re-measured, not edited, when behaviour changes.
 
-Section 1 is built for one playbook (the sweep). Sections 2 and 3 were planned in detail on 2026-11-22, and the first phase of that plan (P1) is built. See section 5.
+Section 1 is built for every playbook: since P2b (2026-11-23) the risk manager owns both rules. Sections 2 and 3 were planned in detail on 2026-11-22; P1, P2a and P2b of that plan are live (2026-11-23), while P3 (the limits) and the Dhan phases are not built. See section 5.
 
 ---
 
@@ -38,9 +38,9 @@ The auction close is also the day's high or low on 17 of 76 sessions. On those d
 | | No new trade after 15:00 | Out at 15:15 |
 |---|---|---|
 | strategy-range-liquidity-sweep | already true (no entries or re-entries after 15:00) | **deployed 2026-11-20 22:48 IST** as an **interim** (CodeSha256 `VGiH4SNG…`, version 8 = the code before). A trade still in after the 15:10 candle gets `CLOSED AT 15:15`, sent at the 15:16 tick. See its [README](../strategy-range-liquidity-sweep/README.md) |
-| strategy-trend-pullback | already true: signals stop at **14:30**, which Amar kept | only stated in the signal ("hold the rest to the 15:10 close"). The playbook does not follow its trades, so nothing is sent at 15:15. Section 2 covers this |
+| strategy-trend-pullback | already true: signals stop at **14:30**, which Amar kept | **since P2b (2026-11-23)**: it follows its trades, and the risk manager's time exit closes what is still open at the 15:10 close (`TREND CLOSED AT 15:15`, sent on the 15:16 tick) |
 | pattern-recorder alerts | not trades. They keep going to Telegram after 15:00 (Amar: keep them) | n/a |
-| any new playbook | must hold to the rule | must hold to the rule. The risk manager in section 2 is meant to make this automatic |
+| any new playbook | the risk manager's `exit_only` from the 15:00 candle close (since P2b) | the risk manager's `force_exit("TIME EXIT")` from the 15:10 candle (since P2b); the playbook closes at that close after its own stop / target |
 
 ### Sweep replay behind the interim
 
@@ -60,6 +60,8 @@ Amar chose out at 15:15. Out at 15:20 gives the same result, but its message com
 ---
 
 ## 2. Risk manager: one place for every open trade, every new-trade limit and the kill switch
+
+> **Built differently, 2026-11-22 / 11-23.** The design below (2026-11-20) was replaced by section 5: a `risk-manager` Lambda in front of strategy-manager on every run, live since P2b (2026-11-23). Kept as the record of what was asked.
 
 ### What Amar asked for (2026-11-20)
 
@@ -144,7 +146,7 @@ The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1
 
 ---
 
-## 5. Paper positions + the risk manager: decided 2026-11-22, P1 built
+## 5. Paper positions + the risk manager: decided 2026-11-22, P1 + P2a + P2b live (2026-11-23)
 
 **Amar's decisions, 2026-11-22.** The full plan with the options and their trade-offs is outside the repo, in the side-session notes: `paper-positions-risk-manager-plan-2026-11-22.md`, `p0-limits-findings-2026-11-22.md` and `p1-build-plan-2026-11-22.md`.
 
@@ -160,7 +162,7 @@ The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1
 
 ### Who owns which rule
 
-- **Hard rules are the risk manager's only:** no new trade after 15:00, and every trade out at 15:15. The sweep's own 15:15 step and 15:00 cut-off are removed when it goes live.
+- **Hard rules are the risk manager's only:** no new trade after 15:00, and every trade out at 15:15. The sweep keeps its own 15:00 window and 15:15 step in its derivation as the alert register's record (Amar 2026-11-23), but the trade decision is the risk manager's: exit-only after 15:00, and the 15:15 close sent only on its time-exit instruction.
 - **Strategy rules are the playbooks':** SL, target and exit conditions. The playbook closes the position.
 - **15:15 is a "time exit" instruction.** The playbook applies its own SL / target on the 15:10 candle first, then closes the rest at the 15:10 close.
 
@@ -202,9 +204,9 @@ The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1
 | Phase | What | State |
 |---|---|---|
 | P0 | the limits replay | **done** 2026-11-22 |
-| **P1** | `algo.position_master` ([migration](../migrations/2026-11-22-position-master.sql)) + [`order-manager`](../order-manager/README.md), paper mode | **deployed 2026-11-22 21:16 IST, called by nothing.** Offline tests, the Neon temp-table test and a dry-run smoke all passed |
-| P2a | both playbooks record through `order-manager`, their own messages unchanged | its own plan + approval |
-| P2b | `risk-manager` (with `risk_control`), the context v4 `run` decision, trend exit mode with the decided rule, time / forced exits, REJECTED signals; the sweep's own 15:15 and 15:00 removed | its own plan + approval |
+| **P1** | `algo.position_master` ([migration](../migrations/2026-11-22-position-master.sql)) + [`order-manager`](../order-manager/README.md), paper mode | **deployed 2026-11-22 21:16 IST**, called by nothing until P2a (22:16 that day). Offline tests, the Neon temp-table test and a dry-run smoke all passed |
+| P2a | the sweep records every entered trade through `order-manager` (trend moved into P2b), its own messages unchanged | **deployed 2026-11-22 22:16 IST** (sweep `6+z2tBAr…`). Its two-session live check was skipped: no sweep trade ran through it before P2b, on Amar's call |
+| P2b | `risk-manager` (with `risk_control`), the context v4 `run` decision, trend exit mode with the decided rule, time / forced exits, REJECTED signals, every trade message through `order-manager` (the sweep's own 15:00 / 15:15 kept as the register's record) | **live 2026-11-23 17:22 IST**, deployed after the close; first session Wed 2026-11-25. Offline: whole-chain replay on 87 sessions = P0 (161 positions, 5,248.11 point-lots; O1 4,901.89), 29/29 mutations caught; the smoke on 11-23's final tick sent nothing. Deploy log + rollbacks in the [risk-manager README](../risk-manager/README.md) |
 | P3 | the O1 limits into `risk_control` | — |
 | P5 / P6 | Dhan order placement / Dhan's kill switch | each its own plan + approval; **they act on the live account** |
 
@@ -212,3 +214,9 @@ The order was decided 2026-11-22 ("B: paper first"); that update is in commit `1
 
 - **A warm `order-manager` call takes ~1.5 s** (a fresh Neon TLS connection each call), so each step's message will arrive about 1.5 s later than today. Reusing the connection would cut that.
 - **Memory is 100 of 128 MB.**
+
+### Measured at the P2b deploy (2026-11-23), open to decide
+
+- **Keeping the connection cut a warm `order-manager` call only to 1.33 s** (from 1.55 s). The handshake was not most of it: the rest is per-statement round trips to Neon in Singapore. 256 MB since P2b; 100 MB used.
+- **`risk-manager` adds ~2.5 s per tick** before strategy-manager (a new connection each call; none kept there).
+- **So a sweep message now reaches the phone about 4 s later than under P2a** (risk-manager ~2.5 s + order-manager ~1.3 s). Open: whether that is worth chasing (a kept connection in risk-manager too, fewer statements per call).
