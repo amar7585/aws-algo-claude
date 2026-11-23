@@ -21,6 +21,29 @@ on no-trend days (Amar, 2026-11-09).
 | Writes | **nothing** — its log and its Telegram message are its output |
 | Secrets | `/algo/telegram/brief` (to send) |
 
+## Since C1 (2026-11-23): holds at the option walls too — DEPLOYED 2026-11-23
+
+**Decided by Amar 2026-11-23** ("Trend levels (C1)", "Approve as recommended"; deploy: "commit and deploy the changes",
+the same night instead of after the first P2b session). On a trend day a hold counts at PDH / PDL / ORH / ORL **or at
+the call wall / put wall** (its own level, or one within NEAR); a key level is preferred when an event is near both,
+so every key-level candidate is exactly as before. pattern-recorder's trend branch alerts on the same set.
+**Unchanged:** entry, the stop line (ORH / ORL) and its buffer, R, T1, the exit, the window, rule G, the limits.
+
+- **Why:** 2026-11-23 trended down all day between ORL and PDL with every hold at max pain, the put wall or a swing
+  low. Replayed on 88 sessions (`pattern-recorder/replay/out/miss-2026-11-23/`, O1, the decided exit): +2,213
+  point-lots over the key set, profit factor 1.87 -> 2.22, max drawdown -467 vs -487, the same worst day. The evidence
+  is 35 sessions with option rows; without 11-23 the interval crosses zero. Max pain (C2) and the re-look (D) were not
+  taken; C2 is re-measured with the options overlay after the Fri 2026-12-11 close.
+- **Message:** a wall hold reads `hold at PUT WALL 25500.00 (...)`; a hold only near a wall `hold at SWING LOW, near
+  the PUT WALL (...)`. **Accepted (Amar):** when a newly alerted wall event and a key-level event fire on the same
+  candle, whichever reaches order-manager first opens the position and its message names it (seen once in 88 sessions,
+  2026-10-21 10:35); the trade is the same.
+- **Checked before deploy:** 18 unit tests + 9 / 9 mutations on the zip's modules; the real code == the replay's C1 on
+  all 184 positions (every exit step); the whole P2b chain on 11-23: only the two put-wall shorts added, +716.40.
+- **Deployed 2026-11-23 22:56:57 IST**, CodeSha256 `2jBUCjCH+gy+ITeyVgmyTnTY+vVXHy4uss/7wj6QFzs=` (`config`,
+  `pullback`, `report` changed; 5 modules byte-equal); configuration and environment unchanged. **Rollback: version 2 =
+  `dlZK1gOx…`** (P2b). pattern-recorder followed at 22:57:04. First live session: Wed 2026-11-25, with P2b.
+
 ## Since P2b (2026-11-23): it follows the trade — DEPLOYED 2026-11-23
 
 **Approved by Amar 2026-11-23 ("Approve P2b"); deployed after the close ("deploy now").** Code 15:35:52 IST, CodeSha256 `dlZK1gOx2pwGmD5pNFe/rbPI0Psjxr3u4+SG4t74MEI=`, `ORDER_MANAGER_FUNCTION=order-manager`, `TELEGRAM_ENABLED=on`; rollback: version 1 = `DVj+KKye…` (rule G, one alert in, one message out). In the chain from 17:22:31 IST; first live session Wed 2026-11-25. Plan: `p2b-build-plan-2026-11-23.md` in the notes folder. The sections below describe the entry rules, unchanged.
@@ -85,7 +108,7 @@ All on the **index** — the chart the levels are drawn on.
 
 | | Rule | Why |
 |---|---|---|
-| Setup | v2's **C2** (retest / hold of a level broken this session in the trend's direction) or **R1** (hold candle), in the trend's direction, at PDH/PDL/ORH/ORL (its own level or one within NEAR) | breakout-and-hold only. C1 (the break itself) was weak in the replay; R2 sweeps belong to the sweep playbook |
+| Setup | v2's **C2** (retest / hold of a level broken this session in the trend's direction) or **R1** (hold candle), in the trend's direction, at PDH/PDL/ORH/ORL (its own level or one within NEAR) — **or, since C1 (2026-11-23), at the call wall / put wall** the same way; a key level is preferred when an event is near both | breakout-and-hold only. C1 (the break itself) was weak in the replay; R2 sweeps belong to the sweep playbook |
 | Window | trigger candle closes 09:45–14:30 | Amar's short-into-liquidity window |
 | Entry | the index close of the trigger candle | the alert lands ~2 min after it |
 | Stop (S3) | exit on a 5-min **close back inside the opening range** — below the range high for a long, above the range low for a short: market-classifier's `day_trend` off line (rule G, 2026-11-19 — inside the 15-min range is no trend). A trigger candle that has itself closed back inside the range stands down. Nominal stop = that line − buffer, buffer = max(0.03% of price, 0.5 × mean range of the last 6 candles) | the trend's own off line, so the trade ends exactly where the trend does (rule G section below) |

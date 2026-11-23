@@ -3,7 +3,18 @@
 from config import FINAL_CLOSE_LABEL
 from pullback import clock
 
-NAMES = {"pdh": "PDH", "pdl": "PDL", "orh": "ORH", "orl": "ORL"}
+NAMES = {"pdh": "PDH", "pdl": "PDL", "orh": "ORH", "orl": "ORL", "call_wall": "CALL WALL", "put_wall": "PUT WALL"}
+
+
+def _name(level):
+    return NAMES.get(level) or str(level).replace("_", " ").upper()
+
+
+def _hold(c, d):
+    """The hold line's level: 'ORL 25668.85' / 'PUT WALL 25500.00' / 'SWING LOW, near the PUT WALL' (C1, 2026-11-23)."""
+    if c["key_price"] is not None:
+        return f"{_name(c['key_level'])} {_p(c['key_price'])}"
+    return f"{_name(d.get('level'))}, near the {_name(c['key_level'])}"
 
 
 def _p(x):
@@ -20,7 +31,7 @@ def render(candidate, detection, snapshot, stamp):
     sub = f"/{d['subtype']}" if d.get("subtype") else ""
     lines = [
         f"TREND PULLBACK {c['side']} - {stamp}",
-        f"Day trend {d['day_trend']} | hold at {NAMES[c['key_level']]} {_p(c['key_price'])} "
+        f"Day trend {d['day_trend']} | hold at {_hold(c, d)} "
         f"({d['family']}{sub}, candle {clock(c['trigger_ts'])})",
         f"Entry  {_p(c['entry'])}  (index close of the {clock(c['trigger_ts'])} candle)",
         f"Stop   exit on a 5-min close {word} {_p(c['off_line'])} ({why})",

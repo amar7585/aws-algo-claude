@@ -10,6 +10,14 @@ and only at the KEY levels: PDH / PDL / ORH / ORL (Amar, 2026-11-08) - the
 event's own level, or one within NEAR of it (other_levels). Before the day's
 first classifier row (09:45) the trend is read as none, as in the replay.
 
+C1 (Amar, 2026-11-23, "Approve as recommended"): on a TREND day the level set
+is the key levels PLUS the call wall and the put wall (TREND_LEVELS) - the
+trend's holds on 2026-11-23 were all at levels the key set did not hold. The
+no-trend branch is unchanged: R1 / R2 at the key levels only. Replayed on 88
+sessions (replay/out/miss-2026-11-23/): +2,213 point-lots over the key set,
+profit factor 1.87 -> 2.22, no larger drawdown; evidence = 35 option sessions.
+RULES_VERSION stays v2.2: detection is unchanged, only which events alert.
+
 Volume and OI are SHOWN in the message, never a gate: the replays found no gate
 that kept the logged trades (v2_confirmation.md).
 
@@ -25,22 +33,26 @@ re-judged later when the trend changes.
 import structure as st
 
 KEY_LEVELS = frozenset(st.INDEX_TWINS)
+TREND_LEVELS = KEY_LEVELS | frozenset((st.CALL_WALL, st.PUT_WALL))   # C1, 2026-11-23: the trend branch only
 TREND_STATES = ("up", "down", "none")
 
 FAMILY_NAMES = {"R1": "REJECTION", "R2": "SWEEP", "C1": "BREAK", "C2": "RETEST"}
 
 
+def at_levels(event, levels):
+    """The event's own level, or one within NEAR of it (other_levels), is in `levels`."""
+    return event["level"] in levels or any(x in levels for x in event["other_levels"])
+
+
 def at_key(event):
-    return event["level"] in KEY_LEVELS or any(x in KEY_LEVELS for x in event["other_levels"])
+    return at_levels(event, KEY_LEVELS)
 
 
 def passes(event, day_trend):
     """Is this event an alert under day_trend ('up' | 'down' | 'none' | None)?"""
-    if not at_key(event):
-        return False
     if day_trend in ("up", "down"):
-        return event["direction"] == day_trend
-    return event["family"] in ("R1", "R2")
+        return event["direction"] == day_trend and at_levels(event, TREND_LEVELS)
+    return at_key(event) and event["family"] in ("R1", "R2")
 
 
 def _num(value, fmt):
@@ -64,7 +76,7 @@ def message(event, stamp, clock, day_trend, bar_oi_change, fifteen):
         where = f"{level} strike {_num(event['level_strike'], '.0f')} (fut {_num(event['level_price'], '.1f')})"
     else:
         where = f"{level} fut {_num(event['level_price'], '.1f')}"
-    near = [x for x in event["other_levels"] if x in KEY_LEVELS]
+    near = [x for x in event["other_levels"] if x in TREND_LEVELS]   # C1: a wall near is named too
     if near:
         where += " near " + ",".join(near)
     lines = [

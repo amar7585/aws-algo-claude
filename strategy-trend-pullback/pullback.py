@@ -12,7 +12,9 @@ playbook on no-trend days.
 
 THE RULES, all on the INDEX (the chart the levels are drawn on):
   setup   v2's C2 (retest / hold) or R1 (hold candle), in the trend's direction,
-          at PDH/PDL/ORH/ORL (its own level, or one within NEAR of it)
+          at PDH/PDL/ORH/ORL (its own level, or one within NEAR of it) - or, since
+          C1 (Amar 2026-11-23), at the call wall / put wall the same way; a key
+          level is preferred when an event is near both
   window  trigger candle closes 09:45-14:30
   entry   the index close of the trigger candle
   stop    S3 - exit on a 5-min close back inside the opening range: below the
@@ -46,6 +48,7 @@ import statistics
 
 from config import (
     HOLD_FAMILIES,
+    HOLD_LEVELS,
     KEY_LEVELS,
     STOP_BUFFER_LOOKBACK_BARS,
     STOP_BUFFER_PCT,
@@ -71,10 +74,16 @@ def clock(ts):
 
 
 def key_level(detection):
-    """The alert's key level: its own if key, else the first key level within NEAR of it."""
-    if detection.get("level") in KEY_LEVELS:
-        return detection["level"]
-    return next((x for x in detection.get("other_levels") or () if x in KEY_LEVELS), None)
+    """The alert's hold level: a KEY level first (its own, else the first within NEAR of it) - exactly as before C1 -
+    then, since C1 (2026-11-23), an option wall the same way. None = not this playbook's level."""
+    own, near = detection.get("level"), detection.get("other_levels") or ()
+    for levels in (KEY_LEVELS, HOLD_LEVELS):
+        if own in levels:
+            return own
+        hit = next((x for x in near if x in levels), None)
+        if hit is not None:
+            return hit
+    return None
 
 
 def gate(detection):
@@ -88,7 +97,7 @@ def gate(detection):
     if family not in HOLD_FAMILIES:
         reasons.append(f"{family} is not a hold ({'/'.join(HOLD_FAMILIES)}) - breaks and sweeps are not traded here")
     if key_level(detection) is None:
-        reasons.append(f"at {detection.get('level')} - not PDH/PDL/ORH/ORL")
+        reasons.append(f"at {detection.get('level')} - not PDH/PDL/ORH/ORL or a call / put wall")
     close_minute = ist_minute(int(detection["trigger_ts"]) + BAR_SECONDS)
     if not WINDOW_FROM_MINUTE <= close_minute <= WINDOW_TO_MINUTE:
         reasons.append(f"trigger candle closes {clock(int(detection['trigger_ts']) + BAR_SECONDS)}, "
@@ -154,7 +163,10 @@ def evaluate(detection, index_bars, daily):
         "trigger_ts": trigger_ts,
         "entry": entry,
         "key_level": key,
-        "key_price": lv[key],
+        # a key level's price as before; a wall that is the event's own level: its strike; a wall only near: unknown
+        "key_price": lv[key] if key in lv else (
+            float(detection["level_strike"]) if detection.get("level") == key and detection.get("level_strike") is not None
+            else None),
         "levels": lv,
         "off_line": off_line,
         "off_line_name": off_name,

@@ -443,7 +443,8 @@ trend. It is not a sweep and not a fade; sweeps stay with
 | Switch | `TELEGRAM_ENABLED=on` since 2026-11-11 16:56; unset = shadow (logged `WOULD SEND`) |
 
 The rules, all on the index: a v2 **C2** (retest/hold) or **R1** (hold candle)
-with the trend at PDH/PDL/ORH/ORL, its trigger candle closing 09:45–14:30. C1
+with the trend at PDH/PDL/ORH/ORL — or, since C1 (2026-11-23), at the call / put wall —
+its trigger candle closing 09:45–14:30. C1
 breaks and R2 sweeps stand down. Entry is the trigger candle's close. The stop is
 a 5-min close back inside the opening range — below its high for a long, above its
 low for a short — the line where the day trend turns off, in the classifier and the

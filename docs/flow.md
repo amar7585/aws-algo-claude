@@ -462,7 +462,7 @@ flowchart TD
     SRC -->|"an alert"| DT{"detection.day_trend?"}
     DT -->|"up / down"| TINV["<b>Event invoke</b> TREND_PLAYBOOKS<br/><i>context v4 + run + detection + index_bars</i>"]
     TINV --> TPB["strategy-trend-pullback<br/><i>reads nothing</i>"]
-    TPB --> TGATE{"C2 or R1 hold, with the trend,<br/>at PDH/PDL/ORH/ORL,<br/>closes 09:45-14:30?"}
+    TPB --> TGATE{"C2 or R1 hold, with the trend,<br/>at PDH/PDL/ORH/ORL or a call/put wall,<br/>closes 09:45-14:30?"}
     TGATE -->|"any fails"| TDOWN(["stand down,<br/>naming every reason"])
     TGATE -->|"all pass"| TOUT{{"ENTRY through order-manager<br/><i>3 lots, stop on the trend-off line, T1 = entry + 2R,<br/>REJECTED outside entry_exit</i>"}}
     DT -->|"none"| NOSW(["nothing routed: the range playbook,<br/>the sweep, runs on every tick"])
@@ -548,7 +548,8 @@ never sends a message twice.
 **The manager runs only on a v2.1 alert** (since 2026-11-09 16:04). On each
 5-minute poller tick, `pattern-recorder` re-derives the session's pattern events.
 An event that is new on this tick, sits at a key level (PDH, PDL, or the opening
-range high or low), and points the way the classifier's `day_trend` allows, goes
+range high or low — on a trend day also the call or put wall, since C1 2026-11-23),
+and points the way the classifier's `day_trend` allows, goes
 to Telegram and invokes the manager, once each; a quiet tick never reaches routing
 at all. The manager is handed the latest 15-min snapshot, so it routes on that
 snapshot's `day_trend`. Before 2026-11-09 the gate was `pattern-detector`'s

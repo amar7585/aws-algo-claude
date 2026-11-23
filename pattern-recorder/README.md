@@ -46,6 +46,7 @@ every 5 min:  intraday-fno-poller ─(writes its 5-min row, then)─Event─► 
                  latest 15-min row (day_trend, regime, walls) · daily read
                  → upsert algo.pattern_events (rules v2.2 since 2026-11-19; v2.1 before)
                  → alert = new event at PDH/PDL/ORH/ORL that fits day_trend
+                   (on a trend day also at the call / put wall - C1, 2026-11-23)
                  → Telegram + strategy-manager, once each (claim, send, mark)
                    (the manager payload carries today's closed index candles as
                    `index_bars` since 2026-11-09, for strategy-trend-pullback)
@@ -83,7 +84,19 @@ phone about **2 minutes after its candle closes**, against a median of 6 minutes
    - So the first tick of a session announces the morning.
    - A missed tick widens the next window instead of losing it.
 7. **Alerts** ([`alerts.py`](alerts.py)): fresh events at PDH/PDL/ORH/ORL that fit the
-   `day_trend` of the latest 15-min row this tick can read.
+   `day_trend` of the latest 15-min row this tick can read - and, **on a trend day
+   (`up` / `down`), also at the call wall or the put wall** (C1, Amar 2026-11-23: "Approve
+   as recommended"). The event's own level or one within NEAR of it counts, as for the key
+   levels. The no-trend branch is unchanged (key levels only). The alert's "near" list names
+   a wall too. `RULES_VERSION` stays `v2.2`: detection is unchanged, only which events
+   alert. Why: on 2026-11-23 the trend read down all day and every hold was at a level the
+   key set did not hold; replayed on 88 sessions (`replay/out/miss-2026-11-23/`), +2,213
+   point-lots for the trend playbook, profit factor 1.87 -> 2.22, no larger drawdown, about
+   0.9 more alerts a session; the evidence is 35 sessions with option rows.
+   **Deployed 2026-11-23 22:57:04 IST**, CodeSha256 `+6AtToStiyD1koGq+wg74uMt5jt/nPdfbXVhSa+kRqs=`
+   (`alerts.py` changed, 10 modules byte-equal), right after strategy-trend-pullback;
+   configuration and environment unchanged. **Rollback: version 2 = `pUdG7CGU…`** (with
+   `STRATEGY_MANAGER_FUNCTION_NAME=risk-manager`). First live session Wed 2026-11-25.
 
    | `day_trend` | Alerts on |
    |---|---|

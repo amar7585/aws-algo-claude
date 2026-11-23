@@ -17,6 +17,10 @@ EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "4"))
 # to the sweep playbook on no-trend days).
 HOLD_FAMILIES = tuple(x for x in os.environ.get("HOLD_FAMILIES", "C2,R1").split(",") if x)
 KEY_LEVELS = ("pdh", "pdl", "orh", "orl")
+# C1 (Amar 2026-11-23, "Approve as recommended"): a hold also counts at an option wall - pattern-recorder's trend
+# branch alerts on the same set. KEY_LEVELS stays the range / previous-day levels (the stop line, levels()); a key
+# level is preferred when an event is near both, so every key-level candidate is exactly as before.
+HOLD_LEVELS = KEY_LEVELS + ("call_wall", "put_wall")
 
 # Signal window, on the trigger candle's CLOSE (IST minutes). 09:45-14:30, the
 # window of Amar's short-into-liquidity playbook.
