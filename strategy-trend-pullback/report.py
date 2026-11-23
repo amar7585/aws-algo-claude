@@ -26,13 +26,13 @@ def render(candidate, detection, snapshot, stamp):
         f"Stop   exit on a 5-min close {word} {_p(c['off_line'])} ({why})",
         f"       nominal {_p(c['stop_nominal'])}, risk {c['risk']:.0f} pts",
     ]
-    if c["t1"] is None:
-        lines.append("T1     none - entry is at the session extreme; hold to the stop or the "
-                     f"{FINAL_CLOSE_LABEL} close")
-    else:
-        lines.append(f"T1     {_p(c['t1'])} session {'high' if up else 'low'} (+{c['t1_room']:.0f}, RR 1:{c['rr']:.1f})"
-                     " -> then stop to break-even")
-        lines.append(f"T2     hold the rest to the {FINAL_CLOSE_LABEL} close")
+    # P2b (Amar 2026-11-22, "Previous-candle trail"; 3 lots, 2 at T1): T1 = entry + 2R, then stop to entry at
+    # +1R, then the trail on the previous candle - replacing the session-extreme T1 and break-even.
+    sg = 1 if up else -1
+    t1 = c["entry"] + sg * 2.0 * c["risk"]
+    lines.append(f"T1     {_p(t1)} (entry + 2R) -> sell 2 of 3 lots")
+    lines.append(f"       the last lot: stop to entry at +1R ({_p(c['entry'] + sg * c['risk'])}), then trails on the "
+                 f"previous 5-min candle's {'low' if up else 'high'}; out at the {FINAL_CLOSE_LABEL} close")
     vz = d.get("vol_z")
     rv = d.get("rvol_tod")
     lines.append(f"v2: vol z {'-' if vz is None else f'{float(vz):.2f}'}, rvol {'-' if rv is None else f'{float(rv):.2f}'}x"

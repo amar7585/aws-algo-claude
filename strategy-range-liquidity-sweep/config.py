@@ -32,7 +32,7 @@ import os
 # getting None, and gating on it. A gate that silently passes because its
 # input vanished is the worst failure this playbook can have.
 # --------------------------------------------------------------------------
-EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "3"))
+EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "4"))
 
 # --------------------------------------------------------------------------
 # IST

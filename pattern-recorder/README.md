@@ -196,7 +196,7 @@ a wildcard. See CLAUDE.md on the silent borrowed-role trap.
 | Variable | Default | Why |
 |---|---|---|
 | `ALERTS_ENABLED` | *(unset)* | **unset = shadow**: alerts are decided and logged `WOULD SEND`, nothing sent, no mark. `on` sends |
-| `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = Telegram only. Set to `strategy-manager` to dispatch each alert once |
+| `STRATEGY_MANAGER_FUNCTION_NAME` | *(unset)* | unset = Telegram only. Set to `strategy-manager` to dispatch each alert once. **Since P2b (2026-11-23 17:22:31 IST) `risk-manager`**, which adds its decision and invokes strategy-manager; the role may invoke only `risk-manager` (rollback: version 1, with `strategy-manager`) |
 | `TICK_HANDOFF_ENABLED` | *(unset)* | `on` (2026-11-14): EVERY tick, once today's first 15-min row exists, is also handed to the manager (`source` `pattern-recorder-tick`, today's closed index candles), as the run's last step, so the sweep playbook can follow a trade candle by candle. No send mark: the playbook announces only its newest candle. Independent of `ALERTS_ENABLED` |
 | `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | `bot_token` + `chat_id`, shared with the daily brief, error-notifier and pattern-detector |
 | `TELEGRAM_TIMEOUT_SECONDS` | `8` | Telegram call timeout |

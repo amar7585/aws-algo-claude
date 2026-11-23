@@ -23,7 +23,7 @@ Amar, 2026-11-22: "common order manager like what we have in algo_trading app ju
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 5 modules |
 | Layers | `neon-db-driver` + `neon-access` |
-| Trigger | **synchronous invoke** by a playbook or the risk manager. **P1: called by nothing.** The playbooks start calling it in P2a, the risk manager in P2b |
+| Trigger | **synchronous invoke** by a playbook or the risk manager. **P1: called by nothing.** The sweep calls it since P2a (2026-11-22 22:16 IST); the trend playbook and `risk-manager` from P2b (built, not deployed) |
 | Reads | `algo.position_master` (its own row, locked), `algo.instrument_master` (the lot size) |
 | Writes | `algo.position_master`, **its only writer** ([schema](schema.sql), [migration](../migrations/2026-11-22-position-master.sql)) |
 | Secrets | `/algo/neon/connection`, `/algo/telegram/brief` (SSM) |
@@ -214,12 +214,31 @@ Local `aws` CLI. The account is 709458364771 and the region ap-south-1, passed e
 - the error-notifier permission `logs-order-manager` and the log group, which can be removed the same way;
 - `DROP TABLE algo.position_master;` (empty).
 
+## Since P2b (2026-11-23): one connection across warm calls, 256 MB — DEPLOYED 2026-11-23 15:32:50 IST
+
+**Approved by Amar 2026-11-23** with P2b ("OM connection reuse + 256 MB in P2b"); deployed with P2b after the close, CodeSha256 `EUUQoC7YO3lQfzJ6E88jscIl5nViQe957O1poACXhDs=`, 256 MB; rollback: version 1 = `TdBvzcXF…` (P1). From P2b this function **sends the trade messages** of both playbooks and
+the risk manager's kill-switch closes, so the ~1.5 s it took per call reached the phone.
+
+- **The connection is kept in the execution environment** ([handler.py](handler.py) `connection()`). Each call
+  first checks it with `SELECT 1` (and ends that read with a rollback); if Neon dropped it (autosuspend, a network
+  blip) it is closed and replaced. **A call that fails drops the connection**, so the next one starts clean. The
+  log line says `reused connection` or `new connection`.
+- **Memory 128 → 256 MB** (a deploy-time setting): 28 MB of headroom at P1, and a faster CPU for the cold
+  handshake.
+- **Callers:** the sweep (P2a), the trend playbook and `risk-manager` (P2b) — each with `lambda:InvokeFunction`
+  on this ARN in its own role.
+- **Measured after deploy (two dry-run smokes, 15:33 IST):** first call 2.88 s (new connection, + 0.47 s init), second **1.33 s (reused connection)**, 100 of 256 MB. Reuse saved only ~0.2 s against P1's 1.55 s: the handshake was NOT most of it - the per-statement round trips Mumbai -> Singapore are. Still ~1.3 s per step message. Not chased.
+
+**Verified offline 2026-11-23:** the second call reuses the connection and checks it; a dead one is closed and
+replaced; a failed call raises and drops it; warm handler calls share one. Mutations removing the check or the
+drop are caught. `p2b_unit.py` in the notes.
+
 ## Deployment shape
 
 - Zip the five modules (`handler.py`, `positions.py`, `db.py`, `notify.py`, `config.py`) at the **zip root**, with LF endings.
 - Handler `handler.lambda_handler`, set under Code → Runtime settings → Edit.
 - Layers: `neon-db-driver` + `neon-access` (the same ARNs as the other database functions).
-- Timeout 30 s and memory 128 MB, to be re-measured on the smoke: Neon wakes inside `connect()`.
+- Timeout 30 s and memory 128 MB, to be re-measured on the smoke: Neon wakes inside `connect()`. **From P2b: 256 MB.**
 - **No environment variables.**
 
 **Its own role, `order-manager-role`** ([iam/](iam/)), with the trust policy and two inline policies:
@@ -236,6 +255,6 @@ Other rules:
 ## What it does not do
 
 - No Dhan call and no order: paper mode only until P5.
-- No limits and no kill switch. The risk manager's decision is the only limit check (Amar 2026-11-22), and `risk_control` comes with the risk manager in P2b.
+- No limits and no kill switch. The risk manager's decision is the only limit check (Amar 2026-11-22); `algo.risk_control` is read by [`risk-manager`](../risk-manager/README.md) (P2b), never here.
 - It never formats a message: the text is the playbook's.
 - It never decides a trade: it records and announces what a playbook decided.

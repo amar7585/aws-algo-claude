@@ -29,6 +29,10 @@ import os
 # context shape, so an unannounced change is a silent mismatch: the strategy
 # reads a key that is no longer there, gets None, and gates on it.
 #
+# v4 (P2b, 2026-11-23) - the risk manager sits in front (pattern-recorder -> risk-manager -> this) and adds
+#   a `run` block; this function invokes only the playbooks `run` names and passes each its own entry as
+#   `run`: {"mode": entry_exit | exit_only | force_exit, "force", "why", "positions"}. Every playbook asserts
+#   v4 and raises on a payload without `run`.
 # v3 (2026-11-19) - bias, score, max_score and confidence are gone from the
 #   snapshot and the daily read: Amar removed bias system-wide. Nothing else.
 # v2 - the shape changed substantially from v1:
@@ -44,7 +48,8 @@ import os
 # version they were written for and raise on anything else, so a bump is loud
 # on both sides.
 # --------------------------------------------------------------------------
-CONTEXT_VERSION = 3
+CONTEXT_VERSION = 4
+RUN_VERSION = 1
 
 # ---- alerts route on day_trend (Amar 2026-11-09; registry removed 2026-11-19) ------
 # A v2 alert arriving with day_trend up/down goes to the TREND playbooks below. Any

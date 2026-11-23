@@ -36,6 +36,16 @@ WHAT IT DOES NOT DO. It does not place orders, hold position state, size
 anything, or decide whether a setup is worth taking. day_trend is the whole of
 its judgement (the regime|bias registry was removed with bias, 2026-11-19).
 
+SINCE 2026-11-23 (P2b) THE CALLER IS risk-manager, never pattern-recorder directly:
+
+    pattern-recorder --(Event)--> risk-manager --(Event, + `run`)--> this --(Event, context v4)--> playbooks
+
+risk-manager adds `run` - its decision per playbook (mode entry_exit / exit_only / force_exit, the reason, and
+the playbook's open position rows). A payload without `run` v1 is REFUSED, so no playbook can run without the
+kill-switch and limit check. A playbook the risk manager gave no run is not invoked; on a tick, an alert
+playbook (trend) is invoked when the risk manager lists it - to follow its open positions. Each playbook gets
+its own entry of `run` (context v4), one dispatch each. Routing is otherwise unchanged.
+
 SINCE 2026-11-14 pattern-recorder also hands over EVERY tick (source
 "pattern-recorder-tick"); those go to TICK_PLAYBOOKS whatever the regime, and
 alert routing leaves the TICK_PLAYBOOKS out.
@@ -56,7 +66,7 @@ import time
 
 from neon_access import ist_datetime, now_epoch
 
-from config import CONTEXT_VERSION, TICK_PLAYBOOKS, TICK_SOURCE
+from config import CONTEXT_VERSION, RUN_VERSION, TICK_PLAYBOOKS, TICK_SOURCE, TREND_PLAYBOOKS
 from registry import TREND_STATES, dispatch, trend_shortlist
 
 logger = logging.getLogger()
@@ -137,12 +147,22 @@ def read_event(event):
     tick = event.get("tick")
     if event.get("source") == TICK_SOURCE and not isinstance(tick, dict):
         raise RuntimeError("a tick hand-off must carry its `tick` object")
-    return snapshot, instrument, daily, detection, index_bars, event.get("source"), tick
+    # P2b: the risk manager's decision. No `run` = the payload did not come through risk-manager - refused, so
+    # no playbook can ever run without the kill-switch and limit check.
+    run = event.get("run")
+    if not isinstance(run, dict) or run.get("version") != RUN_VERSION or not isinstance(run.get("playbooks"), dict):
+        raise RuntimeError(f"payload carries no `run` v{RUN_VERSION} from risk-manager (got {type(run).__name__}"
+                           f"{' v' + str(run.get('version')) if isinstance(run, dict) else ''}) - nothing may run "
+                           f"without the risk manager's decision")
+    for fn, r in run["playbooks"].items():
+        if not isinstance(r, dict) or r.get("mode") not in ("entry_exit", "exit_only", "force_exit"):
+            raise RuntimeError(f"run for {fn} has no valid mode: {r!r}")
+    return snapshot, instrument, daily, detection, index_bars, event.get("source"), tick, run
 
 
 def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     started = time.monotonic()
-    snapshot, instrument, daily, detection, index_bars, source, tick = read_event(event)
+    snapshot, instrument, daily, detection, index_bars, source, tick, run = read_event(event)
 
     snapshot_ts = int(snapshot["snapshot_ts"])
     regime = snapshot["regime"]
@@ -182,8 +202,10 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         dispatch_context["source"] = source
         dispatch_context["tick"] = tick
         route = "every tick"
-        eligible = list(TICK_PLAYBOOKS)
-        logger.info("tick: eligible %s", ", ".join(eligible) or "none (TICK_PLAYBOOKS unset)")
+        # P2b: the tick playbooks, plus any alert playbook the risk manager asks to follow its positions.
+        eligible = [f for f in list(TICK_PLAYBOOKS) + [t for t in TREND_PLAYBOOKS if t not in TICK_PLAYBOOKS]
+                    if f in run["playbooks"]]
+        logger.info("tick: eligible %s", ", ".join(eligible) or "none")
     else:
         if day_trend in TREND_STATES:
             route = f"day trend {day_trend}"
@@ -196,7 +218,21 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         if skipped:
             logger.info("%s: %s left out - it runs on every tick", route, ", ".join(skipped))
             eligible = [f for f in eligible if f not in TICK_PLAYBOOKS]
-    dispatched = dispatch(dispatch_context, eligible)
+        held = [f for f in eligible if f not in run["playbooks"]]
+        if held:
+            logger.info("%s: %s not invoked - the risk manager gave it no run", route, ", ".join(held))
+            eligible = [f for f in eligible if f in run["playbooks"]]
+    # P2b: each playbook gets ITS OWN entry of the risk manager's decision as `run`. One dispatch per playbook
+    # (their payloads differ); every invoke is still attempted before anything raises.
+    dispatched, failures = [], []
+    for fn in eligible:
+        try:
+            dispatched += dispatch(dict(dispatch_context, run=run["playbooks"][fn]), [fn])
+        except Exception as exc:  # noqa: BLE001 - collected and re-raised below
+            failures.append(f"{fn}: {exc}")
+    if failures:
+        raise RuntimeError(f"{len(failures)} of {len(eligible)} playbook invocations failed: " + "; ".join(failures))
+    logger.info("%s: modes %s", route, {f: run["playbooks"][f]["mode"] for f in eligible})
 
     elapsed = time.monotonic() - started
     logger.info(

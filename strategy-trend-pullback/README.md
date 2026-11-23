@@ -21,6 +21,42 @@ on no-trend days (Amar, 2026-11-09).
 | Writes | **nothing** — its log and its Telegram message are its output |
 | Secrets | `/algo/telegram/brief` (to send) |
 
+## Since P2b (2026-11-23): it follows the trade — DEPLOYED 2026-11-23
+
+**Approved by Amar 2026-11-23 ("Approve P2b"); deployed after the close ("deploy now").** Code 15:35:52 IST, CodeSha256 `dlZK1gOx2pwGmD5pNFe/rbPI0Psjxr3u4+SG4t74MEI=`, `ORDER_MANAGER_FUNCTION=order-manager`, `TELEGRAM_ENABLED=on`; rollback: version 1 = `DVj+KKye…` (rule G, one alert in, one message out). In the chain from 17:22:31 IST; first live session Wed 2026-11-25. Plan: `p2b-build-plan-2026-11-23.md` in the notes folder. The sections below describe the entry rules, unchanged.
+
+**Two kinds of run** (context v4, through [`risk-manager`](../risk-manager/README.md) → `strategy-manager`):
+
+- **An alert on a trend day (entry).** The candidate is built exactly as before ([pullback.py](pullback.py)) and
+  becomes an **ENTRY** through [`order-manager`](../order-manager/README.md): 3 lots at the trigger candle's close
+  (the fill at the signal), `stop_loss` = the stop line (ORH for a long, ORL for a short), `t1_target` = entry +
+  2R, the candidate text as its message. When the risk manager allows no entry (after 15:00, a limit, the daily
+  loss) it is sent as **REJECTED** — stored REFUSED, its message headed `TREND PULLBACK REJECTED - <reason>`.
+  A second alert on a candle already entered is answered `duplicate` (one position per candle and side), with
+  no message.
+- **A tick while it holds a position (exit mode).** The risk manager passes this playbook's open rows in `run`,
+  so it reads no database. The decided exit ([exits.py](exits.py)) is re-derived over today's closed candles and
+  only what `order-manager` does not have yet is sent — read, then catch up, like the sweep.
+
+**The exit — "Previous-candle trail" (Amar 2026-11-22),** 3 lots for both playbooks, 2 at T1:
+
+| | |
+|---|---|
+| stop | a 5-min **close** back inside the 15-min range — out at that close (`TREND STOPPED`) |
+| T1 | entry + 2R: **2 of 3 lots** sold there (`TREND T1`) |
+| to entry | once price touches +1R, the stop moves to entry from the next candle (`TREND STOP TO ENTRY`) |
+| trail | then the stop trails the previous closed 5-min candle's low (high for a short), never back past entry — stored, **not messaged** (Amar 2026-11-23) |
+| protected stop | hit on a touch, filled at the candle's open if it opens through it (`TREND TRAILED OUT` / `TREND BREAK-EVEN`) |
+| one candle, both | the protected stop comes before T1 |
+| 15:10 | the playbook does not close on its own: the risk manager's `force_exit("TIME EXIT")` closes it at the 15:10 candle's close, after its own steps on that candle (`TREND CLOSED AT 15:15`); `DAILY LOSS EXIT` at the newest close |
+
+**Verified offline 2026-11-23.** `exits.steps` reproduces the decided replay (`exits_grid.py`, key
+`edge|half|1R|prev5|2.0`) on all 166 candidates, with half sold at T1 as replayed (worst 0.0025 pts — prices
+rounded to 2 dp). The whole chain on the 87 clean sessions reproduces P0's paths with 2 of 3: 156 trend
+positions, each within 0.65 point-units (T1 rounded to 2 dp), and the total matches to the paisa. With O1
+limits: 4 REFUSED, each with its REJECTED message. Late, repeated and dropped ticks and injected `order-manager`
+failures all end in the same record, with no message twice. Harness: `prelim/p0/p2b_*.py` in the notes.
+
 ## Reference session — 2026-11-06 (n = 1)
 
 NIFTY broke PDH 24,579.90 at 09:45 (the day trend turned `up` with that candle;
@@ -180,13 +216,14 @@ inside the range turns the trend off, so it is not this playbook's trade
 
 | Variable | Default | |
 |---|---|---|
-| `TELEGRAM_ENABLED` | *(unset)* | **unset = shadow**: the candidate is logged `WOULD SEND`, nothing is sent |
+| `TELEGRAM_ENABLED` | *(unset)* | **unset = shadow**: the candidate is logged `WOULD SEND`, nothing is sent. From P2b the signal still goes to `order-manager` (recorded) with `message: null` |
 | `HOLD_FAMILIES` | `C2,R1` | the setup |
 | `WINDOW_FROM_MINUTE` / `WINDOW_TO_MINUTE` | 585 / 870 | 09:45 / 14:30, on the trigger candle's close |
 | `STOP_BUFFER_PCT` | 0.03 | the sweep playbook's buffer rule |
 | `STOP_BUFFER_RANGE_FACTOR` | 0.5 | |
 | `STOP_BUFFER_LOOKBACK_BARS` | 6 | |
-| `EXPECTED_CONTEXT_VERSION` | 3 | asserted against strategy-manager (2 until 2026-11-19) |
+| `EXPECTED_CONTEXT_VERSION` | 4 | asserted against strategy-manager (3 until P2b, 2 until 2026-11-19) |
+| `ORDER_MANAGER_FUNCTION` | *(unset)* | P2b: `order-manager`. **Required** — unset raises: every entry and step goes through it |
 | `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | |
 
 ## Deployment shape
@@ -199,7 +236,13 @@ function's role. `strategy-manager-role`'s `invoke-playbooks` needs this
 function's ARN, and strategy-manager's `TREND_PLAYBOOKS` names it. Subscribe the
 log group to `error-notifier`.
 
+From P2b: eight modules (`exits.py`, `record.py`, `ordermgr.py` added; `notify.py` is no longer imported — kept
+in the zip, unused); the role gains `invoke-order-manager` ([iam/](iam/)): `lambda:InvokeFunction` on
+`order-manager`'s ARN only. The environment adds `ORDER_MANAGER_FUNCTION=order-manager`. Deploy it together with
+`strategy-manager` v4 and `risk-manager`.
+
 ## What it does not do
 
-No orders, no position sizing, no strike selection, no database write. It does
-not manage the trade after the alert — each invoke judges one alert.
+No orders, no strike selection, no database write. Before P2b it did not manage
+the trade after the alert — each invoke judged one alert. From P2b it follows
+its trades, and `order-manager` writes them; it still places no order.

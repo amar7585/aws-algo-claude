@@ -19,6 +19,35 @@ targets and risk-reward.
 | Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `6+z2tBAr…` since 2026-11-22 22:16 IST (P2a: every entered trade also recorded in `algo.position_master` through `order-manager`; `ORDER_MANAGER_FUNCTION=order-manager`; version 11 = `VwA8XnWp…`, the rollback); before it `VwA8XnWp…`, 2026-11-22 15:44 IST (2 of 3 lots booked at T1, the range midpoint); before it `TRtj+AW8…`, 2026-11-21 10:38 IST (session high / low pools removed), and `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 10 = `TRtj+AW8…` (main c6ab155, published 2026-11-22 before T1 was added), 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
 
+## Since P2b (2026-11-23): behind the risk manager, messages through order-manager — DEPLOYED 2026-11-23
+
+**Approved by Amar 2026-11-23 ("Approve P2b"); deployed the same day after the close ("deploy now").** P2a's two-session live check was skipped on his call - no sweep trade had run through P2a yet. Code ~15:36 IST, CodeSha256 `dgeSzzphT43LygPGZmApS8dygjM9gWcIGG2GkqwDzSU=`; rollback: version 12 = `6+z2tBAr…` (P2a). In the chain from 17:22:31 IST; first live session Wed 2026-11-25. Plan: `p2b-build-plan-2026-11-23.md` in the notes folder.
+
+- **Context v4.** The run is invoked through [`risk-manager`](../risk-manager/README.md) → `strategy-manager`, and
+  the context carries `run` — this playbook's mode. A context without a valid `run` raises, and so does an unset
+  `ORDER_MANAGER_FUNCTION` (from v4 the record is not optional: the messages go through it).
+- **Messages go through `order-manager`.** Every signal carries this playbook's own text, word for word as before,
+  and `order-manager` sends it once, in the same transaction as the record. This function sends nothing to
+  Telegram itself any more. A retried tick no longer sends a message twice: a step already applied is a
+  `duplicate`, with no message. `TELEGRAM_ENABLED=off`: the signal goes with `message: null` and the text is logged
+  as `WOULD SEND`.
+- **The mode decides entries.** `entry_exit` — as before. `exit_only` / `force_exit` — a would-be ENTRY is sent as
+  **REJECTED** (stored REFUSED, its message headed `SWEEP SIGNAL REJECTED - <reason>`, then the signal text), and a
+  would-be RE-ENTRY ends the watch (`SWEEP WATCH ENDED ... re-entry refused by the risk manager`).
+- **The hard rules are the risk manager's** (Amar 2026-11-22: "no trade after 15:00 and exit all trades after
+  15:15 this will go under risk manager"). The derivation keeps its own 15:00 window and its 15:15 step — they stay
+  the alert register's record (Amar 2026-11-23) — but the 15:15 close is sent only on the risk manager's
+  `force_exit("TIME EXIT")`, at the 15:10 candle's close (the 15:16 tick), with the text the playbook has always
+  sent. `force_exit("DAILY LOSS EXIT")` closes what is open or watching at the newest close.
+- **Unchanged:** the gate, the pools, the follow-through, T1 / T2, the register.
+
+**Verified offline 2026-11-23** — the whole chain (risk-manager → strategy-manager → both playbooks → an
+in-memory `order-manager` with its real `positions.py`) on every tick of the 87 clean sessions: the sweep's 16
+message texts are identical to the deployed sweep's, its 5 positions equal P0's, and its TIME EXIT is on the 15:10
+candle. Unit tests cover REJECTED, the refused re-entry, both forced closes (WATCHING included) and the 15:10 bar;
+mutations of each are caught. Harness: `prelim/p0/p2b_chain.py`, `p2b_compare.py`, `p2b_unit.py`,
+`p2b_mutate.py` in the notes.
+
 ## Since 2026-11-22: 2 of 3 lots booked at T1, the range midpoint
 
 **Decided by Amar 2026-11-22 ("2 of 3"; "there is only one change ... add t1 in midway and instead of 2 enter 3 lots
@@ -660,9 +689,9 @@ what it reads:
 | `HISTORY_DAILY_BARS` | 40 | enough for the ATR period with room to spare |
 | `ATR_PERIOD` | 14 | Wilder ATR, from the `market-classifier` layer |
 | `ROW_VISIBLE_LAG_SECONDS` | 100 | a 15-min row is in force for a candle once written by the candle's close + this |
-| `TELEGRAM_ENABLED` | `on` | kill switch: `off` logs every message as `WOULD SEND` instead of sending |
+| `TELEGRAM_ENABLED` | `on` | kill switch: `off` logs every message as `WOULD SEND` instead of sending. From P2b the text goes to `order-manager`, which sends it; `off` sends the signal with `message: null` (recorded, not messaged) |
 | `REGISTER_ENABLED` | unset (= off) | `on` writes the alert register to `algo.playbook_alerts` after the messages; unset again to stop without a redeploy |
-| `ORDER_MANAGER_FUNCTION` | unset (= off) | P2a: the function name of `order-manager` (`order-manager`). Set, every entered trade is recorded in `algo.position_master` through it. Unset, no recording at all, and the playbook behaves byte for byte as before P2a. That is the rollback without a redeploy |
+| `ORDER_MANAGER_FUNCTION` | unset | P2a: the function name of `order-manager` (`order-manager`). Set, every entered trade is recorded in `algo.position_master` through it. Under P2a unset = no recording (the rollback without a redeploy). **From P2b (context v4) it is required** — unset raises, because the messages go through it; the rollback is the previous version |
 
 ## Since P2a (2026-11-22): every entered trade recorded in `position_master` — DEPLOYED 2026-11-22 22:16 IST
 
@@ -736,7 +765,8 @@ Zip the **fourteen** modules at the **zip root**, with LF endings (`record.py` a
 
 **Environment variables:**
 - `REGISTER_ENABLED=on`. Without it the register is not written (unset = off).
-- From P2a, `ORDER_MANAGER_FUNCTION=order-manager`. Without it nothing is recorded (unset = off).
+- From P2a, `ORDER_MANAGER_FUNCTION=order-manager`. Without it nothing is recorded (unset = off). From P2b required: unset raises.
+- From P2b, `EXPECTED_CONTEXT_VERSION` defaults to 4: deploy it together with `strategy-manager` v4 and `risk-manager`.
 
 Every other tunable has a default in `config.py`. The register needs no IAM change: it writes through the same `/algo/neon/connection` the reads use.
 

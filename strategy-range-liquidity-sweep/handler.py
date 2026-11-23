@@ -89,7 +89,6 @@ import record as record_lib
 import register as register_lib
 import report
 import session as session_lib
-from notify import send_telegram
 from config import (
     ATR_PERIOD,
     CANDLE_INTERVAL_MINUTES,
@@ -157,6 +156,15 @@ def read_context(event):
     bars = event.get("index_bars")
     if bars is not None and not isinstance(bars, list):
         raise RuntimeError(f"`index_bars` must be a list, got {type(bars).__name__}")
+    # P2b (context v4): the risk manager's decision for THIS playbook, passed on by strategy-manager.
+    run = event.get("run")
+    if not isinstance(run, dict) or run.get("mode") not in ("entry_exit", "exit_only", "force_exit"):
+        raise RuntimeError(f"context carries no valid `run` from the risk manager: {run!r}")
+    if run["mode"] == "force_exit" and run.get("force") not in ("TIME EXIT", "DAILY LOSS EXIT"):
+        raise RuntimeError(f"force_exit without a known reason: {run.get('force')!r}")
+    if not ORDER_MANAGER_FUNCTION:
+        raise RuntimeError("ORDER_MANAGER_FUNCTION is unset - from context v4 every message and step goes through "
+                           "order-manager, so this playbook cannot run without it")
     return event
 
 
@@ -235,51 +243,59 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
                     "".join(f"; {s['kind']} {ist_datetime(bars[s['index']]['ts'] + 300).strftime('%H:%M')}"
                             for s in idea["steps"]))
 
-    # ---- the messages ------------------------------------------------------------
-    # Only what happened on the newest candle (every-tick runs), or within the
-    # snapshot's window (an alert hand-off), is announced - each step once, on
-    # the run whose newest candle it is.
+    # ---- what is new on the newest candle (the log and the summary) -------------------
+    # Since P2b the playbook no longer sends to Telegram itself: each step's own text travels with its signal to
+    # order-manager, which sends it once, in the same transaction as the record. This list is only the log.
     if tick:
         fresh_after = int(bars[-1]["ts"]) - 1
     else:
         # The candles that CLOSED since the previous snapshot: stamped after
-        # prev_snapshot_ts minus one interval. (Before 2026-11-14 this compared
-        # against prev_snapshot_ts itself, so the first candle of every 15-min
-        # window - the one that closes after the previous snapshot - was never
-        # announced.)
+        # prev_snapshot_ts minus one interval.
         fresh_after = int(snapshot.get("prev_snapshot_ts") or (snapshot_ts - 900)) - CANDLE_INTERVAL_SECONDS
     out = session_lib.messages(result, bars, fresh_after, int(bars[-1]["ts"]))
-    for kind, text in out:
-        if TELEGRAM_ENABLED:
-            # Fail-loud: a refused send raises so Lambda records it.
-            send_telegram(text)
-            logger.info("%s sent: %s", kind, text.replace("\n", " | "))
-        else:
-            logger.info("WOULD SEND (telegram off) %s: %s", kind, text.replace("\n", " | "))
 
-    # ---- the paper position record (P2a) - AFTER the messages, BEFORE the register ----
-    # Every entered trade is recorded in algo.position_master through order-manager
-    # (synchronous, one signal per call, message null - the messages above stay this
-    # playbook's own). Read, then catch up: only what the record is missing is sent -
-    # normally nothing. A failed call raises: Lambda's retry reruns the tick (the
-    # messages go again, as with the register; order-manager answers `duplicate` for
-    # what it already has). ORDER_MANAGER_FUNCTION unset = off, byte for byte as before.
-    record_summary = {"enabled": bool(ORDER_MANAGER_FUNCTION)}
-    if ORDER_MANAGER_FUNCTION:
-        import ordermgr
-        derived = record_lib.signals(bars, result, ctx["instrument"], day_start, POSITION_PLAYBOOK)
-        stored = read_positions(conn, ctx["instrument"], POSITION_PLAYBOOK, day_start)
-        todo = record_lib.pending(derived, stored, int(bars[-1]["ts"]))
-        answers = [ordermgr.send(s) for s in todo]
-        by_result = {}
-        for s, a in zip(todo, answers):
-            by_result[a["result"]] = by_result.get(a["result"], 0) + 1
-            logger.info("record: %s %s entry %s candle %s -> %s (%s)", s["kind"], s["direction"],
-                        ist_datetime(s["entry_ts"]).strftime("%H:%M"), ist_datetime(s["candle_ts"]).strftime("%H:%M"),
-                        a["result"], a.get("why"))
-        record_summary.update(positions=len(derived), stored=len(stored), sent=len(todo), results=by_result)
-        logger.info("record: %d entered trades today, %d stored, %d signal(s) sent %s", len(derived), len(stored),
-                    len(todo), by_result or "")
+    # ---- the position record AND the messages, through order-manager (P2a / P2b) --------
+    # Read, then catch up: only what the record is missing is sent - normally nothing. The risk manager's mode
+    # (ctx["run"]) decides entries: outside entry_exit a would-be ENTRY is sent as REJECTED and a RE-ENTRY ends
+    # the watch; force_exit closes what is still open after this run's own steps (the 15:15 time exit at the
+    # 15:10 close, or the daily-loss exit). A failed call raises: Lambda's retry reruns the tick and order-manager
+    # answers `duplicate` for what it already has - and since the message travels with the step, it is not sent
+    # twice. AFTER this, the register (unchanged).
+    import ordermgr
+    run = ctx["run"]
+    why = run.get("why") or run.get("force") or ""
+    derived = record_lib.signals(bars, result, ctx["instrument"], day_start, POSITION_PLAYBOOK)
+    stored = read_positions(conn, ctx["instrument"], POSITION_PLAYBOOK, day_start)
+    todo = record_lib.pending(derived, stored, int(bars[-1]["ts"]), run["mode"], why)
+    status = {(int(r["entry_ts"]), r["position_type"]): r["status"] for r in stored}
+    sent_answers = []
+
+    def _send(signals):
+        for sg in signals:
+            if not TELEGRAM_ENABLED and sg.get("message"):
+                logger.info("WOULD SEND (telegram off) %s: %s", sg["kind"], sg["message"].replace(chr(10), " | "))
+                sg = dict(sg, message=None)
+            a = ordermgr.send(sg)
+            sent_answers.append((sg, a))
+            status[(sg["entry_ts"], "LONG" if sg["direction"] == "long" else "SHORT")] = a.get("status")
+            logger.info("order-manager: %s %s entry %s candle %s -> %s (%s)%s", sg["kind"], sg["direction"],
+                        ist_datetime(sg["entry_ts"]).strftime("%H:%M"), ist_datetime(sg["candle_ts"]).strftime("%H:%M"),
+                        a["result"], a.get("why"), " - message sent" if a.get("sent") else "")
+
+    _send(todo)
+    closes = []
+    if run["mode"] == "force_exit":
+        closes = record_lib.forced_closes(derived, status, bars, run["force"], why)
+        _send(closes)
+    by_result = {}
+    for _, a in sent_answers:
+        by_result[a["result"]] = by_result.get(a["result"], 0) + 1
+    record_summary = {"mode": run["mode"], "force": run.get("force"), "positions": len(derived), "stored": len(stored),
+                      "sent": len(todo) + len(closes), "forced": len(closes), "results": by_result,
+                      "messages_sent": sum(1 for _, a in sent_answers if a.get("sent"))}
+    logger.info("record: mode %s%s, %d entered trades today, %d stored, %d signal(s) sent %s", run["mode"],
+                f" ({run['force']})" if run.get("force") else "", len(derived), len(stored), len(todo) + len(closes),
+                by_result or "")
 
     # ---- the alert register - AFTER the messages ---------------------------------
     # Rebuilt whole from this run's derivation plus the same rules with the gate
@@ -311,5 +327,5 @@ def _run(conn, ctx, snapshot, instrument, daily, snapshot_ts, session_day, day_s
         "messages": [{"kind": k, "first_line": x.splitlines()[0]} for k, x in out],
         "telegram": TELEGRAM_ENABLED,
         "register": register_summary,
-        **({"record": record_summary} if ORDER_MANAGER_FUNCTION else {}),
+        "record": record_summary,
     }

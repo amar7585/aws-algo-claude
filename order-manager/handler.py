@@ -119,21 +119,53 @@ def apply(conn, sig, dry_run, now, send, telegram_enabled=TELEGRAM_ENABLED):
     raise RuntimeError("unreachable")
 
 
+# ONE CONNECTION KEPT ACROSS WARM INVOCATIONS (P2b, Amar 2026-11-23). A fresh connection is a TLS handshake
+# from Mumbai to Neon in Singapore - ~1.4 s of the ~1.5 s a warm call took at the P1 deploy - and from P2b this
+# function SENDS the trade messages, so that delay reached the phone. The connection lives in the execution
+# environment; each call first checks it with SELECT 1 (and ends that read) and reconnects if Neon dropped it
+# (autosuspend, a network blip). A call that fails drops the connection, so the next one starts clean.
+_CONN = {"conn": None}
+
+
+def connection(connector=None):
+    """(conn, reused). `connector` is for tests; Lambda uses neon_access.connect."""
+    c = _CONN["conn"]
+    if c is not None:
+        try:
+            cur = c.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchall()
+            c.rollback()
+            return c, True
+        except Exception:  # noqa: BLE001 - a dead connection is replaced, never trusted
+            drop()
+    c = (connector or (lambda: connect(read_neon_connection_string())))()
+    _CONN["conn"] = c
+    return c, False
+
+
+def drop():
+    c, _CONN["conn"] = _CONN["conn"], None
+    if c is not None:
+        try:
+            c.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     started = time.monotonic()
     sig, dry_run = read_event(event)
-    conn = connect(read_neon_connection_string())
+    conn, reused = connection()
     try:
         from notify import send_telegram
         out = apply(conn, sig, dry_run, int(time.time()), send_telegram)
-    finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
-    logger.info("%s %s %s %s entry %s, candle %s: %s - %s (position %s, %s, %s units open)%s in %.2fs",
+    except Exception:
+        drop()   # the connection's state is unknown after a failure - the next call reconnects
+        raise
+    logger.info("%s %s %s %s entry %s, candle %s: %s - %s (position %s, %s, %s units open)%s in %.2fs (%s connection)",
                 sig["playbook"], sig["kind"], sig["direction"], sig["instrument"]["trading_symbol"],
                 ist_datetime(sig["entry_ts"]).strftime("%Y-%m-%d %H:%M"), ist_datetime(sig["candle_ts"]).strftime("%H:%M"),
                 out["result"], out["why"], out["position_id"], out["status"], out["balance_units"],
-                " DRY RUN, rolled back" if dry_run else "", time.monotonic() - started)
+                " DRY RUN, rolled back" if dry_run else "", time.monotonic() - started, "reused" if reused else "new")
     return out

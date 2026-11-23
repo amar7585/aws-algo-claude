@@ -8,7 +8,7 @@ import os
 
 # The context strategy-manager hands over. v3 (2026-11-19, bias removed) is the manager's current shape;
 # this playbook additionally needs `detection` (v2's alert) and `index_bars`.
-EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "3"))
+EXPECTED_CONTEXT_VERSION = int(os.environ.get("EXPECTED_CONTEXT_VERSION", "4"))
 
 # ---- the setup (Amar, 2026-11-09): breakout and hold only ----------------------
 # C2 = a retest / hold of a key level already broken this session in the trend's
@@ -45,3 +45,11 @@ FINAL_CLOSE_LABEL = os.environ.get("FINAL_CLOSE_LABEL", "15:10")
 TELEGRAM_ENABLED = os.environ.get("TELEGRAM_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
 TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
 HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
+
+# ---- P2b (Amar 2026-11-22 / 11-23): every position and message through order-manager -------------
+# The one common order manager (its own Lambda, synchronous, one signal per call) records each step in
+# algo.position_master and sends this playbook's own text, once. Required from context v4.
+ORDER_MANAGER_FUNCTION = os.environ.get("ORDER_MANAGER_FUNCTION", "").strip()
+ORDER_MANAGER_CONTRACT_VERSION = 1
+POSITION_PLAYBOOK = "strategy-trend-pullback"
+TICK_SOURCE = "pattern-recorder-tick"

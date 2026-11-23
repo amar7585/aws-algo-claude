@@ -10,7 +10,7 @@ them. It evaluates no playbook itself and emits no signal.
 | Entry point | `handler.lambda_handler` |
 | Runtime | Python 3.14, zip package, 3 modules |
 | Layers | `neon-db-driver` + `neon-access` — only `neon-access` is used, for the IST/epoch helpers; it opens no connection |
-| Schedule | **none** — invoked by `pattern-detector`, on a confirmed turn only |
+| Schedule | **none** — invoked by `risk-manager` (since P2b, 2026-11-23), on each of pattern-recorder's alerts and ticks |
 | Reads | **nothing** |
 | Writes | **nothing** |
 | Secrets | none |
@@ -59,6 +59,33 @@ detector's turn) is itself the trigger.
 **Every invoke is `Event`.** This function returning is not a claim that any
 playbook succeeded. Each has its own log group and `error-notifier` reports
 from all of them.
+
+## Behind the risk manager — context v4 (P2b, 2026-11-23)
+
+**Deployed 2026-11-23 15:36:11 IST**, CodeSha256 `jqV8KvNogrCWTxEXCCDXk7buZzBvJJk75P5IwClRAy0=` (rollback: version 1 = `r5D73Twk…`, v3). Called by `risk-manager` since 17:22:31 IST; first live session Wed 2026-11-25.
+
+```
+pattern-recorder --(Event: each alert once, then the tick)--> risk-manager
+risk-manager     --(Event: the same payload + `run`)-------> strategy-manager
+strategy-manager --(Event: context v4, one dispatch per playbook)--> the playbooks
+```
+
+[`risk-manager`](../risk-manager/README.md) reads the kill switch, the limits and today's positions, and adds
+**`run`** — its decision for each playbook it allows to run:
+
+```json
+"run": {"version": 1, "kill_switch": false, "assessment": {...},
+        "playbooks": {"strategy-range-liquidity-sweep": {"mode": "entry_exit", "force": null, "why": "", "positions": [...]},
+                      "strategy-trend-pullback":        {"mode": "exit_only",  "force": null, "why": "exit mode", "positions": [...]}}}
+```
+
+- **No `run`, no playbook.** A payload without `run` v1 raises — nothing may run without the risk manager's
+  decision. With the kill switch on, risk-manager does not invoke this function at all.
+- **A playbook the risk manager left out is not invoked**, whatever the routing says.
+- **On a tick, an alert playbook is invoked when `run` lists it** — the trend playbook, while it holds an open
+  position (its exit mode). Routing is otherwise as before.
+- **Each playbook gets its own entry** as `run` in the context (v4) — one dispatch per playbook, every invoke
+  attempted before any failure raises.
 
 ## Every-tick playbooks (2026-11-14)
 
@@ -130,7 +157,10 @@ know — VIX behaviour, how much of the day's range is spent, opening-range
 width, time of day. A strategy that trusted an upstream gate it cannot see
 would fire on a bad day the moment that gate moved.
 
-## The payload contract — v3 (v2 until 2026-11-19)
+## The payload contract — v4 (P2b, 2026-11-23; v3 from 2026-11-19)
+
+**v4 (2026-11-23):** adds `run` — this playbook's entry of the risk manager's decision (`mode`, `force`, `why`,
+`positions`). Both playbooks assert v4 and refuse a context without a valid `run`.
 
 **v3 (2026-11-19):** `bias`, `score`, `max_score` and `confidence` are gone from the snapshot
 and the daily read. Both playbooks assert v3. Everything below is otherwise unchanged.
@@ -140,11 +170,12 @@ written against and raises on anything else, so a change is loud on both sides.
 
 ```json
 {
-  "context_version": 3,
+  "context_version": 4,
   "dispatched_at": 1789104600,
   "instrument": { "security_id": "13", "instrument_type": "INDEX", ... },
   "snapshot":   { "snapshot_ts": ..., "regime": ..., "structure": ..., "sma9": ... },
-  "daily":      { "trade_date": ..., "regime": ..., "stale": false, ... }
+  "daily":      { "trade_date": ..., "regime": ..., "stale": false, ... },
+  "run":        { "mode": "entry_exit", "force": null, "why": "", "positions": [ ... ] }
 }
 ```
 
