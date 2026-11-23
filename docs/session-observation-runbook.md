@@ -133,7 +133,11 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 - `nearest_snapshot_ts` — the 15-min snapshot that best reflects the event state.
 - `price_at_event` — index **close** of the event candle (the machine's entry price when it entered).
 - `resolved_ts` / `resolved_price` — **data-driven, not a fixed window**: the leg resolves at the
-  next reversal / leg-end on the same session, or the **15:25 close** if none. Intraday only.
+  next reversal / leg-end on the same session, or the **15:10 candle's close** if none. Intraday
+  only. That close is the 15:15 price. Since NSE's closing auction (2026-08-03) the index is frozen
+  after it, and its 15:25 candle is the official-close jump, a price nobody traded. A leg never
+  resolves on the 15:15, 15:20 or 15:25 candle. Rows 13, 16 and 17 were re-scored to this rule on
+  2026-11-23 (Amar); their old 15:25 values are in their `notes`.
 - `forward_return_pct` = `(resolved_price - price_at_event) / price_at_event * 100`.
 - `outcome` — what price **did** (`reversal|continuation|no_signal`).
 - `signal_agreement` — did the stored `buildup`/PCR/OI **at `nearest_snapshot_ts`** agree with the

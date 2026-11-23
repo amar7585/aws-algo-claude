@@ -132,7 +132,7 @@ Since 2026-11-22 (see "Order" below), it starts as a **paper-mode position recor
 
 | Item | State |
 |---|---|
-| **Runbook scoring at the auction close.** [session-observation-runbook.md](session-observation-runbook.md) resolves a row at "the 15:25 close if none", which is the auction print. Scoring at the 15:10 close would re-score 3 of 17 rows: 11-16 from +0.38% to +0.10%, 11-19 from +0.99% to +0.94%, 11-20 from +1.07% to +1.01% | **open**: needs Amar's sign-off |
+| **Runbook scoring at the auction close.** [session-observation-runbook.md](session-observation-runbook.md) resolved a row at "the 15:25 close if none", which is the auction print. Scoring at the 15:10 close re-scores 3 of 17 rows: 11-16 from +0.38% to +0.10%, 11-19 from +0.99% to +0.94%, 11-20 from +1.07% to +1.01% | **done 2026-11-23** (Amar: "Yes, re-score"). The runbook now resolves at the 15:10 candle's close, and the 3 rows are re-scored with their old values in `notes`. Outcome and agreement are unchanged; row 13 stays `reversal` at +0.10% |
 | **Index PDH/PDL can be auction prints** (17 of 76 sessions) | kept as printed: it matches Amar's chart and NSE's official high/low. Revisit only with evidence |
 | **F&O trades to 15:40**, but every component stops at 15:30, so the futures' 15:30 / 15:35 bars are never stored | separate decision, not taken |
 | Classifier and sentiment rows at 15:15 / 15:25, pattern-detector (log-only), the poller's basis at 15:20 / 15:25 | cosmetic: nothing acts on them after 15:00. No change |
