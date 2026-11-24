@@ -39,7 +39,7 @@ The auction close is also the day's high or low on 17 of 76 sessions. On those d
 |---|---|---|
 | strategy-range-liquidity-sweep | already true (no entries or re-entries after 15:00) | **deployed 2026-11-20 22:48 IST** as an **interim** (CodeSha256 `VGiH4SNG…`, version 8 = the code before). A trade still in after the 15:10 candle gets `CLOSED AT 15:15`, sent at the 15:16 tick. See its [README](../strategy-range-liquidity-sweep/README.md) |
 | strategy-trend-pullback | already true: signals stop at **14:30**, which Amar kept | **since P2b (2026-11-23)**: it follows its trades, and the risk manager's time exit closes what is still open at the 15:10 close (`TREND CLOSED AT 15:15`, sent on the 15:16 tick) |
-| pattern-recorder alerts | not trades. They keep going to Telegram after 15:00 (Amar: keep them) | n/a |
+| pattern-recorder alerts | not trades. They went to Telegram after 15:00 too (Amar: keep them) until the raw alerts were removed altogether on 2026-11-23; they still reach the risk manager, which gives the playbooks `exit_only` from 15:00 | n/a |
 | any new playbook | the risk manager's `exit_only` from the 15:00 candle close (since P2b) | the risk manager's `force_exit("TIME EXIT")` from the 15:10 candle (since P2b); the playbook closes at that close after its own stop / target |
 
 ### Sweep replay behind the interim

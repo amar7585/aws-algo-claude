@@ -3,10 +3,17 @@ Pattern Recorder (v2.1) - AWS Lambda function
 
 Runs the v2 pattern library (structure.py + patterns.py) every FIVE minutes and
 records what it recognises to algo.pattern_events; the events that pass the alert
-rule (alerts.py) go to Telegram and strategy-manager, ONCE each. Invoked
-asynchronously by intraday-fno-poller right after it writes its 5-min row:
+rule (alerts.py) are handed to the manager (STRATEGY_MANAGER_FUNCTION_NAME -
+risk-manager since P2b), ONCE each. Invoked asynchronously by intraday-fno-poller
+right after it writes its 5-min row:
 
-    intraday-fno-poller (every 5 min) -> this -> Telegram + strategy-manager
+    intraday-fno-poller (every 5 min) -> this -> risk-manager -> strategy-manager
+
+NO TELEGRAM SINCE 2026-11-23 (Amar: "remove completely those messages from code
+we dont need that anymore stick with the new flow"). The raw pattern alerts no
+longer reach the phone; it gets the two briefs and the playbooks' trade messages
+(order-manager) only. The alert rule still decides which events the playbooks
+see, exactly as before.
 
 SINCE 2026-11-14 (TICK_HANDOFF_ENABLED on) every tick - not just an alert - is
 also handed to strategy-manager with today's closed index candles, so the sweep
@@ -18,17 +25,18 @@ PLAN V3, step 4 (approved 2026-11-09). What changed from v2.0:
 - today's candles: from Dhan, in memory, never saved - intraday-data-loader stays
   the only candle_5min writer. Earlier sessions still come from candle_5min;
 - the key levels: the INDEX's PDH/PDL/ORH/ORL, priced on the future (RULES v2.1);
-- alerts: the day_trend rule at the key levels, sent once (claim, send, mark).
-  ALERTS_ENABLED unset = SHADOW: alerts are decided and logged "WOULD SEND",
-  nothing is sent and no mark is written.
+- alerts: the day_trend rule at the key levels, handed over once (claim, invoke,
+  mark). ALERTS_ENABLED unset = SHADOW: alerts are decided and logged
+  "WOULD DISPATCH", nothing is handed over and no mark is written.
 
 STATELESS. Every run re-derives the whole session from closed bars and upserts
 all of it, so a re-run reproduces the same rows and a missed run is filled by
-the next. The sent marks are the only state, and the upsert never touches them.
+the next. The manager_sent_at mark is the only state, and the upsert never
+touches it.
 
 Its retries are safe: the upsert is idempotent, and a mark set by a successful
-send stops a resend. A failed send rolls back its claim and raises, so Lambda's
-retry sends it again.
+hand-off stops a second one. A failed invoke rolls back its claim and raises, so
+Lambda's retry hands it over again.
 
 Definitions: v2-pattern-definitions.md. Reads/writes only Neon project
 "AI Trader APP" (nameless-mountain-15353651), database Algo, schema algo.
@@ -41,9 +49,8 @@ Modules:
     inputs.py     one session's inputs - shared with the replay
     structure.py  the *where*: 15-min bars, swings, levels
     patterns.py   the *when*: candles, families, volume
-    alerts.py     which events are alerts, and their text
-    notify.py     Telegram
-    dispatch.py   strategy-manager
+    alerts.py     which events are alerts
+    dispatch.py   the manager hand-off
 """
 
 import logging
@@ -55,7 +62,6 @@ import alerts
 import db
 import dispatch
 import inputs
-import notify
 import patterns as pt
 import structure as st
 from config import (
@@ -171,7 +177,6 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         fifteen = db.read_latest_fifteen(conn, security_id, instrument_type, day_start, closed_by)
         day_trend = (fifteen or {}).get("day_trend") or "none"
         alert_events = [e for e in fresh if alerts.passes(e, day_trend)]
-        bar_oi = db.read_bar_oi(conn, security_id, instrument_type, day_start, closed_by) if alert_events else {}
         daily = db.read_daily(conn, security_id, instrument_type, day_start) if alert_events else None
         row_by_key = {(r["trigger_ts"], r["family"], r["subtype"], r["direction"]): r for r in rows}
 
@@ -182,17 +187,16 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
                 e["level"], e["level_price"], e["distance_pts"], _clock(e["trigger_ts"]),
                 ",".join(e["candles"]) or "-", e["chart_pattern"] or "", e["vol_z"], e["rvol_tod"])
 
-        sent_telegram = sent_manager = 0
+        sent_manager = 0
         for e in alert_events:
-            text = alerts.message(e, stamp, _clock(e["trigger_ts"]), day_trend,
-                                  bar_oi.get(int(e["trigger_ts"])), fifteen)
             row = row_by_key[(int(e["trigger_ts"]), e["family"], e["subtype"] or "none", e["direction"])]
             if not ALERTS_ENABLED:
-                logger.info("WOULD SEND (shadow): %s", text.replace("\n", " | "))
+                logger.info("WOULD DISPATCH (shadow): %s %s at %s, candle %s",
+                            e["family"], e["direction"], e["level"], _clock(e["trigger_ts"]))
                 continue
-            if db.claim_and_mark(conn, row, "telegram_sent_at", lambda: notify.send_telegram(text), now):
-                sent_telegram += 1
             if not STRATEGY_MANAGER_FUNCTION_NAME:
+                logger.info("tick %s: STRATEGY_MANAGER_FUNCTION_NAME unset - %s %s not dispatched",
+                            stamp, e["family"], e["direction"])
                 continue
             if fifteen is None:
                 logger.info("tick %s: no 15-min row yet today - %s %s not dispatched (nothing to route on)",
@@ -225,10 +229,10 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
             pass
 
     logger.info(
-        "tick %s: %d fresh, %d alerts (%s, day trend %s), %d sent to Telegram, %d to the manager; "
+        "tick %s: %d fresh, %d alerts (%s, day trend %s), %d to the manager; "
         "%d in session, %d rows upserted (%s, future %s, %d bars, %d Dhan calls), tick handed to the manager: %s",
         stamp, len(fresh), len(alert_events), "LIVE" if ALERTS_ENABLED else "shadow", day_trend,
-        sent_telegram, sent_manager, len(events), written, pt.RULES_VERSION, contract,
+        sent_manager, len(events), written, pt.RULES_VERSION, contract,
         len(session["session_bars"]), client.calls, tick_handoff)
     return {
         "status": "success",
@@ -238,7 +242,6 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
         "day_trend": day_trend,
         "fresh": len(fresh),
         "alerts": len(alert_events),
-        "sent_telegram": sent_telegram,
         "sent_manager": sent_manager,
         "tick_handoff": tick_handoff,
         "events_in_session": len(events),

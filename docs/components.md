@@ -18,7 +18,7 @@
 | `intraday-market-sentiment` | Lambda function | invoked by the loader, 25×/day — **measures** | **built, running** | [README](../intraday-market-sentiment/README.md) |
 | `market-classifier` (function) | Lambda function | invoked by sentiment, 25×/day — **judges** | **built, running** | [README](../market-classifier/README.md) |
 | `pattern-detector` | Lambda function | invoked by the classifier, ≤25×/day — the turn rule, **log-only since 2026-11-09 16:04** | **built, running** | [README](../pattern-detector/README.md) |
-| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns (rules v2.2 since 2026-11-19) → `pattern_events`, alerts to Telegram and on to the strategy plane once each; since 2026-11-14 also hands **every** tick on — to strategy-manager until 2026-11-23 17:22, to `risk-manager` since | **built, running** (v2.1 sending since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45) | [README](../pattern-recorder/README.md) |
+| `pattern-recorder` | Lambda function | invoked by `intraday-fno-poller` as its last step, 71×/day — v2.1 patterns (rules v2.2 since 2026-11-19) → `pattern_events`, alerts on to the strategy plane once each (to Telegram as well until 2026-11-23 23:33, when that code was removed); since 2026-11-14 also hands **every** tick on — to strategy-manager until 2026-11-23 17:22, to `risk-manager` since | **built, running** (v2.1 live since 2026-11-09 16:04; v2.0 from 2026-11-06 09:45; no Telegram since 2026-11-23 23:33) | [README](../pattern-recorder/README.md) |
 | `risk-manager` | Lambda function | on each v2.1 alert and every 5-min tick, invoked by `pattern-recorder` — the kill switch, the hard rules (15:00, the 15:15 time exit), the limits; hands strategy-manager the payload + `run` | **built, running** (P2b, live 2026-11-23 17:22 IST, `KsSFZbsj…`; first session 2026-11-25) | [README](../risk-manager/README.md) |
 | `strategy-manager` | Lambda function | on each v2.1 alert, invoked by `risk-manager` since 2026-11-23 (context v4: each playbook gets the risk manager's mode) — a pure router: `day_trend` up/down → the trend playbook, `none` → nothing (registry removed with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` | **built, running** | [README](../strategy-manager/README.md) |
 | `strategy-range-liquidity-sweep` | Lambda function | on **every 5-min tick**, via the manager's `TICK_PLAYBOOKS` (since 2026-11-14; before that on a no-trend `sideways\|range-bound` alert) — one rule set since 2026-11-19, trade follow-up (since 2026-11-22: 2 of 3 lots booked at T1, the 15-min range midpoint; the last lot to T2), alert register → `playbook_alerts`; trades recorded through `order-manager` since P2a (2026-11-22), messages through it since P2b (2026-11-23) | **built, running** (sending since 2026-11-14 18:25; register on since 22:01; first live session 2026-11-16) | [README](../strategy-range-liquidity-sweep/README.md) |
@@ -49,8 +49,8 @@ there is a second, independent intraday trio, `intraday-fno-poller-open/
 -session/-close` — every five minutes, 09:36 to 15:31, one minute past each
 mark except 15:26 (it would re-stamp the 15:25 bar), 71 runs a day. It is
 chained from nothing, and since 2026-11-09 it hands each committed tick to
-`pattern-recorder`, which sends the v2.1 alerts and, through `risk-manager` since
-2026-11-23, invokes `strategy-manager`;
+`pattern-recorder`, which hands the v2.1 alerts — through `risk-manager` since
+2026-11-23 — to `strategy-manager` (they went to Telegram too until 2026-11-23);
 see [intraday-fno-poller](../intraday-fno-poller/README.md). The loader
 invokes `intraday-market-sentiment`, which invokes
 `strategy-manager`, which invokes the playbooks — each step's input is the
@@ -163,8 +163,8 @@ its last 30 minutes against. Seven Dhan calls at 09:35 (27.5 s on 2026-11-23).
 
 A second schedule at 15:45 (since 2026-11-23) runs it with `{"brief": "evening"}`:
 the **evening brief** — the close against PDC, VIX, the levels filled today, the
-option chain, the day's trend, the alerts and the paper trades from
-`position_master`, tomorrow's levels. That run only reads (three Dhan calls) and
+option chain, the day's trend, the paper trades from `position_master`, tomorrow's
+levels (its ALERTS line went with the raw alerts, 2026-11-23). That run only reads (three Dhan calls) and
 writes nothing. Both briefs are always sent: a missing input becomes a marked line,
 logged at ERROR, never raised (a raise would make the retries re-send the brief).
 

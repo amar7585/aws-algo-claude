@@ -23,8 +23,8 @@ deterministic to read.
 | [intraday-fno-poller](intraday-fno-poller/README.md) | **running** (live since 2026-10-19) — stores the 5-minute F&O reading (futures price/OI/volume, per-bar OI change, both option chains, ATM ±2 legs) → `fno_5m_snapshot` / `fno_5m_leg`. Own cron, 71×/day. Since 2026-11-09 it hands each committed tick to `pattern-recorder` (unset = off) ([plan](docs/phase-1-fno-5m-poller-plan.md)) |
 | [intraday-market-sentiment](intraday-market-sentiment/README.md) | **deployed** — **measures** basis/OI, VIX, two option chains and SMA/RSI → `intraday_fno_data`. Invoked by the loader, 25×/day |
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/buildup/day_trend on `intraday_sentiments`, invokes the detector |
-| [pattern-detector](pattern-detector/README.md) | **deployed, log-only since 2026-11-09 16:04** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm). It still decides and logs its alerts, but sends no Telegram and invokes no manager |
-| [pattern-recorder](pattern-recorder/README.md) | **v2.1 sending since 2026-11-09 16:04, rules v2.2 since 2026-11-19 18:07** (v2.0 recorded from 2026-11-06) — pattern-detector v2: candle patterns at levels (index PDH/PDL and opening range, 15-min swings, option walls) on the future → `pattern_events`. On each 5-min poller tick; key-level alerts filtered by the classifier's `day_trend` go to Telegram and on to the strategy plane, once each. Since 2026-11-14 it also hands **every** tick on (`TICK_HANDOFF_ENABLED=on`). Both went to strategy-manager until 2026-11-23 17:22; since then they go to **risk-manager** |
+| [pattern-detector](pattern-detector/README.md) | **deployed, log-only since 2026-11-09 16:04** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm). It still decides and logs its alerts, but sends no Telegram and invokes no manager; its Telegram code was removed on 2026-11-23 |
+| [pattern-recorder](pattern-recorder/README.md) | **v2.1 live since 2026-11-09 16:04, rules v2.2 since 2026-11-19 18:07, no Telegram since 2026-11-23 23:33** (v2.0 recorded from 2026-11-06) — pattern-detector v2: candle patterns at levels (index PDH/PDL and opening range, 15-min swings, option walls) on the future → `pattern_events`. On each 5-min poller tick; key-level alerts filtered by the classifier's `day_trend` go on to the strategy plane, once each. They also went to Telegram from 2026-11-09 to 2026-11-23; that send, and its `telegram_sent_at` column, are removed — the phone gets the briefs and the trade messages, not the raw alerts. Since 2026-11-14 it also hands **every** tick on (`TICK_HANDOFF_ENABLED=on`). Both went to strategy-manager until 2026-11-23 17:22; since then they go to **risk-manager** |
 | [risk-manager](risk-manager/README.md) | **live since 2026-11-23 17:22 IST** (P2b; first session Wed 2026-11-25) — **the one risk manager**, in front of strategy-manager on every alert and tick. It reads `risk_control` (the kill switch, which resets each morning; the O1 limits since P3, 2026-11-23 18:42 IST: max open 4, 8 trades a day, daily loss 500 point-lots) and today's `position_master`. Kill switch on: it closes every open position through order-manager and no playbook runs. Otherwise it sets each playbook's mode — `entry_exit`, `exit_only` (after 15:00, or a limit), `force_exit` (the 15:15 time exit at the 15:10 close, or the daily-loss exit) — and hands the payload on with it as `run`. Writes no table |
 | [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**, behind risk-manager since 2026-11-23 (context v4: it refuses a payload without `run`, and each playbook gets its own mode), on each v2.1 alert: `day_trend` up/down → `TREND_PLAYBOOKS` (`strategy-trend-pullback`); `none` → nothing (the regime\|bias registry went with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` (`strategy-range-liquidity-sweep`) whatever the regime |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **sending since 2026-11-14 18:25** (first live session 2026-11-16) — the 15-min opening-range sweep playbook, run on **every 5-min tick**: re-derives the session (one rule set since 2026-11-19 — the old `current` set was removed), follows each trade after entry (exit, watch, re-entry; out at 15:15 before the closing auction since 2026-11-20 22:48; since 2026-11-22 15:44, 3 lots with 2 booked at T1, the 15-min range midpoint, and the last lot to T2 on an unmoved stop), takes entries only when price is **within the levels** (PDH/PDL, 15-min high/low) and volatility is not high (regime not `volatile-expansion`) — no bias, no trend test (since 2026-11-15 09:33) — and records its **alert register** to `playbook_alerts` (since 2026-11-14 22:01). Since P2a (2026-11-22 22:16) every entered trade is recorded in `position_master` through order-manager; since P2b (2026-11-23) its messages go through order-manager too, and after 15:00 / at 15:15 it acts on the risk manager's mode |
@@ -185,8 +185,9 @@ Two planes on different clocks, deliberately uncoupled:
   over the previous 20 sessions (2026-11-12).
 - **Each weekday at 15:45** (since 2026-11-23) — the same function, on a second
   schedule, sends the evening brief: the close, VIX, the levels filled, the
-  option chain, the day's trend, the alerts and the paper trades, tomorrow's
-  levels. It only reads. Both schedules are in `auth-dhan-broker`'s holiday gate.
+  option chain, the day's trend, the paper trades, tomorrow's levels (its
+  ALERTS line went with the raw alerts, 2026-11-23). It only reads. Both
+  schedules are in `auth-dhan-broker`'s holiday gate.
 - **Every 15 minutes from 09:45 to 15:30, plus a 15:35 closing sweep** —
   `intraday-data-loader` fills `candle_5min`, `candle_15min` and `candle_1hr`
   for NIFTY and the current-month future. 25 invocations a trading day, and
@@ -205,14 +206,17 @@ Two planes on different clocks, deliberately uncoupled:
 - **Then `pattern-detector`** applies the two-clock turn rule (an abnormal-volume
   reversal on the future, confirmed a tick later by futures buildup or option
   OI). **Since 2026-11-09 16:04 it is log-only:** it decides and logs, but sends
-  no Telegram and invokes no manager.
+  no Telegram and invokes no manager. Its Telegram code was removed on
+  2026-11-23.
 - **Every 5 minutes, on its own clock** — `intraday-fno-poller` writes the F&O
   reading and, as its last step, hands the tick to `pattern-recorder`
   (asynchronously, unset = off). v2.1 re-derives the session's pattern events
   and upserts them to `pattern_events`. Each new event at a key level (on a trend
   day also at the call / put wall, since C1 2026-11-23) that the
-  `day_trend` rule allows goes to Telegram and — through `risk-manager` since
-  2026-11-23 — to `strategy-manager`, once each.
+  `day_trend` rule allows goes — through `risk-manager` since 2026-11-23 — to
+  `strategy-manager`, once. Until 2026-11-23 each also went to Telegram; that
+  send is removed (2026-11-23 23:33), so what reaches the phone is the two
+  briefs, the playbooks' trade messages and the failure / holiday notices.
   The manager routes on the alert's `day_trend` first: up or down goes to
   `strategy-trend-pullback`, the trend-day hold playbook (sending to Telegram
   since 2026-11-11). On `none` it routes nothing: the range playbook, the

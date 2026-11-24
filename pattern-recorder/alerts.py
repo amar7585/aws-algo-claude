@@ -1,5 +1,9 @@
 """
-pattern-recorder - which v2 events are ALERTS, and the alert's text. Pure.
+pattern-recorder - which v2 events are ALERTS. Pure.
+
+An alert is handed to the manager (the playbooks); it is not sent to Telegram.
+The alert's Telegram text was removed 2026-11-23 with the raw alerts (Amar:
+"remove completely those messages from code ... stick with the new flow").
 
 THE RULE (plan v3, Amar 2026-11-07/08/09), on the classifier's day_trend:
   up    -> every UP pattern
@@ -18,8 +22,8 @@ sessions (replay/out/miss-2026-11-23/): +2,213 point-lots over the key set,
 profit factor 1.87 -> 2.22, no larger drawdown; evidence = 35 option sessions.
 RULES_VERSION stays v2.2: detection is unchanged, only which events alert.
 
-Volume and OI are SHOWN in the message, never a gate: the replays found no gate
-that kept the logged trades (v2_confirmation.md).
+Volume and OI are never a gate: the replays found no gate that kept the logged
+trades (v2_confirmation.md). They are stored on the event row.
 
 Replayed over 90 sessions (replay/out/v21_replay.md): 7.5 alerts a day at the
 KEY levels (2.0 from the trend branch, 5.5 from the no-trend one); 3 of the 9
@@ -36,8 +40,6 @@ KEY_LEVELS = frozenset(st.INDEX_TWINS)
 TREND_LEVELS = KEY_LEVELS | frozenset((st.CALL_WALL, st.PUT_WALL))   # C1, 2026-11-23: the trend branch only
 TREND_STATES = ("up", "down", "none")
 
-FAMILY_NAMES = {"R1": "REJECTION", "R2": "SWEEP", "C1": "BREAK", "C2": "RETEST"}
-
 
 def at_levels(event, levels):
     """The event's own level, or one within NEAR of it (other_levels), is in `levels`."""
@@ -53,43 +55,3 @@ def passes(event, day_trend):
     if day_trend in ("up", "down"):
         return event["direction"] == day_trend and at_levels(event, TREND_LEVELS)
     return at_key(event) and event["family"] in ("R1", "R2")
-
-
-def _num(value, fmt):
-    return "-" if value is None else format(float(value), fmt)
-
-
-def message(event, stamp, clock, day_trend, bar_oi_change, fifteen):
-    """
-    The Telegram text. ASCII only, one alert per message.
-
-    bar_oi_change  the future's OI change on the trigger bar (the poller's
-                   fut_bar_oi_change for that bar), or None
-    fifteen        the latest 15-min row (merged fno + sentiment) or None
-    """
-    name = FAMILY_NAMES[event["family"]]
-    sub = f"/{event['subtype']}" if event["subtype"] else ""
-    level = event["level"]
-    if event["level_strike"] is not None and level in KEY_LEVELS:
-        where = f"{level} {_num(event['level_strike'], '.2f')} (fut {_num(event['level_price'], '.1f')})"
-    elif event["level_strike"] is not None:
-        where = f"{level} strike {_num(event['level_strike'], '.0f')} (fut {_num(event['level_price'], '.1f')})"
-    else:
-        where = f"{level} fut {_num(event['level_price'], '.1f')}"
-    near = [x for x in event["other_levels"] if x in TREND_LEVELS]   # C1: a wall near is named too
-    if near:
-        where += " near " + ",".join(near)
-    lines = [
-        f"V2 {name} {event['direction'].upper()} - {stamp}",
-        f"{event['family']}{sub} at {where}, candle {clock}, close {_num(event['trigger_close'], '.1f')}",
-        f"day trend {day_trend or 'none'} | candles {','.join(event['candles']) or '-'}"
-        + (f" | {event['chart_pattern']}" if event["chart_pattern"] else ""),
-        f"vol z {_num(event['vol_z'], '.2f')}, rvol {_num(event['rvol_tod'], '.2f')}x"
-        f" | fut bar dOI {'-' if bar_oi_change is None else f'{int(bar_oi_change):+d}'}",
-    ]
-    if fifteen:
-        lines.append(
-            f"15m: buildup {fifteen.get('buildup') or '-'}, regime {fifteen.get('regime') or '-'}, "
-            f"PE OI {_num(fifteen.get('near_pe_oi_change_pct'), '+.1f')}%,"
-            f" CE OI {_num(fifteen.get('near_ce_oi_change_pct'), '+.1f')}%")
-    return "\n".join(lines)

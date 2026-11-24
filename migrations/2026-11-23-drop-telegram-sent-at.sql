@@ -1,0 +1,32 @@
+-- 2026-11-23 - drop algo.pattern_events.telegram_sent_at (the raw Telegram alerts are gone).
+--
+-- Target: Neon project "AI Trader APP" (nameless-mountain-15353651), database Algo,
+--         schema algo. CONFIRM THE PROJECT ID BEFORE RUNNING - a second Neon project
+--         carries an `algo` schema with the same table names and incompatible columns.
+--
+-- Amar 2026-11-23: "remove completely those messages from code we dont need that
+-- anymore stick with the new flow", then, asked whether to keep the column or drop it:
+-- "Drop it". The raw pattern alerts no longer go to Telegram. pattern-recorder sent them
+-- and was this column's only writer (2026-11-09 .. 2026-11-23). Its Telegram code, and
+-- the evening brief's ALERTS line (daily-market-sentiment, the only other reader), were
+-- removed in the same change.
+--
+-- manager_sent_at stays: it is the send-once mark of the hand-off to the playbooks.
+--
+-- BACKED UP FIRST: every row's key + telegram_sent_at (the non-NULL ones) is in
+-- pattern-recorder/replay/out/backup-2026-11-23/telegram_sent_at.json (git-ignored,
+-- local). Nothing else depends on the column: no view, index or constraint names it
+-- (checked in pg_depend / pg_views before the drop).
+--
+-- ORDER: run this AFTER both new zips are live. The old pattern-recorder claims the
+-- column on every alert, and the old evening brief selects it. Both run only in market
+-- hours (the recorder) or at 15:45 (the brief), so after the close nothing touches it.
+--
+-- APPLIED 2026-11-24 ~02:04 IST to nameless-mountain-15353651 / Algo (one transaction, lock_timeout 5s),
+-- after the three zips went live at 23:33 IST: 379 rows and 58 manager_sent_at marks kept, 37 -> 36
+-- columns. Backup md5 fa9b1115e093ded89acf261e1c78d117 == Postgres's md5 of the same JSON.
+--
+-- ROLLBACK (the column only; the values come back from the backup file if wanted):
+--   ALTER TABLE algo.pattern_events ADD COLUMN telegram_sent_at bigint;
+
+ALTER TABLE algo.pattern_events DROP COLUMN telegram_sent_at;

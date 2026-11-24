@@ -73,7 +73,6 @@ from db import (
     count_day_fno_rows,
     latest_candle_ts,
     load_daily_candles,
-    read_day_alerts,
     read_day_bars,
     read_day_positions,
     read_day_sentiments,
@@ -270,7 +269,6 @@ def evening_brief(conn, client, nifty, vix, today):
         "snapshots": _eguard(read_day_snapshots, conn, nifty, day_start),
         "fno15_rows": _eguard(count_day_fno_rows, conn, nifty, day_start),
         "chain": _eguard(fetch_chain, client, nifty, today, fallback),
-        "alerts": _eguard(read_day_alerts, conn, nifty, day_start),
         "positions": _eguard(read_day_positions, conn, day_start),
         "adr_sessions": ADR_SESSIONS,
     }

@@ -41,9 +41,9 @@ Two planes run on different clocks and are deliberately **not** coupled:
 | Intraday candles | every 15 min, 09:45–15:35 | EventBridge Scheduler cron — **the only intraday one** | **built** |
 | Intraday market measurement | on each loader run, 25×/day | invoke from `intraday-data-loader` | **built** |
 | Intraday classification | on each snapshot, 25×/day | invoke from `intraday-market-sentiment` | **built** |
-| Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager) |
+| Turn detection | on each snapshot, 25×/day | invoke from `market-classifier` | **built** (log-only since 2026-11-09 16:04: no Telegram, no manager; the Telegram code removed 2026-11-23) |
 | F&O reading, 5-min | every 5 min, 09:36–15:31, 71×/day | EventBridge Scheduler cron (its own trio) | **built** |
-| Pattern recording + alerts (v2.1; rules v2.2 since 2026-11-19) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 sending since 2026-11-09 16:04; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
+| Pattern recording + alerts (v2.1; rules v2.2 since 2026-11-19) | on each 5-min tick, as the poller's last step | invoke from `intraday-fno-poller` (unset = off) | **built** (v2.1 live since 2026-11-09 16:04 — its alerts to Telegram too until 2026-11-23 23:33, since then only on to the strategy plane; v2.0 recorded from 2026-11-06 on the detector's hand-off) |
 | Risk decision (P2b) | on each v2.1 alert and every 5-min tick, before any routing | invoke from `pattern-recorder` (since 2026-11-23 17:22) | **built, live** — the kill switch (resets each morning), the hard rules (no new trade after 15:00, the 15:15 time exit at the 15:10 close), the limits (O1 since P3, 2026-11-23 18:42: max open 4 / 8 trades a day / daily loss 500 point-lots); hands strategy-manager the payload + `run` |
 | Strategy routing | on each v2.1 alert, once — and on every 5-min tick (since 2026-11-14) | invoke from `risk-manager` since 2026-11-23 (from `pattern-recorder` directly 2026-11-09 → 11-23; unset = off) | **built** (from `pattern-detector` on a confirmed turn until 2026-11-09). An alert routes on its `day_trend`: up/down → the trend playbook, `none` → nothing (the `regime\|bias` registry it went to from 2026-11-09 22:37 was removed with bias, 2026-11-19). Every tick → `TICK_PLAYBOOKS` (the sweep) |
 | Trend pullback playbook | on an alert whose `day_trend` is up or down | invoke from `strategy-manager` (`TREND_PLAYBOOKS`) | **built** (sending since 2026-11-11 16:56; shadow from 2026-11-09 22:33). Since P2b (2026-11-23) also on every tick while it holds a position: its exit mode, the decided trail |
@@ -86,7 +86,7 @@ now covers three parameters:
 | Parameter | Written by | Read by |
 |---|---|---|
 | `/algo/dhan/token` | `auth-dhan-broker` | `daily-market-sentiment`, `intraday-data-loader`, `intraday-market-sentiment`, `intraday-fno-poller`, `pattern-recorder` |
-| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier`, `auth-dhan-broker`, `pattern-detector`, `pattern-recorder` |
+| `/algo/telegram/brief` | by hand | `daily-market-sentiment`, `error-notifier`, `auth-dhan-broker`, `order-manager` (the trade messages, since P2b). `pattern-detector` and `pattern-recorder` lost their grant on 2026-11-24 with their Telegram code |
 | `/algo/neon/connection` | by hand | every function that touches Neon |
 
 The last one replaced a `NEON_CONNECTION_STRING` environment variable
@@ -142,9 +142,12 @@ the cost of a wake-up on the first connection of each run.
 rules recognise to `pattern_events`; since 2026-11-14 `strategy-range-liquidity-sweep`
 records its alert register to `playbook_alerts`; since 2026-11-22 `order-manager` writes
 `position_master`, and nothing else does. Neither ever writes the hand-logged
-`session_observations`. Since v2.1 (live 2026-11-09 16:04) it also sends the alerts:
-each event that passes the alert rule goes to Telegram and (through risk-manager since
-2026-11-23) to strategy-manager, once each. The `telegram_sent_at` / `manager_sent_at` marks on its rows record the sends.
+`session_observations`. Since v2.1 (live 2026-11-09 16:04) `pattern-recorder` also hands
+the alerts on: each event that passes the alert rule goes (through risk-manager since
+2026-11-23) to strategy-manager, once, and the `manager_sent_at` mark on its row records it.
+Until 2026-11-23 each also went to Telegram, marked in `telegram_sent_at`. Amar retired the
+raw alerts on 2026-11-23: the send was removed (live 23:33 IST) and the column dropped
+(2026-11-24 ~02:04 IST, after a backup; [migration](../migrations/2026-11-23-drop-telegram-sent-at.sql)).
 
 **Otherwise the strategy plane added no tables.** `strategy-manager` is a pure router: it
 opens no connection at all. `strategy-range-liquidity-sweep` runs on every 5-min

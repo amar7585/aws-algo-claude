@@ -13,10 +13,27 @@ recent 5-minute bars and runs two branches on every snapshot:
   abnormal volume, and the retest-hold entry that follows. Alert-only: it never
   invokes the manager.
 
-Both branches decide a **Telegram** alert on an actionable, fresh event. **Since
-2026-11-09 16:04 it is log-only:** `TELEGRAM_ENABLED` and `STRATEGY_MANAGER_FUNCTION_NAME`
-are unset, so it sends nothing and invokes nothing. `pattern-recorder` v2.1 sends the
-alerts and triggers strategy-manager now.
+**Log-only.** Since 2026-11-09 16:04 it has sent nothing and invoked nothing
+(`TELEGRAM_ENABLED` and `STRATEGY_MANAGER_FUNCTION_NAME` unset). `pattern-recorder` v2.1
+feeds the playbooks now. **On 2026-11-23 the Telegram code itself was removed** (the
+TURN / LEVEL BREAK / RETEST ENTRY texts, `notify.py`, `TELEGRAM_ENABLED`,
+`TELEGRAM_PARAMETER_NAME`, `HTTP_TIMEOUT_SECONDS`), with the raw pattern alerts everywhere.
+Amar: *"remove completely those messages from code we dont need that anymore stick with the
+new flow"*. Every detection is still logged.
+
+**Deployed 2026-11-23 23:33:17 IST** (Amar: "deploy now"):
+- CodeSha256 `Rhz5ZyBo0fZhjL5OsiEPJCWtKSK+HX0I7zfF1KZyBtg=`, 6 modules. `handler` and `config` changed,
+  `notify` removed, the other 4 byte-equal. The function still has no environment variables.
+- **Rollback: version 1** = `M0EHlDzX…` (the zip at commit `2fa58cf`). It needs `/algo/telegram/brief` back
+  in the role only if `TELEGRAM_ENABLED=on` is set with it.
+- **Replayed before deploy, old against new,** on 1,104 stored 15-min rows (24 sessions, 10-19..11-23):
+  - every return value and every invoke is identical, as configured live (manager off) and with the
+    manager on (37 turns, 37 invokes, 65 continuation alerts);
+  - with Telegram on, the old code sent 88 messages; the new one sends none.
+- Smoke on the 11-23 15:15 payload: 200, 2.9 s, a turn up logged, nothing dispatched or sent.
+- **IAM:** `/algo/telegram/brief` removed from `algo-ssm-read` on 2026-11-24 ~02:06 IST. Its document is
+  now in [iam/](iam/pattern-detector-role.algo-ssm-read.json). Simulated: `/algo/neon/connection` is
+  allowed, `/algo/telegram/brief` is denied.
 
 Until 2026-11-09 13:50, as its **last** step, it handed the run's payload to
 [`pattern-recorder`](../pattern-recorder/README.md) (v2.0), asynchronously. That hand-off
@@ -26,12 +43,12 @@ is **off** now (`PATTERN_RECORDER_FUNCTION_NAME` unset): v2.1 runs on intraday-f
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 7 modules (`recorder.py` added 2026-11-06) |
+| Runtime | Python 3.14, zip package, 6 modules (`recorder.py` added 2026-11-06; `notify.py` removed 2026-11-23) |
 | Layers | `neon-db-driver` + `neon-access` (no classifier layer — it does not score) |
 | Schedule | **none** — invoked by `market-classifier`, once per snapshot (≤25×/day) |
 | Reads | `algo.candle_5min` (the future's **and** the index's **closed** bars) and the prior snapshot's PCR and run clock (`captured_at`) from `algo.intraday_fno_data`; the fno + sentiment rows and the daily read arrive in the payload |
-| Writes | **no table** — its output is its log and Telegram, until the rule is proven |
-| Secrets | `/algo/neon/connection` (to read candles), `/algo/telegram/brief` (to alert) |
+| Writes | **no table** — its output is its log, until the rule is proven (no Telegram since 2026-11-09; the code removed 2026-11-23) |
+| Secrets | `/algo/neon/connection` (to read candles) |
 
 ## Every threshold here is provisional
 
@@ -196,9 +213,11 @@ The manager dispatch for a confirmed reversal is **not** freshness-gated.
 snapshot after the one that first read it closed) is dispatched, but not
 alerted.
 
-Delivery is fail-loud: a refused Telegram call raises, so Lambda records the
-error and `error-notifier` reports it. It uses the same `/algo/telegram/brief`
-parameter as the daily brief and `error-notifier`.
+**History - the code below was REMOVED 2026-11-23** (no Telegram path is left; the
+freshness rule above now only shapes the continuation branch's log lines). Until then,
+delivery was fail-loud: a refused Telegram call raised, so Lambda recorded the error and
+`error-notifier` reported it, on the same `/algo/telegram/brief` parameter as the daily
+brief.
 
 **The Telegram switch (plan v3, deployed 2026-11-09 13:50:10 IST, CodeSha256 `CBczFaGk23EJsOJYC4M/j+guN52ID11U0nmq/CaDu8E=`; previous `GgRBzfXX…`; `TELEGRAM_ENABLED=on` set at 13:48 before it, and `PATTERN_RECORDER_FUNCTION_NAME` unset with it - v2.1 now runs on the poller).** Sending needs `TELEGRAM_ENABLED=on`.
 **Unset means off:** the alerts are still decided and logged ("telegram off - not
@@ -233,7 +252,7 @@ and future-dependent.
 
 ## The hand-off to pattern-recorder
 
-`recorder.py`. After the turn, the continuation alerts and Telegram are all done, the
+`recorder.py`. After the turn and the continuation alerts are logged, the
 detector forwards the payload it received to `pattern-recorder`, with `Event`.
 - **Why a separate function, and why last:** this function has no `EventInvokeConfig`,
   so Lambda retries a failed invocation twice.
@@ -259,15 +278,15 @@ set, a turn is detected and logged and nothing is dispatched.
 ## IAM
 
 Its own execution role (`pattern-detector-role`), not a borrowed one:
-`ssm:GetParameter` on `/algo/neon/connection` **and `/algo/telegram/brief`**
-(+ `kms:Decrypt` via SSM) and `logs` on **its own** log group only — it invokes
+`ssm:GetParameter` on `/algo/neon/connection` (+ `kms:Decrypt` via SSM; the
+`/algo/telegram/brief` grant was removed 2026-11-24 with the Telegram code -
+[iam/pattern-detector-role.algo-ssm-read.json](iam/pattern-detector-role.algo-ssm-read.json))
+and `logs` on **its own** log group only — it invokes
 nothing since 2026-11-19: v1 is log-only. Its `invoke-pattern-recorder` policy (the v2.0
 hand-off) was removed 2026-11-19 17:42 IST — the document is kept in
 [pattern-recorder/iam/](../pattern-recorder/iam/README.md) — and its
 `invoke-strategy-manager` policy 20:38 IST, kept in
-[iam/](iam/pattern-detector-role.invoke-strategy-manager.json). A role
-missing the Telegram parameter does not fail at import: it raises on the first
-alert, after the detection has already run. See CLAUDE.md on the silent
+[iam/](iam/pattern-detector-role.invoke-strategy-manager.json). See CLAUDE.md on the silent
 borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 
 ## Configuration
@@ -285,6 +304,3 @@ borrowed-role trap. `error-notifier` is subscribed to this function's log group.
 | `FUT_BARS_LOOKBACK` | `40` | closed future 5-min bars read per run |
 | `FUTURES_INSTRUMENT_TYPE` | `FUTIDX` | the future's instrument_type in `candle_5min` |
 | `CONT_VOLUME_Z_MIN` | `2.0` | z on the future's break bar that counts as a spike (spikes only) — **provisional, n=1** |
-| `TELEGRAM_ENABLED` | *(unset)* | **unset = log-only**, no Telegram. Set to `on` to send. Set it before deploying the switch; unset it at the v2.1 cutover |
-| `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | `bot_token` + `chat_id`; shared with the daily brief and `error-notifier` |
-| `HTTP_TIMEOUT_SECONDS` | `8` | Telegram call timeout |

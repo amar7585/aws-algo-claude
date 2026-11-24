@@ -23,9 +23,10 @@ THE SECTIONS, in order:
                 fails): ATM, call wall with its OI, put wall with its OI, max pain,
                 PCR, on the current weekly expiry
   THE DAY'S READ  day_trend through the day's 15-min rows
-  ALERTS / TRADES the alerts sent; the day's paper positions (position_master,
-                since P2a: the sweep) with lot-points; trend trades are recorded
-                from P2b
+  TRADES        the day's paper positions (position_master, since P2a: the
+                sweep) with lot-points; trend trades are recorded from P2b. The
+                ALERTS count (raw pattern alerts sent to Telegram) was dropped
+                2026-11-23 with those alerts (Amar: "stick with the new flow")
   NEXT SESSION  PDH / PDL / PDC for tomorrow, and the next weekly expiry
   SYSTEM        what was stored today: 5-min candles, 15-min rows, 5-min snapshots
 ASCII only, like every message this repo sends.
@@ -41,8 +42,7 @@ THE INPUTS (a dict; any value may be an Exception - its section then reads
   snapshots              today's fno_5m_snapshot rows, oldest first
   fno15_rows             today's intraday_fno_data row count
   chain                  handler.fetch_chain(...) at the evening run, or an Exception
-  alerts                 today's pattern_events rows that were sent to Telegram
-  positions              today's algo.position_master rows
+  positions             today's algo.position_master rows
   adr_sessions           int (config)
 """
 
@@ -179,9 +179,7 @@ def section_read(x):
 
 
 def section_trades(x):
-    alerts = _need(x, "alerts")
     positions = _need(x, "positions")
-    routed = sum(1 for a in alerts if a.get("manager_sent_at"))
     parts, total = [], 0.0
     for p in sorted(positions, key=lambda p: int(p["entry_ts"])):
         lot = int(p["lot_size"])
@@ -190,8 +188,7 @@ def section_trades(x):
         state = p.get("exit_reason") if p.get("status") == "CLOSED" else p.get("status")
         parts.append(f"{SHORT.get(p['playbook'], p['playbook'])} {x['ist_hm'](p['entry_ts'])} {p['position_type']} "
                      f"{state} {lp:+.1f} lot-pts" + (" (T1 booked)" if p.get("t1_booked_ts") else ""))
-    return [f"ALERTS {len(alerts)} sent ({routed} to the playbooks)",
-            "  TRADES (paper): " + ("; ".join(parts) if parts else "none recorded")
+    return ["TRADES (paper): " + ("; ".join(parts) if parts else "none recorded")
             + (f" | day {total:+.1f} lot-pts" if parts else ""),
             "  [trend-playbook trades are recorded from P2b]"]
 
@@ -217,9 +214,9 @@ def section_system(x):
 
 
 SECTIONS = (("CLOSE", section_close), ("VIX", section_vix), ("LEVELS", section_levels), ("OPTION CHAIN", section_chain),
-            ("THE DAY'S READ", section_read), ("ALERTS / TRADES", section_trades), ("NEXT SESSION", section_next),
+            ("THE DAY'S READ", section_read), ("TRADES", section_trades), ("NEXT SESSION", section_next),
             ("SYSTEM", section_system))
-BLANK_AFTER = ("VIX", "LEVELS", "OPTION CHAIN", "ALERTS / TRADES")
+BLANK_AFTER = ("VIX", "LEVELS", "OPTION CHAIN", "TRADES")
 
 
 def build(inputs):

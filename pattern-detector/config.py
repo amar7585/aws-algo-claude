@@ -74,18 +74,11 @@ CONT_VOLUME_Z_MIN = float(os.environ.get("CONT_VOLUME_Z_MIN", "2.0"))  # spike z
 # tunable here. A pure continuation that never dips back has no reclaim and no
 # retest entry (the no-retest case, whose entry is deferred).
 
-# ---- Telegram alerting ------------------------------------------------------
-# The detector pushes an alert to Telegram on the actionable events - a
-# confirmed reversal turn, a fresh key-level break, and a retest-hold entry -
-# so a setup that "can produce a trade signal" reaches the phone, not only the
-# log. The same parameter the daily brief and error-notifier use.
-TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
-# UNSET MEANS OFF (plan v3, 2026-11-09): with no TELEGRAM_ENABLED the alerts are
-# decided and LOGGED but not sent - v1 is log-only once pattern-recorder v2.1
-# sends. Set it to "on" to send. Set it on the live function BEFORE deploying
-# this code, so the deploy changes nothing until the cutover removes it.
-TELEGRAM_ENABLED = os.environ.get("TELEGRAM_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
-HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
+# ---- no Telegram -------------------------------------------------------------
+# The detector's Telegram alerts (TURN / LEVEL BREAK / RETEST ENTRY, log-only
+# since 2026-11-09) and TELEGRAM_ENABLED / TELEGRAM_PARAMETER_NAME /
+# HTTP_TIMEOUT_SECONDS were removed 2026-11-23 with the raw pattern alerts. The
+# detections are logged; the phone gets the briefs and trade messages only.
 
 # --------------------------------------------------------------------------
 # The strategy-manager gate

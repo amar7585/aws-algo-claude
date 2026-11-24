@@ -1,25 +1,30 @@
 """V1 (v2.1): the REAL handler over every stored 5-min tick, against fakes. Offline.
 
-    python pattern-recorder/replay/handler_check.py [data_dir]     (default replay/data)
+    python pattern-recorder/replay/handler_check.py <data_dir>
+        (a pull with daily.json, e.g. replay/out/validation-2026-11-25/data_1123)
 
 Fakes: Dhan serves the stored 5-min candles of the tick's day up to the tick's
 forming bar; Neon is an in-memory copy of the pulled tables plus a
-pattern_events table with real upsert / claim / mark semantics; Telegram and
-the strategy-manager invoke are recorded. Historical 15-min rows predate the
-day_trend column, so each gets the value market-classifier/trend.py would have
-written at its captured_at - the same code the classifier runs.
+pattern_events table with real upsert / claim / mark semantics; the manager
+invoke is recorded. Historical 15-min rows predate the day_trend column, so each
+gets the value market-classifier/trend.py would have written at its captured_at -
+the same code the classifier runs.
+
+NO TELEGRAM since 2026-11-23: the recorder's Telegram path (notify.py,
+alerts.message, the telegram_sent_at claim) was removed with the raw alerts.
 
 Checks, per session with stored ticks:
   1  ROWS      after the day's last tick, the table equals the library's events
                for the whole day (inputs.Store over the same data), field by field
   2  FIRST     every row's first_seen_at is the first tick that could read its bar
-  3  ALERTS    Telegram got exactly the expected alerts, each once: an event is
-               judged on its first tick, against the latest 15-min row by then
-  4  MANAGER   strategy-manager got each alert once, except those before the
-               day's first 15-min row
-  5  RERUN     re-running the day's last tick sends nothing new
-  6  FAILURE   a send that fails on its first try leaves no mark and raises; the
-               re-run sends it once
+  3  ALERTS    exactly the expected alerts carry the manager_sent_at mark: an event
+               is judged on its first tick, against the latest 15-min row by then;
+               one before the day's first 15-min row is not handed over (no mark)
+  4  MANAGER   the manager got each of those alerts once
+  5  RERUN     re-running the day's last tick hands nothing over again
+  6  FAILURE   an invoke that fails on its first try leaves no mark and raises; the
+               re-run invokes it once
+and once: 0  NO TELEGRAM  no recorder module imports notify or names api.telegram.org
 """
 import collections
 import contextlib
@@ -35,7 +40,9 @@ import types
 
 HERE = pathlib.Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-DATA = pathlib.Path(sys.argv[1]) if len(sys.argv) > 1 else HERE / "data"
+if len(sys.argv) < 2:
+    sys.exit("usage: handler_check.py <data_dir>  (a pull with daily.json)")
+DATA = pathlib.Path(sys.argv[1])
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
 load = lambda n: json.load(open(DATA / f"{n}.json", encoding="utf-8"))  # noqa: E731
 FUT, IDX, FNO, SENT, FNO5, DAILY = (load(n) for n in ("fut_5m", "idx_5m", "fno", "sent", "fno5", "daily"))
@@ -170,10 +177,6 @@ class Cur:
         elif "SELECT captured_at FROM algo.fno_5m_snapshot" in sql:
             got = [r for r in FNO5_SORTED if int(r["snapshot_ts"]) < int(p[2])]
             self._rows = [(got[-1]["captured_at"],)] if got else []
-        elif "FROM algo.fno_5m_snapshot" in sql:
-            start, cap = int(p[2]), int(p[3])
-            self._rows = [(r["fut_bar_ts"], r["fut_bar_oi_change"]) for r in FNO5_SORTED
-                          if int(r["snapshot_ts"]) >= start and int(r["captured_at"]) <= cap]
         elif "FROM algo.daily_market_sentiment" in sql:
             got = [r for r in DAILY_ROWS if int(r["trade_date"]) < int(p[2])]
             self._set(list(db.DAILY_COLUMNS), got[-1:])
@@ -226,21 +229,30 @@ class FakeDhan:
 
 
 handler.DhanClient = FakeDhan
-SENT_MSGS, MANAGER = [], []
+MANAGER = []
 FAIL_NEXT = {"on": False}
 
 
-def fake_send(text):
+def fake_invoke(payload):
     if FAIL_NEXT["on"]:
         FAIL_NEXT["on"] = False
-        raise RuntimeError("injected telegram failure")
-    SENT_MSGS.append(text)
+        raise RuntimeError("injected invoke failure")
+    MANAGER.append(payload)
 
 
-handler.notify.send_telegram = fake_send
-handler.dispatch.invoke_manager = lambda payload: MANAGER.append(payload)  # noqa: E731
+handler.dispatch.invoke_manager = fake_invoke
 handler.ALERTS_ENABLED = True
-handler.STRATEGY_MANAGER_FUNCTION_NAME = "strategy-manager"
+handler.STRATEGY_MANAGER_FUNCTION_NAME = "risk-manager"
+handler.TICK_HANDOFF_ENABLED = False   # alert hand-offs only; the every-tick one has no mark to check
+
+# 0 NO TELEGRAM (2026-11-23): nothing in the deployed package can reach Telegram.
+CODE_DIR = REPO / "pattern-recorder"
+telegram_bad = [p.name for p in CODE_DIR.glob("*.py")
+                if p.name == "notify.py" or "api.telegram.org" in p.read_text(encoding="utf-8")
+                or re.search(r"^\s*(import notify|from notify )", p.read_text(encoding="utf-8"), re.M)]
+telegram_bad += ["db.SENT_MARKS"] if db.SENT_MARKS != ("manager_sent_at",) else []
+telegram_bad += ["alerts.message"] if hasattr(alerts, "message") else []
+print(f"0 NO TELEGRAM: {'ok' if not telegram_bad else 'FAIL ' + str(telegram_bad)}")
 
 
 def run(tick):
@@ -273,7 +285,6 @@ for day in sorted(ticks_by_day):
         print(f"{date}: SKIPPED - market-classifier/trend.py raises on this day's stored inputs")
         totals["skipped_days"] += 1
         continue
-    SENT_MSGS.clear()
     MANAGER.clear()
     for i, tick in enumerate(ticks):
         out = run(tick)
@@ -293,8 +304,9 @@ for day in sorted(ticks_by_day):
     caps = sorted(int(t["captured_at"]) for t in ticks)
     first_bad = [k for k, r in table.items()
                  if r["first_seen_at"] != next((c for c in caps if c >= r["trigger_ts"] + 300), None)]
-    # 3 + 4 ALERTS / MANAGER: expected from first sight
-    expect, expect_mgr = [], 0
+    # 3 + 4 ALERTS / MANAGER: expected from first sight; before the day's first 15-min row an
+    # alert has nothing to route on and is not handed over (until 2026-11-23 it went to Telegram)
+    expect, pre_row = [], 0
     for k, e in want.items():
         cap = next((c for c in caps if c >= e["trigger_ts"] + 300), None)
         if cap is None:
@@ -302,23 +314,26 @@ for day in sorted(ticks_by_day):
         rows15 = [r for r in SENT_SORTED if day_of(r["snapshot_ts"]) == day and int(r["captured_at"]) <= cap]
         trend = (rows15[-1]["day_trend"] if rows15 else None) or "none"
         if alerts.passes(e, trend):
-            expect.append(k)
-            expect_mgr += 1 if rows15 else 0
-    marks = [k for k, r in table.items() if r.get("telegram_sent_at") is not None]
-    alert_bad = sorted(set(expect) ^ set(marks)) + (["dup"] if len(SENT_MSGS) != len(expect) else [])
+            if rows15:
+                expect.append(k)
+            else:
+                pre_row += 1
+    expect_mgr = len(expect)
+    marks = [k for k, r in table.items() if r.get("manager_sent_at") is not None]
+    alert_bad = sorted(set(expect) ^ set(marks))
     mgr_bad = len(MANAGER) != expect_mgr
     # 5 RERUN
-    before = (len(SENT_MSGS), len(MANAGER))
+    before = len(MANAGER)
     run(ticks[-1])
-    rerun_bad = (len(SENT_MSGS), len(MANAGER)) != before
-    # 6 FAILURE (once, on the first day with an alert): un-mark one alert, fail its send, re-run
+    rerun_bad = len(MANAGER) != before
+    # 6 FAILURE (once, on the first day with a hand-off): un-mark one alert, fail its invoke, re-run
     fail_bad = False
     if not failure_tested and marks:
         k0 = (sorted(marks)[0])
         full_key = next(kk for kk, r in EVENTS.rows.items()
                         if (r["trigger_ts"], r["family"], r["subtype"], r["direction"]) == k0
                         and r["rules_version"] == pt.RULES_VERSION)
-        EVENTS.rows[full_key]["telegram_sent_at"] = None
+        EVENTS.rows[full_key]["manager_sent_at"] = None
         cap = next(c for c in caps if c >= k0[0] + 300)
         t0 = next(t for t in ticks if int(t["captured_at"]) == cap)
         FAIL_NEXT["on"] = True
@@ -327,14 +342,14 @@ for day in sorted(ticks_by_day):
             run(t0)
         except RuntimeError as exc:
             raised = "injected" in str(exc)
-        unmarked = EVENTS.rows[full_key]["telegram_sent_at"] is None
-        n0 = len(SENT_MSGS)
+        unmarked = EVENTS.rows[full_key]["manager_sent_at"] is None
+        n0 = len(MANAGER)
         run(t0)
-        fail_bad = not (raised and unmarked and EVENTS.rows[full_key]["telegram_sent_at"] is not None
-                        and len(SENT_MSGS) == n0 + 1)
+        fail_bad = not (raised and unmarked and EVENTS.rows[full_key]["manager_sent_at"] is not None
+                        and len(MANAGER) == n0 + 1)
         failure_tested = True
         print(f"   failure test on {date} {k0}: raised={raised} unmarked_after_failure={unmarked} "
-              f"sent_on_rerun={len(SENT_MSGS) == n0 + 1}")
+              f"invoked_on_rerun={len(MANAGER) == n0 + 1}")
     status = {"rows": not row_bad, "first": not first_bad, "alerts": not alert_bad, "manager": not mgr_bad,
               "rerun": not rerun_bad, "failure": not fail_bad}
     for name, ok in status.items():
@@ -342,14 +357,18 @@ for day in sorted(ticks_by_day):
     totals["days"] += 1
     totals["ticks"] += len(ticks)
     totals["rows"] += len(table)
-    totals["alerts"] += len(expect)
+    totals["alerts"] += len(expect) + pre_row
+    totals["pre_row"] += pre_row
     totals["manager"] += expect_mgr
-    print(f"{date}: {len(ticks)} ticks, {len(table)} rows, {len(expect)} alerts ({expect_mgr} to the manager)  "
+    print(f"{date}: {len(ticks)} ticks, {len(table)} rows, {len(expect) + pre_row} alerts ({expect_mgr} to the "
+          f"manager, {pre_row} before the first 15-min row)  "
           + " ".join(f"{n}={'ok' if ok else 'FAIL'}" for n, ok in status.items()))
 
 print()
 print(f"{totals['days']} sessions, {totals['ticks']} ticks, {totals['rows']} rows, {totals['alerts']} alerts "
-      f"({totals['alerts'] / max(totals['days'], 1):.1f}/day), {totals['manager']} manager dispatches; "
-      f"{totals['skipped_days']} skipped; failure test run: {failure_tested}")
-print("ALL PASS" if not any(fails.values()) and failure_tested else f"FAILED: {dict(fails)}")
-sys.exit(0 if not any(fails.values()) and failure_tested else 1)
+      f"({totals['alerts'] / max(totals['days'], 1):.1f}/day), {totals['manager']} manager dispatches, "
+      f"{totals['pre_row']} before the first 15-min row (not handed over); "
+      f"{totals['skipped_days']} skipped; failure test run: {failure_tested}; no telegram: {not telegram_bad}")
+passed = not any(fails.values()) and failure_tested and not telegram_bad
+print("ALL PASS" if passed else f"FAILED: {dict(fails)}" + (f" telegram {telegram_bad}" if telegram_bad else ""))
+sys.exit(0 if passed else 1)

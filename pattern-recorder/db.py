@@ -10,11 +10,13 @@ READS  algo.candle_5min            earlier sessions' 5-min bars (today's come fr
        algo.intraday_fno_data      the option walls, each day's active contract,
                                    and the latest 15-min snapshot (for the manager)
        algo.intraday_sentiments    the latest day_trend and regime
-       algo.fno_5m_snapshot        the previous tick's captured_at, each bar's OI change
+       algo.fno_5m_snapshot        the previous tick's captured_at
        algo.daily_market_sentiment the daily read handed to the manager
 WRITES algo.pattern_events         and nothing else - never session_observations.
-                                   The upsert never touches the sent marks; only
-                                   claim_and_mark() sets them.
+                                   The upsert never touches the sent mark
+                                   (manager_sent_at); only claim_and_mark() sets it.
+                                   telegram_sent_at was dropped 2026-11-23 with the
+                                   raw Telegram alerts.
 
 Every read is bounded by epoch values; there is no timezone arithmetic in SQL
 (hard rule 2). connect() lives in the neon-access layer. pg8000's DB-API uses
@@ -41,7 +43,7 @@ FNO_5M = "algo.fno_5m_snapshot"
 DAILY = "algo.daily_market_sentiment"
 TABLE = "algo.pattern_events"
 BAR_SECONDS = 300
-SENT_MARKS = ("telegram_sent_at", "manager_sent_at")
+SENT_MARKS = ("manager_sent_at",)
 
 # The daily read exactly as intraday-market-sentiment hands it on (its db.py), so
 # strategy-manager and its playbooks see the same shape from either sender.
@@ -167,17 +169,6 @@ def read_prev_tick_captured_at(conn, security_id, instrument_type, snapshot_ts):
     )
     rows = cursor.fetchall()
     return int(rows[0][0]) if rows and rows[0][0] is not None else None
-
-
-def read_bar_oi(conn, security_id, instrument_type, day_start, captured_by):
-    """{fut_bar_ts: fut_bar_oi_change} for today's ticks this run can read."""
-    cursor = conn.cursor()
-    cursor.execute(
-        f"SELECT fut_bar_ts, fut_bar_oi_change FROM {FNO_5M} WHERE security_id = %s "
-        f"AND instrument_type = %s AND snapshot_ts >= %s AND captured_at <= %s",
-        (str(security_id), str(instrument_type), int(day_start), int(captured_by)),
-    )
-    return {int(ts): change for ts, change in cursor.fetchall() if ts is not None}
 
 
 def read_daily(conn, security_id, instrument_type, day_start):
@@ -313,12 +304,12 @@ def claim_and_mark(conn, row, column, action, now):
 
     In ONE transaction: lock the event's row only if `column` is still NULL
     (FOR UPDATE SKIP LOCKED, so an overlapping run skips it instead of
-    waiting), run the action - the Telegram send or the manager invoke - then
-    set the mark and commit.
+    waiting), run the action - the manager invoke - then set the mark and
+    commit.
     - If the action raises, the transaction rolls back, the mark stays NULL, and
-      the exception propagates: the run fails, and Lambda's retry sends again.
-    - The only duplicate left is a send that succeeded followed by a commit that
-      failed.
+      the exception propagates: the run fails, and Lambda's retry invokes again.
+    - The only duplicate left is an invoke that succeeded followed by a commit
+      that failed.
     Returns True when this call ran the action, False when it was already done
     (or is being done by another run).
     """

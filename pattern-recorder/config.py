@@ -41,10 +41,12 @@ SESSION_END = datetime.time(15, 30)   # exclusive: the last bar starts at 15:25
 
 # ---- alerts (plan v3, approved 2026-11-09) ------------------------------------
 # UNSET MEANS SHADOW: every run decides which events are alerts and logs them as
-# "WOULD SEND", but nothing goes to Telegram or strategy-manager and no sent mark
-# is written. Set it to "on" to send.
+# "WOULD DISPATCH", but nothing goes to the manager and no sent mark is written.
+# Set it to "on" to hand them over. Nothing goes to Telegram either way since
+# 2026-11-23 (the raw alerts were removed from the phone; Amar's new flow).
 ALERTS_ENABLED = os.environ.get("ALERTS_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
-# Unset = Telegram only, no manager dispatch, even with alerts on.
+# The function each alert (and, with TICK_HANDOFF_ENABLED, every tick) is handed
+# to - risk-manager since P2b. Unset = no hand-off at all.
 STRATEGY_MANAGER_FUNCTION_NAME = os.environ.get("STRATEGY_MANAGER_FUNCTION_NAME", "")
 
 # ---- every-tick hand-off (Amar 2026-11-14) -------------------------------------
@@ -55,5 +57,3 @@ STRATEGY_MANAGER_FUNCTION_NAME = os.environ.get("STRATEGY_MANAGER_FUNCTION_NAME"
 # whatever the regime. Independent of ALERTS_ENABLED. Unset = off.
 TICK_HANDOFF_ENABLED = os.environ.get("TICK_HANDOFF_ENABLED", "").strip().lower() in ("1", "on", "true", "yes")
 TICK_SOURCE = "pattern-recorder-tick"
-TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
-TELEGRAM_TIMEOUT_SECONDS = int(os.environ.get("TELEGRAM_TIMEOUT_SECONDS", "8"))

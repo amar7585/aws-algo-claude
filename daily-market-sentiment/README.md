@@ -9,7 +9,7 @@ pushes it to Telegram.
 | Writes | `algo.candle_daily`, `algo.daily_market_sentiment`, `algo.intraday_width_profile` (since 2026-11-12) |
 | Reads | `algo.instrument_master`; `algo.fno_5m_snapshot` (the previous session's last row, for the morning brief - read only) |
 | Dhan calls | 7 per run: 4 for the daily read and width profile, 3 for the morning brief (expiry list, option chain, VIX 5-min) |
-| Evening brief | `EVENING_BRIEF=on` sends it, unset = shadow (built and logged only). READS ONLY: `candle_5min`, `intraday_sentiments`, `intraday_fno_data` (a count), `fno_5m_snapshot`, `pattern_events`, `position_master`, `candle_daily`; 3 Dhan calls (VIX 5-min, expiry list, option chain). **LIVE since 2026-11-23 10:59:41 IST** (CodeSha256 `z7gutlGe...`, `EVENING_BRIEF=on`; schedule `daily-market-sentiment-evening` from 11-23 15:45); rollback = version 1 (`y5ZjO+zC...`) |
+| Evening brief | `EVENING_BRIEF=on` sends it, unset = shadow (built and logged only). READS ONLY: `candle_5min`, `intraday_sentiments`, `intraday_fno_data` (a count), `fno_5m_snapshot`, `position_master`, `candle_daily` (`pattern_events` until 2026-11-23); 3 Dhan calls (VIX 5-min, expiry list, option chain). **LIVE since 2026-11-23 10:59:41 IST** (CodeSha256 `z7gutlGe...`, `EVENING_BRIEF=on`; schedule `daily-market-sentiment-evening` from 11-23 15:45); rollback = version 1 (`y5ZjO+zC...`) |
 | Morning brief | **LIVE: `MORNING_BRIEF_V2=on`** since 2026-11-22 12:51 IST (Amar: "deploy live directly") - the new brief is the 09:35 message; first run Mon 2026-11-23. Unset = shadow (old message sent, new brief logged). See [below](#the-morning-brief-2026-11-22) |
 | Database | Neon `AI Trader APP` (`nameless-mountain-15353651`) / `Algo` / `algo` — the only one |
 
@@ -103,9 +103,24 @@ daily read, no width profile) and the brief itself is not stored (every number i
 | LEVELS FILLED TODAY | `candle_daily`, every stored session | the open daily highs / lows (the morning brief's definition) that today traded through; a daily FVG formed today; FVGs filled today |
 | OPTION CHAIN | the first stored 5-min snapshot -> **the chain read live** | ATM, call wall and put wall **with the OI at each**, max pain, PCR on the current weekly expiry (EXPIRY TODAY). If the read fails: the last stored snapshot, marked, and logged at ERROR |
 | THE DAY'S READ | `intraday_sentiments` | day_trend through the day's 15-min rows |
-| ALERTS / TRADES | `pattern_events`, `position_master` | the alerts sent (and how many reached the playbooks); the day's paper positions with lot-points (P2a: the sweep). Trend-playbook trades are recorded from P2b |
+| TRADES | `position_master` | the day's paper positions with lot-points (P2a: the sweep). Trend-playbook trades are recorded from P2b. **The ALERTS count was dropped 2026-11-23** with the raw pattern alerts (Amar: "remove completely those messages from code ... stick with the new flow"); `pattern_events` is no longer read. Deployed 2026-11-23 23:33:18 IST, see below |
 | NEXT SESSION | the day + the expiry list | PDH / PDL / PDC for tomorrow, and the next weekly expiry |
 | SYSTEM | counts | 5-min candles, 15-min rows (+ option rows), 5-min option snapshots stored today |
+
+**2026-11-23: the ALERTS line dropped.** It counted the raw pattern alerts sent to Telegram, which no
+longer exist (Amar: "stick with the new flow"). `db.read_day_alerts` and the brief's `alerts` input are
+removed, and the section is now `TRADES`.
+- **Deployed 23:33:18 IST:** CodeSha256 `dpDRqL1Yye5Y1q56OwkfzBA2WCsChQqybQZqQvQDY10=`. `db`, `evening` and
+  `handler` changed; the other 8 modules are byte-equal. Environment unchanged.
+- **Rollback: version 2** = `z7gutlGe…` (the zip at commit `2fa58cf`). That code selects
+  `pattern_events.telegram_sent_at`, dropped 2026-11-24. On a rollback without re-adding the column, its
+  ALERTS section reads "missing" and logs an ERROR; the rest of the brief still goes out.
+- **Checked:**
+  - `check_step2.py` ALL PASS on 24 sessions. The 11-20 brief differs from before only by the ALERTS
+    line; TRADES moves up one level.
+  - `check_step1.py` ALL PASS; the morning texts are byte-identical.
+  - Live smoke `{"brief": "evening", "skip_telegram": true}` at 23:34: 200, 12.1 s, 3 Dhan calls, 0
+    missing, no ERROR. The text has `TRADES (paper): none recorded` and no ALERTS line.
 
 **The same failure rules as the morning brief:** a missing input becomes a marked line and is logged
 at ERROR, never raised (a raise would make the async retries re-send the brief); a bug in the brief

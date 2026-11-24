@@ -31,8 +31,7 @@ flowchart TD
         OM["<b>order-manager</b><br/><i>sync, one signal per call<br/>the only writer of position_master</i>"]
         SWEEP["<b>strategy-range-liquidity-sweep</b><br/><i>invoked on every 5-min tick<br/>since 2026-11-14</i>"]
         TREND["<b>strategy-trend-pullback</b><br/><i>invoked on day_trend up/down,<br/>and on ticks while it holds a position</i>"]
-        REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>invoked on each 5-min tick<br/>sending since 2026-11-09 16:04</i>"] --> PEV[("pattern_events")]
-        REC -->|"each alert, once"| TG3{{"Telegram"}}
+        REC["<b>pattern-recorder</b> v2.1, rules v2.2<br/><i>invoked on each 5-min tick<br/>live since 2026-11-09 16:04<br/>no Telegram since 2026-11-23</i>"] --> PEV[("pattern_events")]
         REC -->|"Event: each alert, once"| RM
         REC -->|"Event: every tick, last step"| RM
         RC[("risk_control<br/><i>kill switch, limits</i>")] -.-> RM
@@ -106,7 +105,7 @@ Read in clock order, a weekday looks like this:
 | immediately after | `market-classifier` | **invoke** | `intraday_sentiments` |
 | immediately after | `pattern-detector` | **invoke** | no table (log only since 2026-11-09 16:04) |
 | 09:36–15:31 every 5 min (71 runs) | `intraday-fno-poller` | **cron** (its own trio) | `fno_5m_snapshot`, `fno_5m_leg` |
-| as the poller's last step, every tick (v2.1, sending since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`, Telegram; then hands the tick on (since 2026-11-14) — to `risk-manager` since 2026-11-23 |
+| as the poller's last step, every tick (v2.1, live since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`; then hands each alert and (since 2026-11-14) the tick on — to `risk-manager` since 2026-11-23. Its alerts went to Telegram too until 2026-11-23 23:33 |
 | on each v2.1 alert and every tick (since 2026-11-23 17:22) | `risk-manager` | **invoke** | nothing (reads `risk_control`, today's `position_master`; kill-switch closes through `order-manager`) |
 | on each v2.1 alert, once — and on every tick (since 2026-11-14); from `risk-manager` since 2026-11-23 | `strategy-manager` | **invoke** | nothing |
 | then, on a `day_trend` up/down alert — and on every tick while it holds a position (since 2026-11-23) | `strategy-trend-pullback` | **invoke** | nothing itself: its entry and steps go to `order-manager` |
@@ -550,8 +549,10 @@ never sends a message twice.
 An event that is new on this tick, sits at a key level (PDH, PDL, or the opening
 range high or low — on a trend day also the call or put wall, since C1 2026-11-23),
 and points the way the classifier's `day_trend` allows, goes
-to Telegram and invokes the manager, once each; a quiet tick never reaches routing
-at all. The manager is handed the latest 15-min snapshot, so it routes on that
+on to the manager, once (through `risk-manager` since 2026-11-23); a quiet tick never reaches routing
+at all. Until 2026-11-23 each such event also went to Telegram. That send is removed (live
+2026-11-23 23:33), so the phone gets the playbooks' trade messages, not the raw alerts.
+The manager is handed the latest 15-min snapshot, so it routes on that
 snapshot's `day_trend`. Before 2026-11-09 the gate was `pattern-detector`'s
 confirmed turn, which is now log-only; see
 [pattern-recorder](../pattern-recorder/README.md).

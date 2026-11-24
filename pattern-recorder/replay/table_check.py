@@ -13,7 +13,8 @@ with algo.pattern_events rows of this RULES_VERSION for the day:
   * every detection field equal;
   * first_seen_at of each row is the captured_at of the FIRST tick that could read
     its trigger bar closed;
-  * the sent marks: shown, and telegram_sent_at never set before first_seen_at.
+  * the sent mark: shown, and manager_sent_at never set before first_seen_at
+    (telegram_sent_at was dropped 2026-11-23 with the raw Telegram alerts).
 
 THE HORIZON. The live recorder reads TODAY's candles from Dhan; this check reads
 candle_5min, which intraday-data-loader refreshes only every 15 minutes (and whose
@@ -119,8 +120,8 @@ for k, r in have_all.items():
     if int(r["first_seen_at"]) != first:
         fails.append(f"{st.clock(k[3])} {k[4]}: first_seen_at {r['first_seen_at']} is not the first tick "
                      f"that could read the bar ({first})")
-    if r["telegram_sent_at"] is not None and int(r["telegram_sent_at"]) < int(r["first_seen_at"]):
-        fails.append(f"{st.clock(k[3])} {k[4]}: sent before it was first seen")
+    if r["manager_sent_at"] is not None and int(r["manager_sent_at"]) < int(r["first_seen_at"]):
+        fails.append(f"{st.clock(k[3])} {k[4]}: handed over before it was first seen")
 
 stamp = datetime.datetime.fromtimestamp(cap, IST).strftime("%H:%M:%S")
 print(f"{day} {pt.RULES_VERSION} up to the {st.clock(snap)} tick (captured {stamp}), future {contract}: "
@@ -129,8 +130,6 @@ print(f"{day} {pt.RULES_VERSION} up to the {st.clock(snap)} tick (captured {stam
 for k in sorted(have_all):
     r = have_all[k]
     sent = []
-    if r["telegram_sent_at"] is not None:
-        sent.append(f"telegram {datetime.datetime.fromtimestamp(int(r['telegram_sent_at']), IST):%H:%M:%S}")
     if r["manager_sent_at"] is not None:
         sent.append(f"manager {datetime.datetime.fromtimestamp(int(r['manager_sent_at']), IST):%H:%M:%S}")
     print(f"  {st.clock(k[3])} {k[4]}{'/' + k[5] if k[5] != 'none' else ''} {k[6]} at {r['level']} "

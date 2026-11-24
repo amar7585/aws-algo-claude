@@ -86,9 +86,11 @@ CREATE TABLE IF NOT EXISTS algo.pattern_events (
     created_at             bigint  NOT NULL,
     updated_at             bigint  NOT NULL,
 
-    -- send-once marks (added 2026-11-08): epoch seconds of the send, NULL = not
-    -- sent. Not in db.COLUMNS, so the re-derivation upsert never touches them.
-    telegram_sent_at       bigint,
+    -- send-once mark (added 2026-11-08): epoch seconds of the hand-off to the
+    -- manager, NULL = not handed over. Not in db.COLUMNS, so the re-derivation
+    -- upsert never touches it. Its twin telegram_sent_at was DROPPED 2026-11-23
+    -- with the raw Telegram alerts (migrations/2026-11-23-drop-telegram-sent-at.sql;
+    -- its values are backed up in replay/out/backup-2026-11-23/).
     manager_sent_at        bigint,
 
     PRIMARY KEY (security_id, instrument_type, rules_version, trigger_ts, family, subtype, direction),

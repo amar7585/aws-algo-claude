@@ -234,8 +234,7 @@ def read_prev_session_snapshot(conn, instrument, day_start):
 # ---- the evening brief (2026-11-23): READ-ONLY ---------------------------------
 # Each returns today's rows (or a count) and never writes; the handler guards each
 # one separately, so a table that cannot be read costs only its own section.
-_INTS = ("ts", "snapshot_ts", "near_expiry_ts", "trigger_ts", "telegram_sent_at", "manager_sent_at",
-         "entry_ts", "lot_size", "t1_booked_ts")
+_INTS = ("ts", "snapshot_ts", "near_expiry_ts", "entry_ts", "lot_size", "t1_booked_ts")
 
 
 def _rows(conn, sql, params, fields):
@@ -295,16 +294,6 @@ def read_day_snapshots(conn, instrument, day_start):
                  "ORDER BY snapshot_ts",
                  (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
                  SNAPSHOT_FIELDS)
-
-
-def read_day_alerts(conn, instrument, day_start):
-    """Today's pattern-recorder events that went to Telegram (and whether the manager got them)."""
-    return _rows(conn,
-                 "SELECT trigger_ts, family, direction, level, telegram_sent_at, manager_sent_at FROM algo.pattern_events "
-                 "WHERE security_id = %s AND instrument_type = %s AND trigger_ts >= %s AND trigger_ts < %s "
-                 "AND telegram_sent_at IS NOT NULL ORDER BY trigger_ts",
-                 (instrument["security_id"], instrument["instrument_type"], int(day_start), int(day_start) + 86400),
-                 ("trigger_ts", "family", "direction", "level", "telegram_sent_at", "manager_sent_at"))
 
 
 def read_day_positions(conn, day_start):

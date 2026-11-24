@@ -9,15 +9,16 @@ releases and re-takes a savepoint and its rollback() rolls back to it, so the up
 the claim (SELECT ... FOR UPDATE SKIP LOCKED), the mark and the row-count guards all
 run for real against algo.pattern_events, the transaction semantics stay intact, and
 the table is left exactly as it was. Dhan is stubbed with the day's candle_5min bars;
-Telegram and strategy-manager are recorded, never called.
+the manager invoke is recorded, never called. (No Telegram since 2026-11-23: the
+recorder's Telegram path and the telegram_sent_at column were removed.)
 
   1. The handler on one stored tick (default: the day's tick with the most alerts):
      - its rows equal the library's re-derivation from the same live reads;
      - its alerts equal the rule applied to the stored day_trend;
-     - each alert is sent once and marked, in-transaction.
-  2. The same tick again, on the same transaction: nothing is resent.
+     - each alert with a 15-min row is handed over once and marked, in-transaction.
+  2. The same tick again, on the same transaction: nothing is handed over again.
   3. ON CONFLICT: a second upsert of the same keys keeps first_seen_* and created_at,
-     updates the rest, never touches the sent marks, and round-trips text[] and numerics.
+     updates the rest, never touches the sent mark, and round-trips text[] and numerics.
   4. A fresh connection finds the table as it was before.
 
 Needs the unpacked driver in replay/driver (see README.md).
@@ -93,7 +94,7 @@ na.SSL_CONTEXT = ssl.create_default_context()
 na.get_parameter = lambda name: "{}"  # noqa: E731
 na.now_epoch = lambda: 0  # noqa: E731
 sys.modules["neon_access"] = na
-b3 = types.ModuleType("boto3")  # Telegram and the manager are recorded, never called
+b3 = types.ModuleType("boto3")  # the manager invoke is recorded, never called
 b3.client = lambda *a, **k: None  # noqa: E731
 sys.modules["boto3"] = b3
 sys.path.insert(0, FUNC)
@@ -110,7 +111,7 @@ c = raw_connect()
 cur = c.cursor()
 # Counted on THIS rules_version only: the live recorder may write rows of another
 # version while the check runs, and that must not read as a leak.
-GUARD = ("SELECT count(*), count(*) FILTER (WHERE telegram_sent_at IS NOT NULL OR manager_sent_at IS NOT NULL) "
+GUARD = ("SELECT count(*), count(*) FILTER (WHERE manager_sent_at IS NOT NULL) "
          "FROM algo.pattern_events WHERE rules_version = %s")
 cur.execute("SELECT current_database()")
 dbname = cur.fetchone()[0]
@@ -192,14 +193,14 @@ class FakeDhan:
         return out
 
 
-SENT, MGR = [], []
+MGR = []
 handler.DhanClient = FakeDhan
 handler.read_token_record = lambda: {"access_token": "x"}  # noqa: E731
 handler.read_client_id = lambda r: "c"  # noqa: E731
-handler.notify.send_telegram = lambda text: SENT.append(text)  # noqa: E731
 handler.dispatch.invoke_manager = lambda payload: MGR.append(payload)  # noqa: E731
 handler.ALERTS_ENABLED = True
-handler.STRATEGY_MANAGER_FUNCTION_NAME = "strategy-manager"
+handler.STRATEGY_MANAGER_FUNCTION_NAME = "risk-manager"
+handler.TICK_HANDOFF_ENABLED = False   # the alert hand-off only (the every-tick one carries no mark)
 event = {"source": "intraday-fno-poller", "tick": {**tick, "security_id": "13", "instrument_type": "INDEX"},
          "index": {"security_id": "13", "exchange_segment": "IDX_I", "instrument_type": "INDEX"},
          "future": {"security_id": contract, "exchange_segment": "NSE_FNO", "instrument_type": "FUTIDX"}}
@@ -233,30 +234,30 @@ check("rows equal the library's re-derivation from the same live reads", set(got
 check(f"alerts equal the rule on the stored day_trend ({len(expected)})", out["alerts"] == len(expected),
       (out["alerts"], len(expected)))
 cur = SHARED["conn"].cursor()
-cur.execute("SELECT count(*), count(telegram_sent_at), count(manager_sent_at) FROM algo.pattern_events "
+cur.execute("SELECT count(*), count(manager_sent_at) FROM algo.pattern_events "
             "WHERE rules_version = %s AND trigger_ts >= %s AND trigger_ts < %s",
             (pt.RULES_VERSION, day_start, day_start + 86400))
-n_rows, n_tg, n_mgr = cur.fetchone()
-check(f"in-transaction: {n_rows} rows, {n_tg} telegram marks = {len(SENT)} sends, {n_mgr} manager marks = {len(MGR)} invokes",
-      n_rows == len(rows) and n_tg == len(SENT) == out["alerts"] and n_mgr == len(MGR) == out["sent_manager"],
-      (n_rows, n_tg, len(SENT), n_mgr, len(MGR)))
+n_rows, n_mgr = cur.fetchone()
+check(f"in-transaction: {n_rows} rows, {n_mgr} manager marks = {len(MGR)} invokes ({out['alerts']} alerts)",
+      n_rows == len(rows) and n_mgr == len(MGR) == out["sent_manager"] <= out["alerts"],
+      (n_rows, n_mgr, len(MGR), out["sent_manager"], out["alerts"]))
 
-# ---- 2. the same tick again: nothing resent ------------------------------------------------
+# ---- 2. the same tick again: nothing handed over again -------------------------------------
 with contextlib.redirect_stderr(io.StringIO()):
     out2 = handler.lambda_handler(event, None)
-check("re-run of the same tick sends nothing new (claim finds the marks)",
-      out2["sent_telegram"] == 0 and out2["sent_manager"] == 0 and len(SENT) == n_tg, out2)
+check("re-run of the same tick hands nothing over again (claim finds the marks)",
+      out2["sent_manager"] == 0 and len(MGR) == n_mgr, out2)
 
 # ---- 3. ON CONFLICT keeps first_seen_* and the marks -----------------------------------------
 second = [{**r, "first_seen_snapshot_ts": 222, "first_seen_at": 222, "created_at": 222, "updated_at": 333,
            "vol_z": (r["vol_z"] or 0) + 1} for r in rows]
 n2 = db.upsert_events(SHARED["conn"], second)
-cur.execute("SELECT count(*), min(updated_at), max(first_seen_at), count(telegram_sent_at) FROM algo.pattern_events "
+cur.execute("SELECT count(*), min(updated_at), max(first_seen_at), count(manager_sent_at) FROM algo.pattern_events "
             "WHERE rules_version = %s AND trigger_ts >= %s AND trigger_ts < %s",
             (pt.RULES_VERSION, day_start, day_start + 86400))
-cnt, upd, fsa, tg2 = cur.fetchone()
-check("ON CONFLICT updates the rest, keeps first_seen_*, never clears a sent mark",
-      n2 == len(rows) and cnt == len(rows) and upd == 333 and fsa != 222 and tg2 == n_tg, (n2, cnt, upd, fsa, tg2))
+cnt, upd, fsa, mg2 = cur.fetchone()
+check("ON CONFLICT updates the rest, keeps first_seen_*, never clears the sent mark",
+      n2 == len(rows) and cnt == len(rows) and upd == 333 and fsa != 222 and mg2 == n_mgr, (n2, cnt, upd, fsa, mg2))
 pick = next((r for r in second if r["other_levels"] != "{}" and r["level_strike"] is not None), second[0])
 cur.execute("SELECT vol_z, other_levels, candles, level_strike, level_price FROM algo.pattern_events "
             "WHERE security_id = %s AND instrument_type = %s AND rules_version = %s AND trigger_ts = %s "
