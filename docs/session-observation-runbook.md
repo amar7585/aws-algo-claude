@@ -165,7 +165,14 @@ deferral): **annotate the nearest level + distance** in the note, don't hard-dro
 - **Reversals:** `evening_star`, `double_top`, `double_bottom`, `breakout_fade_reclaim` (incl.
   downside failed-breakdown reclaim), `orb_breakout_fade_reclaim`, `orb_liquidity_sweep`
   (side-agnostic; side in notes).
-- **Continuation:** `orb_breakout_retest`, `pd_breakout_retest` (side-agnostic; side in notes).
+- **Continuation:** `orb_breakout_retest`, `pd_breakout_retest`, `orb_breakout` (side-agnostic; side in notes).
+  Amar's split (2026-11-25), once price breaks the level:
+  - it keeps moving away → wait for the retracement, entry on the retest = `orb_breakout_retest`;
+  - it spends some time near the level, then breaks out → entry after the breakout candle = `orb_breakout`
+    (first logged 2026-11-25, row 19).
+  `orb_breakout` is a logged name only, not a trading rule: entering on the breakout close was measured on 100
+  sessions on 2026-11-25 (no consistent edge; losing in Jun–Aug on every reading) and Amar kept the current trend
+  rule, which enters on the hold after a break (`pattern-recorder/replay/out/orb-breakout-2026-11-25/`).
 
 Introduce a new `pattern_type` only with Amar's sign-off.
 
@@ -207,13 +214,14 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 
 ## State so far
 
-`session_observations` has **17 rows**, all NIFTY INDEX, counted 2026-11-20:
+`session_observations` has **19 rows**, all NIFTY INDEX, counted 2026-11-25:
 - 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04, 2× 2026-11-13,
-  2× 2026-11-16, 1× 2026-11-17, 1× 2026-11-18, 1× 2026-11-19, 1× 2026-11-20;
+  2× 2026-11-16, 1× 2026-11-17, 1× 2026-11-18, 1× 2026-11-19, 1× 2026-11-20, 1× 2026-11-23,
+  1× 2026-11-25;
 - verified against Dhan REST where noted;
 - the first 11 carry no `alert_ts` / `entry_ts` / `entry_price` (the columns were added
-  2026-11-14; nothing was backfilled); rows 12–16 carry Amar's own marks; row 17 carries the
-  machine's values.
+  2026-11-14; nothing was backfilled); rows 12–16 carry Amar's own marks; rows 17–19 carry the
+  machine's values (row 18's entry is NULL: the machine missed it).
 
 Standing plan: keep hand-logging each session until the rules are clear enough to automate.
 - The detector is deployed log-only.
