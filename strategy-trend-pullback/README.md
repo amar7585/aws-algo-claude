@@ -15,11 +15,21 @@ on no-trend days (Amar, 2026-11-09).
 |---|---|
 | Status | **sending since 2026-11-11 16:56 IST** (`TELEGRAM_ENABLED=on`; in shadow from 2026-11-09 22:33, first shadow session 2026-11-11). Gap-aware stop (option C) deployed 2026-11-11 18:53 IST, CodeSha256 `kmBZxADI…` (previous `/ZpB2MYN…`). Option F stop (range low / high when PDH / PDL is beyond the range) deployed 2026-11-19 17:24:33 IST, CodeSha256 `MZZt7vDH…` (previous `kmBZxADI…`), with market-classifier's matching rule. **Rule G** (stop = a close back inside the 15-min range; a trigger candle closed inside the range stands down) deployed 2026-11-19 18:29:28 IST, CodeSha256 `AhXhKHn7…` (previous `MZZt7vDH…`), before any session ran on F; first session 2026-11-20. strategy-manager routes to it since 2026-11-09 22:37 (`TREND_PLAYBOOKS=strategy-trend-pullback`) |
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules, **no layers** |
+| Runtime | Python 3.14, zip package, **7 modules** since 2026-11-25 (5 before P2b; `notify.py` removed 2026-11-25), **no layers** |
 | Trigger | asynchronous invoke from `strategy-manager`, for a v2 alert on a day whose `day_trend` is up or down |
 | Reads | **nothing** — the context carries v2's alert, today's index candles, the 15-min snapshot and the daily read |
-| Writes | **nothing** — its log and its Telegram message are its output |
-| Secrets | `/algo/telegram/brief` (to send) |
+| Writes | **nothing** — its log; since P2b `order-manager` records its steps and sends its message |
+| Secrets | **none** since 2026-11-25 (`/algo/telegram/brief` until then; unused since P2b) |
+
+## 2026-11-25: its own Telegram code removed — DEPLOYED 2026-11-25
+
+**Amar 2026-11-25 ("Do both", the cleanup).** Since P2b `order-manager` sends the message, so `notify.py` (imported by
+nothing), `TELEGRAM_PARAMETER_NAME` / `HTTP_TIMEOUT_SECONDS` in `config.py` and the role's `telegram-read` policy are
+gone. **Kept:** `TELEGRAM_ENABLED=on` - unset still means shadow (order-manager records, the text is only logged).
+Checked with the sweep's change on 25 sessions: every call, step, message and position identical. **Deployed
+2026-11-25 22:19:44 IST**, CodeSha256 `xNMXvVTvP2MjsQ4YAgoVNVDPWJM1+YarICt10pe6pqU=` (7 modules); configuration
+unchanged. **Rollback: version 4 = `U2kH2J2j…`** (the stop-move timing fix). `telegram-read` deleted from the role 22:20
+IST (IAM simulate: the role now reads no parameter at all).
 
 ## Since 2026-11-25: each stop move goes out at the close that sets it — DEPLOYED 2026-11-25
 
@@ -275,20 +285,20 @@ inside the range turns the trend off, so it is not this playbook's trade
 | `STOP_BUFFER_LOOKBACK_BARS` | 6 | |
 | `EXPECTED_CONTEXT_VERSION` | 4 | asserted against strategy-manager (3 until P2b, 2 until 2026-11-19) |
 | `ORDER_MANAGER_FUNCTION` | *(unset)* | P2b: `order-manager`. **Required** — unset raises: every entry and step goes through it |
-| `TELEGRAM_PARAMETER_NAME` | `/algo/telegram/brief` | |
 
 ## Deployment shape
 
-Zip the five modules at the zip root; handler `handler.lambda_handler`; **no
+Zip the seven modules at the zip root (five before P2b); handler `handler.lambda_handler`; **no
 layers**. Its own role `strategy-trend-pullback-role` ([iam/](iam/)): trust
-policy, `lambda-logs` (its own log group only) and `telegram-read`
-(`/algo/telegram/brief` + `kms:Decrypt` via SSM). Never borrow another
+policy, `lambda-logs` (its own log group only) and, from P2b, `invoke-order-manager`.
+It reads no parameter: `telegram-read` (`/algo/telegram/brief` + `kms:Decrypt` via SSM) was deleted 2026-11-25,
+unused since P2b. Never borrow another
 function's role. `strategy-manager-role`'s `invoke-playbooks` needs this
 function's ARN, and strategy-manager's `TREND_PLAYBOOKS` names it. Subscribe the
 log group to `error-notifier`.
 
-From P2b: eight modules (`exits.py`, `record.py`, `ordermgr.py` added; `notify.py` is no longer imported — kept
-in the zip, unused); the role gains `invoke-order-manager` ([iam/](iam/)): `lambda:InvokeFunction` on
+From P2b: eight modules (`exits.py`, `record.py`, `ordermgr.py` added; `notify.py` was no longer imported, and was
+removed 2026-11-25 - seven modules since); the role gains `invoke-order-manager` ([iam/](iam/)): `lambda:InvokeFunction` on
 `order-manager`'s ARN only. The environment adds `ORDER_MANAGER_FUNCTION=order-manager`. Deploy it together with
 `strategy-manager` v4 and `risk-manager`.
 

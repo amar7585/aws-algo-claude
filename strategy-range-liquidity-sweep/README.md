@@ -12,12 +12,27 @@ targets and risk-reward.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 12 modules |
+| Runtime | Python 3.14, zip package, 13 modules (`notify.py` removed 2026-11-25) |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` — the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` — **every 5-min tick since 2026-11-14** (pattern-recorder's tick hand-off) |
 | Reads | today's 5-min index candles **from the payload** (`index_bars`); `algo.candle_daily` for ATR; today's 15-min rows (`algo.intraday_sentiments` + `algo.intraday_fno_data`) — **no broker API** |
 | Writes | `algo.playbook_alerts` — the alert register, **only when `REGISTER_ENABLED=on`** — **on since 2026-11-14 22:01 IST** (CodeSha256 `6+z2tBAr…` since 2026-11-22 22:16 IST (P2a: every entered trade also recorded in `algo.position_master` through `order-manager`; `ORDER_MANAGER_FUNCTION=order-manager`; version 11 = `VwA8XnWp…`, the rollback); before it `VwA8XnWp…`, 2026-11-22 15:44 IST (2 of 3 lots booked at T1, the range midpoint); before it `TRtj+AW8…`, 2026-11-21 10:38 IST (session high / low pools removed), and `VGiH4SNG…`, 2026-11-20 22:48 IST (out at 15:15, before the closing auction), and `HVmgAGjN…`, bias removed 2026-11-19 20:49, and `yZ30IM0U…`, one rule set, 2026-11-19 20:37; versions kept: 10 = `TRtj+AW8…` (main c6ab155, published 2026-11-22 before T1 was added), 9 = `VGiH4SNG…` (main edbb47e, published 2026-11-21 before the session pools were removed), 8 = `HVmgAGjN…` (main 5eb3ed1), 7 = `RaMJeVy2…` (Amar's within-levels gate) - versions 1-6 deleted 2026-11-19). Otherwise nothing: its log and its Telegram messages are its output |
 | Secrets | `/algo/neon/connection` |
+
+## 2026-11-25: its own Telegram code removed — DEPLOYED 2026-11-25
+
+**Amar 2026-11-25 ("Do both", the cleanup).** Since P2b `order-manager` sends every trade message, so the sweep's own
+sender was dead: `notify.py` (imported by nothing), `TELEGRAM_PARAMETER_NAME` / `HTTP_TIMEOUT_SECONDS` in `config.py`
+(read only by it) and the `/algo/telegram/brief` line in the role's `algo-ssm-read` are gone. **Kept:**
+`TELEGRAM_ENABLED`, which still decides whether a step's message is handed to order-manager.
+
+- **Checked:** the whole chain on 25 sessions (10-19 .. 11-25), the deployed code vs this code: every call, order-manager
+  call, message, position and log line identical (75 positions, 267 order-manager calls, 199 messages); self-check
+  ALL PASS on 25 / 25. IAM simulate: `/algo/neon/connection` allowed, `/algo/telegram/brief` denied.
+- **Deployed 2026-11-25 22:19:36 IST**, CodeSha256 `tdUqsSqMlQ5KPxZKL8YY/TtwKegMxRNTGRmeKKY0Mwc=` (13 modules; only
+  `config.py` changed besides the removal); configuration unchanged. **Rollback: version 13 = `dgeSzzph…`** (re-add the
+  role's Telegram line first only if the old notify path is ever wanted - it is not imported by version 13 either).
+  Role trimmed 22:20 IST; the policy is now recorded in [iam/](iam/).
 
 ## Since P2b (2026-11-23): behind the risk manager, messages through order-manager — DEPLOYED 2026-11-23
 
@@ -759,7 +774,8 @@ The plan is in the side-session notes, `p2a-build-plan-2026-11-22.md`.
 
 ## Deployment shape
 
-Zip the **fourteen** modules at the **zip root**, with LF endings (`record.py` and `ordermgr.py` since P2a). Handler `handler.lambda_handler`, set under Code → Runtime settings → Edit.
+Zip the **thirteen** modules at the **zip root**, with LF endings (`record.py` and `ordermgr.py` since P2a; `notify.py`
+removed 2026-11-25). Handler `handler.lambda_handler`, set under Code → Runtime settings → Edit.
 
 **Three layers:** `neon-db-driver`, `neon-access` and `market-classifier`.
 
@@ -772,7 +788,7 @@ Every other tunable has a default in `config.py`. The register needs no IAM chan
 
 **Its own execution role**, with these inline policies:
 - `lambda-logs`: `logs:CreateLogStream` + `logs:PutLogEvents` on this function's own log group;
-- `algo-ssm-read`: `ssm:GetParameter` on `/algo/neon/connection` and `/algo/telegram/brief`, plus `kms:Decrypt` conditioned on `kms:ViaService = ssm.<region>.amazonaws.com`;
+- `algo-ssm-read` ([iam/](iam/)): `ssm:GetParameter` on `/algo/neon/connection` only (`/algo/telegram/brief` removed 2026-11-25), plus `kms:Decrypt` conditioned on `kms:ViaService = ssm.<region>.amazonaws.com`;
 - from P2a, `invoke-order-manager` ([iam/](iam/)): `lambda:InvokeFunction` on `order-manager`'s ARN only.
 
 Before P2a the sweep invoked nothing. Never borrow another function's role:

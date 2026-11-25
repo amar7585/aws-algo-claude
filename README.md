@@ -137,8 +137,8 @@ aws-algo-claude/
 │   ├── gate.py report.py         the fine gate; the playbook's output blocks
 │   ├── db.py                     the Neon reads (and today's positions) + the register upsert
 │   ├── record.py ordermgr.py     the signals for order-manager (P2a / P2b); the sync call
-│   ├── notify.py                 the Telegram send - unused since P2b (order-manager sends)
 │   ├── schema.sql                algo.playbook_alerts, for a fresh database
+│   ├── iam/                      its role's policies (order-manager invoke, Neon read)
 │   └── README.md
 ├── strategy-trend-pullback/     Lambda: the trend-day hold playbook
 │   ├── handler.py                entry point, shadow vs send
@@ -146,7 +146,6 @@ aws-algo-claude/
 │   ├── pullback.py               the gate, levels, entry, stop
 │   ├── exits.py record.py        the decided trail after entry; the signals (P2b)
 │   ├── report.py ordermgr.py     the message; the sync call to order-manager
-│   ├── notify.py                 the Telegram send - unused since P2b
 │   ├── iam/                      its role's policies, and the manager's invoke grant
 │   └── README.md
 ├── trading-calendar/             reference data: exchange holidays (no Lambda)

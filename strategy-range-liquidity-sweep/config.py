@@ -273,21 +273,11 @@ LATE_END = datetime.time(15, 0)
 LAST_LIVE_INDEX_BAR = datetime.time(15, 10)
 
 # --------------------------------------------------------------------------
-# Telegram
-#
-# A qualifying candidate is a real trade signal, and the signal is pushed to
-# Telegram so it reaches the phone the moment it is generated - "definitely send
-# on signal generation". It fires ONLY on a LIVE candidate whose trigger bar is
-# FRESH (closed within the last snapshot interval), so a signal that persists
-# across several 15-minute runs is announced once, not on every re-derivation.
-# Rejections and stand-downs stay in the log; the chat gets signals only.
-#
-# The same parameter the daily brief uses. This function already reads
-# /algo/neon/connection, so its role has an SSM-read policy - it needs that
-# policy widened to this one extra parameter plus kms:Decrypt, its own grant.
+# Telegram: since P2b (2026-11-23) order-manager sends every trade message; this
+# playbook sends nothing itself. Its own notify.py, the parameter name and the
+# role's /algo/telegram/brief grant were removed 2026-11-25. TELEGRAM_ENABLED
+# (below) still decides whether a step's message is handed to order-manager.
 # --------------------------------------------------------------------------
-TELEGRAM_PARAMETER_NAME = os.environ.get("TELEGRAM_PARAMETER_NAME", "/algo/telegram/brief")
-HTTP_TIMEOUT_SECONDS = float(os.environ.get("HTTP_TIMEOUT_SECONDS", "8"))
 
 # A push of this many consecutive 5-minute closes beyond a level is judged
 # structurally at its close back inside (sweep.push_sweeps): a sweep, or a break.

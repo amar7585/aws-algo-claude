@@ -386,7 +386,7 @@ fails to hold, closes back inside, and rotates back across the range.
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 14 modules (`record.py` + `ordermgr.py` since P2a) |
+| Runtime | Python 3.14, zip package, 13 modules (`record.py` + `ordermgr.py` since P2a; `notify.py` removed 2026-11-25) |
 | Layers | `neon-db-driver`, `neon-access`, `market-classifier` - the last for Wilder ATR only |
 | Trigger | asynchronous invoke from `strategy-manager` - on **every 5-min tick** since 2026-11-14 (before that, on a no-trend `sideways\|range-bound` alert); since 2026-11-23 with the risk manager's mode in `run` |
 | Reads | today's closed 5-min index candles from the payload, `candle_daily` for ATR, today's 15-min rows (`intraday_fno_data` + `intraday_sentiments`) - no broker API |
@@ -435,11 +435,11 @@ trend. It is not a sweep and not a fade; sweeps stay with
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 8 modules since P2b (`exits.py`, `record.py`, `ordermgr.py`), **no layers**; 30 s, 128 MB |
+| Runtime | Python 3.14, zip package, 7 modules (P2b added `exits.py`, `record.py`, `ordermgr.py`; `notify.py` removed 2026-11-25), **no layers**; 30 s, 128 MB |
 | Trigger | asynchronous invoke from `strategy-manager` (`TREND_PLAYBOOKS`), for a v2.1 alert whose `day_trend` is up or down; since P2b (2026-11-23) also on every tick while it holds a position |
 | Reads | **nothing** - the context carries the alert, today's closed index candles, the 15-min snapshot and the daily read; on a tick, its own open positions (the risk manager's `run`) |
 | Writes | **no table itself** - since P2b every entry and step goes to `order-manager`, which records it in `position_master` and sends the message; its log |
-| Secrets | `/algo/telegram/brief` (unused since P2b; the role keeps it) |
+| Secrets | **none** - its unused Telegram code and the role's `/algo/telegram/brief` grant were removed 2026-11-25 (order-manager sends since P2b) |
 | Switch | `TELEGRAM_ENABLED=on` since 2026-11-11 16:56; unset = shadow (logged `WOULD SEND`) |
 
 The rules, all on the index: a v2 **C2** (retest/hold) or **R1** (hold candle)
