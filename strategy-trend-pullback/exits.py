@@ -19,6 +19,10 @@ port reproduces that replay trade for trade with half sold at T1, and P0's paths
 steps() returns the record steps of one position through the newest candle, each on the candle whose CLOSE makes it
 known: T1 / TRAIL / STOP on the candle that traded them; a stop move on the candle whose close set it (it applies
 from the next one). The FIRST protected move carries the "stop to entry" message; later trail moves carry none.
+
+A stop move is returned as soon as the candle that sets it is in `bars` (Amar 2026-11-25). Until then it came only
+once the NEXT candle was in, so it went out one tick late: on 2026-11-25 the stop to entry set by the 10:55 candle
+(known at 11:00) was sent at 11:07. The stops, prices and exits are unchanged - only when each move is known.
 """
 
 T1_RATIO = 2.0
@@ -43,19 +47,9 @@ def steps(bars, entry_ts, side, entry, line, R, t1=None):
     if i is None:
         raise RuntimeError(f"the entry candle {entry_ts} is not in today's candles")
     out = []
-    lots, prot, pending, P, hit = LOTS, False, False, None, False
+    lots, prot, P, hit = LOTS, False, None, False
     for j in range(i + 1, len(bars)):
-        b, prev = bars[j], bars[j - 1]
-        moved_from = P
-        first = False
-        if pending and not prot:
-            prot, P, first = True, entry, True
-        if prot:
-            v = prev["low"] if up else prev["high"]
-            if (v > P) if up else (v < P):
-                P = v
-        if prot and P != moved_from:
-            out.append({"kind": "STOP MOVE", "candle_ts": int(prev["ts"]), "stop": round(P, 2), "first": first})
+        b = bars[j]
         if prot:
             if (b["low"] <= P) if up else (b["high"] >= P):
                 px = min(P, b["open"]) if up else max(P, b["open"])
@@ -69,8 +63,18 @@ def steps(bars, entry_ts, side, entry, line, R, t1=None):
             hit = True
             out.append({"kind": "T1", "candle_ts": int(b["ts"]), "price": round(T1, 2), "lots": T1_LOTS})
             lots -= T1_LOTS
-        if not prot and fav(b["high"] if up else b["low"]) >= R - 1e-9:
-            pending = True
+        reached = not prot and fav(b["high"] if up else b["low"]) >= R - 1e-9
         if _ist_minute(b["ts"]) >= 15 * 60 + 10:
             return out      # the time exit is the risk manager's (at this candle's close)
+        # The stop for the NEXT candle is known at this close - return it now, on this candle, not once the next
+        # candle is in (until 2026-11-25 it was, so every move went out one tick late).
+        moved_from, first = P, False
+        if reached:
+            prot, P, first = True, entry, True
+        if prot:
+            v = b["low"] if up else b["high"]
+            if (v > P) if up else (v < P):
+                P = v
+            if P != moved_from:
+                out.append({"kind": "STOP MOVE", "candle_ts": int(b["ts"]), "stop": round(P, 2), "first": first})
     return out

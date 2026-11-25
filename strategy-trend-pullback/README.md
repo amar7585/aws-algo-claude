@@ -21,6 +21,34 @@ on no-trend days (Amar, 2026-11-09).
 | Writes | **nothing** — its log and its Telegram message are its output |
 | Secrets | `/algo/telegram/brief` (to send) |
 
+## Since 2026-11-25: each stop move goes out at the close that sets it — DEPLOYED 2026-11-25
+
+**Approved by Amar 2026-11-25** ("Approve" the timing fix; the trail rule itself kept: "Keep previous-candle").
+`exits.steps()` used to work out a stop move only when it processed the *next* candle, so every move — the
+`TREND STOP TO ENTRY` message and each trail move — reached `order-manager` one tick late. On 2026-11-25 the 10:55
+candle touched +1R (high 25879.65 vs 25857.40), so the new stop 25852.60 was known at 11:00; it went out at 11:07:06,
+with T1. Now the move is returned on the candle whose close sets it, the label it always carried.
+
+- **Unchanged:** every stop, price, exit and lot; the trail rule; T1; the stop line; order-manager, risk-manager and
+  every other function.
+- **record.py:** a stop move was never tagged `(late: ...)` — that hid this lag. Now a stop move from a late or
+  retried tick is tagged like any other step. On a `force_exit` run (it closes what is open at the newest candle) a
+  move set by the newest candle is left out: it would apply only after that close (handler.py passes `closing`).
+- **Checked offline (2026-11-25):** the old and new `steps()` on the 166 grid candidates and the live 2026-11-25
+  position, cut at every tick (7,518 ticks): every full day identical; at each tick the new code adds at most one stop
+  move, on the newest candle, and equals the old code one tick later; all 250 moves come one tick earlier (93 of them
+  the stop to entry). Harness: `pattern-recorder/replay/out/trend-stop-move-timing-2026-11-25/diff_exits.py`
+  (git-ignored, with the old `exits_old.py`). The 2026-11-25 one-day runner on this code (the whole chain, tick by
+  tick, real order-manager): 12 steps, 7 messages, 2 positions and +117.92 point-lots, all == live; the stop to entry
+  sent at 11:02:01 instead of live's 11:07:06, T1 still 11:07. Only "deployed == repo zip" fails (not deployed).
+  Report: `pattern-recorder/replay/out/validation-2026-11-25/wt_1125_trendfix/report_1125.md`.
+- **Deployed 2026-11-25 20:35:43 IST** (Amar: "Deploy now"), CodeSha256
+  `U2kH2J2joOvbQa8sHfM+WIDKpSswAadJqu3D0IYRJ0k=`, 16,751 B (`exits`, `record`, `handler` changed; 5 modules
+  byte-equal); configuration and environment unchanged (`TELEGRAM_ENABLED=on`, `ORDER_MANAGER_FUNCTION=order-manager`,
+  30 s, 128 MB). **Rollback: version 3 = `2jBUCjCH…`** (C1), published just before. No live smoke: a real payload
+  could write a position and send a message; the replay above ran this zip's handler on every 2026-11-25 tick.
+  First live session: Thu 2026-11-26.
+
 ## Since C1 (2026-11-23): holds at the option walls too — DEPLOYED 2026-11-23
 
 **Decided by Amar 2026-11-23** ("Trend levels (C1)", "Approve as recommended"; deploy: "commit and deploy the changes",
@@ -67,8 +95,8 @@ so every key-level candidate is exactly as before. pattern-recorder's trend bran
 |---|---|
 | stop | a 5-min **close** back inside the 15-min range — out at that close (`TREND STOPPED`) |
 | T1 | entry + 2R: **2 of 3 lots** sold there (`TREND T1`) |
-| to entry | once price touches +1R, the stop moves to entry from the next candle (`TREND STOP TO ENTRY`) |
-| trail | then the stop trails the previous closed 5-min candle's low (high for a short), never back past entry — stored, **not messaged** (Amar 2026-11-23) |
+| to entry | once price touches +1R, the stop moves to entry from the next candle (`TREND STOP TO ENTRY`) — sent at the close of the candle that touched +1R (since 2026-11-25; one tick later before) |
+| trail | then the stop trails the previous closed 5-min candle's low (high for a short), never back past entry — stored, **not messaged** (Amar 2026-11-23); each move stored at the close that sets it |
 | protected stop | hit on a touch, filled at the candle's open if it opens through it (`TREND TRAILED OUT` / `TREND BREAK-EVEN`) |
 | one candle, both | the protected stop comes before T1 |
 | 15:10 | the playbook does not close on its own: the risk manager's `force_exit("TIME EXIT")` closes it at the 15:10 candle's close, after its own steps on that candle (`TREND CLOSED AT 15:15`); `DAILY LOSS EXIT` at the newest close |

@@ -104,8 +104,12 @@ def _applied(row, s):
     return row["status"] == "CLOSED"
 
 
-def pending(row, bars, newest_ts):
-    """The signals for one stored position that order-manager does not have yet, oldest first."""
+def pending(row, bars, newest_ts, closing=False):
+    """The signals for one stored position that order-manager does not have yet, oldest first.
+
+    `closing` (a force_exit run, which closes what is still open at the newest candle): a stop move set by the newest
+    candle is left out - it would apply only from the next candle, after that close.
+    """
     if row["status"] != "OPEN":
         return []
     path = exits.steps(bars, int(row["entry_ts"]), row["position_type"], float(row["open_avg"]), float(row["stop_loss"]),
@@ -116,8 +120,11 @@ def pending(row, bars, newest_ts):
         ts = int(s["candle_ts"])
         if ts < last or (ts == last and _applied(row, s)):
             continue
+        if closing and s["kind"] == "STOP MOVE" and ts >= int(newest_ts):
+            continue
         text = _texts(row, s, row["position_type"])
-        if text and ts < int(newest_ts) and s["kind"] != "STOP MOVE":
+        if text and ts < int(newest_ts):
+            # since 2026-11-25 a stop move is on the newest candle when on time, so it is tagged late like any step
             text += f"\n(late: this step was on the {_clock(ts)} candle)"
         out.append(_signal(row, s, text))
     return out

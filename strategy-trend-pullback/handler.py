@@ -134,7 +134,7 @@ def _exits(run, bars):
     forced = 0
     for row in run["positions"]:
         status = row["status"]
-        for sig in record.pending(row, bars, newest):
+        for sig in record.pending(row, bars, newest, closing=run["mode"] == "force_exit"):
             status = _send(sig, answers).get("status") or status
         if run["mode"] == "force_exit":
             close = record.forced_close(row, bars, run["force"], run.get("why"), status)
