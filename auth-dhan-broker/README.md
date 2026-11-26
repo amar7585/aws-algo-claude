@@ -240,8 +240,12 @@ to two in-run retries, five minutes apart:
 | `auth-dhan-broker-thu` | `cron(15 8 ? * THU *)` | 08:15, 08:20, 08:25 |
 | `auth-dhan-broker-fri` | `cron(30 8 ? * FRI *)` | 08:30, 08:35, 08:40 |
 
-They replace `auth-dhan-broker-daily` (`cron(0 8 ? * MON-FRI *)`), which ends
-after Friday 2026-11-06; the five start on Monday 2026-11-09.
+They replace `auth-dhan-broker-daily` (`cron(0 8 ? * MON-FRI *)`), which ended
+after Friday 2026-11-06; the five start on Monday 2026-11-09. The old schedule
+was deleted on 2026-11-26. Nothing referenced it: no IAM policy, and it was not
+in `MANAGED_SCHEDULE_NAMES`. Its execution role,
+`Amazon_EventBridge_Scheduler_LAMBDA_7e647d2b59`, stays because the five weekday
+schedules use it.
 
 A token lives exactly 24 hours (86,400 s, measured), so any slot covers the
 09:15–15:30 session with hours to spare. Weekends are skipped because nothing
