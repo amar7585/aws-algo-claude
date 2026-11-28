@@ -42,3 +42,15 @@ SESSION_CLOSE = datetime.time(15, 30)
 
 INVOCATION_TYPE = os.environ.get("INVOCATION_TYPE", "Event")
 MAX_PAYLOAD_BYTES = 256 * 1024
+
+# THE DAILY-LOSS LIMIT IN OPTION RUPEES (Amar 2026-11-28: "Option rupees", "₹20,000"; build plan approved). The day's
+# loss is read from the paper option record order-manager writes - cash so far (received - paid - estimated charges)
+# + every open option marked at its LIVE price (one batched Dhan quote, only while an option is open) - and compared
+# with risk_control.daily_loss_limit_rupees. It REPLACES the point-lot check.
+OPTION_TABLE = "algo.option_paper_position"
+TOKEN_PARAMETER_NAME = os.environ.get("TOKEN_PARAMETER_NAME", "/algo/dhan/token")
+MARKETFEED_OHLC_URL = os.environ.get("DHAN_MARKETFEED_OHLC_URL", "https://api.dhan.co/v2/marketfeed/ohlc")
+CHAIN_PACING_SECONDS = 3.1      # unused here (no option-chain call) - dhan.py is shared in shape with order-manager's
+QUOTE_PACING_SECONDS = float(os.environ.get("DHAN_QUOTE_PACING_SECONDS", "1.1"))
+DHAN_RETRIES = int(os.environ.get("DHAN_RETRIES", "3"))
+DHAN_TIMEOUT_SECONDS = float(os.environ.get("DHAN_TIMEOUT_SECONDS", "6"))

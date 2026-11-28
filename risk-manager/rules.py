@@ -9,9 +9,10 @@ entry and exit strategies (stop, target, exit conditions) and close their own po
   15:00          no new trade on a candle closing at or after 15:00 (exit only)
   time exit      from the 15:10 candle (the 15:16 tick): every holder gets force_exit("TIME EXIT") and
                  closes at that candle's close AFTER its own stop / target on it
-  limits         max open, max trades per day, daily loss (index points x lots, realised + marked at the
-                 newest close); NULL = off. A daily-loss breach = force_exit("DAILY LOSS EXIT") and no new
-                 trade for the rest of the day
+  limits         max open, max trades per day, daily loss; NULL = off. The daily loss is in OPTION RUPEES since
+                 2026-11-28 (Amar: "Option rupees", "₹20,000"): the paper option record's cash + open options at
+                 their live marks, against daily_loss_limit_rupees - it replaced the point-lot check. A breach =
+                 force_exit("DAILY LOSS EXIT") and no new trade for the rest of the day
   modes          entry_exit | exit_only (with why) | force_exit (with the reason; no entries either)
 
 A TICK playbook (the sweep) gets a mode on every tick. An ALERT playbook (trend) gets a mode on its alert,
@@ -55,7 +56,21 @@ def balance(p):
     return (p["buy_qty"] - p["sell_qty"]) if p["position_type"] == "LONG" else (p["sell_qty"] - p["buy_qty"])
 
 
-def assess(positions, bars, control):
+def option_rupees(options, marks):
+    """The day's paper-option result in rupees: cash so far (received - paid - estimated charges) + every open option
+    at its live mark. A missing mark for an open option RAISES (a limit must never be judged on a guess)."""
+    total = 0.0
+    for o in options:
+        total += float(o["sell_value"]) - float(o["buy_value"]) - float(o["charges_est"])
+        if int(o["open_units"]) > 0:
+            px = (marks or {}).get(str(o["option_security_id"]))
+            if px is None:
+                raise RuntimeError(f"no live mark for the open option {o['trading_symbol']} ({o['option_security_id']})")
+            total += int(o["open_units"]) * float(px)
+    return total
+
+
+def assess(positions, bars, control, options=(), marks=None):
     """The day's state at the newest closed candle, and what it allows."""
     newest = bars[-1]
     close = float(newest["close"])
@@ -65,10 +80,13 @@ def assess(positions, bars, control):
     realised = sum(float(p["realized_profit"]) / int(p["lot_size"]) for p in trades)
     marked = sum(balance(p) * (1 if p["position_type"] == "LONG" else -1) * (close - float(p["open_avg"])) / int(p["lot_size"])
                  for p in open_)
-    pnl = realised + marked                                    # index points x lots
-    limit = control.get("daily_loss_limit")
+    pnl = realised + marked                                    # index points x lots - for the log only since 2026-11-28
+    # THE DAILY-LOSS LIMIT IS IN OPTION RUPEES (Amar 2026-11-28: "Option rupees", "₹20,000"). It replaced the point-lot
+    # check: the day's paper-option result (cash + open options at their live marks) against daily_loss_limit_rupees.
+    rupees = option_rupees(options, marks)
+    limit = control.get("daily_loss_limit_rupees")
     limit = None if limit is None else float(limit)
-    loss_hit = limit is not None and (pnl <= -limit or any(p.get("exit_reason") == DAILY_LOSS_EXIT for p in positions))
+    loss_hit = limit is not None and (rupees <= -limit or any(p.get("exit_reason") == DAILY_LOSS_EXIT for p in positions))
     candle_close = _t(int(newest["ts"]) + 300).time()
     time_exit = _t(int(newest["ts"])).time() >= TIME_EXIT_CANDLE
     why = []
@@ -80,10 +98,11 @@ def assess(positions, bars, control):
     if mt is not None and len(trades) >= int(mt):
         why.append(f"max trades per day {len(trades)}/{int(mt)}")
     if loss_hit:
-        why.append(f"daily loss limit {limit:g} point-lots hit ({pnl:+.1f})")
+        why.append(f"daily loss limit ₹{limit:,.0f} hit (option ₹{rupees:+,.0f})")
     force = TIME_EXIT if time_exit else (DAILY_LOSS_EXIT if loss_hit else None)
     return {"newest_ts": int(newest["ts"]), "close": close, "open": len(open_), "live": len(live), "trades": len(trades),
-            "pnl_point_lots": round(pnl, 2), "loss_hit": loss_hit, "force": force, "why": why}
+            "pnl_point_lots": round(pnl, 2), "option_rupees": round(rupees, 2), "loss_hit": loss_hit, "force": force,
+            "why": why}
 
 
 def _rows(positions, playbook, newest_ts):

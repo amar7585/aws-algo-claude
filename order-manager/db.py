@@ -13,8 +13,10 @@ commits.
 
 import datetime
 import decimal
+import json
 
-from config import INSTRUMENT_TABLE, LOT_SIZE_EXCHANGE_SEGMENT, LOT_SIZE_INSTRUMENT_TYPE, POSITION_TABLE, UNIQUE_CONSTRAINT
+from config import (INSTRUMENT_TABLE, LOT_SIZE_EXCHANGE_SEGMENT, LOT_SIZE_INSTRUMENT_TYPE, OPTION_TABLE, POSITION_TABLE,
+                    UNIQUE_CONSTRAINT)
 
 KEY_COLUMNS = ("security_id", "instrument_type", "playbook", "entry_ts", "position_type")
 INSERT_COLUMNS = (
@@ -106,3 +108,60 @@ def mark_sent(cursor, position_id, now, table=POSITION_TABLE):
 def plain(row):
     """Decimals to floats, for the JSON answer."""
     return {k: float(v) if isinstance(v, decimal.Decimal) else v for k, v in (row or {}).items()}
+
+
+# ---- the paper option (2026-11-28): algo.option_paper_position, one row per index position ----------------------
+OPTION_COLUMNS = (
+    "position_id", "underlying_security_id", "option_type", "depth_itm", "option_security_id", "exchange_segment",
+    "trading_symbol", "strike", "expiry_ts", "lot_size", "buy_qty", "buy_value", "sell_qty", "sell_value",
+    "open_units", "charges_est", "realized_rupees", "fills", "created_at", "updated_at",
+)
+OPTION_UPDATABLE = frozenset(OPTION_COLUMNS) - {"position_id", "underlying_security_id", "option_type", "depth_itm",
+                                                "lot_size", "created_at"}
+
+
+def _json_list(v):
+    if isinstance(v, (bytes, str)):
+        return json.loads(v)
+    return list(v or [])
+
+
+def lock_option(cursor, position_id, table=OPTION_TABLE):
+    """The option row of one index position, row-locked (None if there is none)."""
+    cursor.execute(f"SELECT {', '.join(OPTION_COLUMNS)} FROM {table} WHERE position_id = %s FOR UPDATE",
+                   [int(position_id)])
+    rows = _rows(cursor)
+    if not rows:
+        return None
+    row = rows[0]
+    row["fills"] = _json_list(row["fills"])
+    return row
+
+
+def _values(fields):
+    return [json.dumps(fields[c], default=str) if c == "fills" else fields[c] for c in fields]
+
+
+def insert_option(cursor, fields, table=OPTION_TABLE):
+    missing = [c for c in OPTION_COLUMNS if c not in fields]
+    if missing:
+        raise RuntimeError(f"option insert is missing {missing}")
+    ordered = {c: fields[c] for c in OPTION_COLUMNS}
+    cursor.execute(
+        f"INSERT INTO {table} ({', '.join(OPTION_COLUMNS)}) VALUES "
+        f"({', '.join('%s::jsonb' if c == 'fills' else '%s' for c in OPTION_COLUMNS)})", _values(ordered))
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"option insert for position {fields['position_id']} affected {cursor.rowcount} rows")
+
+
+def update_option(cursor, position_id, fields, table=OPTION_TABLE):
+    bad = sorted(set(fields) - OPTION_UPDATABLE)
+    if bad:
+        raise RuntimeError(f"option update tries to set {bad} - not updatable")
+    cols = sorted(fields)
+    ordered = {c: fields[c] for c in cols}
+    cursor.execute(
+        f"UPDATE {table} SET {', '.join(f'{c} = %s::jsonb' if c == 'fills' else f'{c} = %s' for c in cols)} "
+        f"WHERE position_id = %s", _values(ordered) + [int(position_id)])
+    if cursor.rowcount != 1:
+        raise RuntimeError(f"option update of position {position_id} affected {cursor.rowcount} rows, expected 1")

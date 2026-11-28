@@ -20,9 +20,11 @@
 -- previous trading session's close (15:30 IST) and S is running. It needs no
 -- reset row.
 --
--- Limits: NULL = no limit. daily_loss_limit is in index points x LOTS (O1 = 500,
--- Amar 2026-11-22); the risk manager compares it with each position's realised +
--- marked profit divided by that position's lot_size (position_master holds units).
+-- Limits: NULL = no limit. The daily-loss limit is daily_loss_limit_rupees (option
+-- rupees, Amar 2026-11-28: ₹20,000), compared with the day's option paper record
+-- (algo.option_paper_position): cash so far + open options marked live. The older
+-- daily_loss_limit (index points x lots, O1 = 500, 2026-11-22) is no longer read; it
+-- stays in the history rows and is NULL in new ones.
 --
 -- Conventions: every time value is epoch seconds (bigint); no timestamptz.
 --
@@ -35,9 +37,14 @@ CREATE TABLE IF NOT EXISTS algo.risk_control (
     kill_switch         boolean  NOT NULL,
     max_open            integer  CHECK (max_open > 0),             -- open positions at once; NULL = no limit
     max_trades_per_day  integer  CHECK (max_trades_per_day > 0),   -- positions opened in a session (REFUSED not counted)
-    daily_loss_limit    numeric  CHECK (daily_loss_limit > 0),     -- index points x lots, realised + marked
+    daily_loss_limit    numeric  CHECK (daily_loss_limit > 0),     -- index points x lots - HISTORY ONLY since 2026-11-28
     set_by              text     NOT NULL,
-    reason              text     NOT NULL
+    reason              text     NOT NULL,
+    -- The daily-loss limit in OPTION RUPEES (Amar 2026-11-28: "Option rupees", "₹20,000"): the day's option
+    -- cash (received - paid - estimated charges) + every open option marked at its live price. It REPLACES
+    -- daily_loss_limit: risk-manager reads only this column; new rows carry NULL in the old one.
+    -- migrations/2026-11-28-option-paper.sql.
+    daily_loss_limit_rupees numeric CHECK (daily_loss_limit_rupees > 0)
 );
 
 COMMIT;

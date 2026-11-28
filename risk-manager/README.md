@@ -17,8 +17,8 @@ pattern-recorder --(Event: each alert once, then the tick)--> risk-manager --(Ev
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip, 5 modules (`handler`, `rules`, `db`, `ordermgr`, `config`); layers `neon-db-driver` + `neon-access` |
-| Reads | `algo.risk_control` (row in force), `algo.position_master` (today, all playbooks), `algo.trading_holiday` — read-only |
+| Runtime | Python 3.14, zip, 5 modules (`handler`, `rules`, `db`, `ordermgr`, `config`); layers `neon-db-driver` + `neon-access`. **Option-paper build (not deployed): 7 modules, + `dhan`, `params`** |
+| Reads | `algo.risk_control` (row in force), `algo.position_master` (today, all playbooks), `algo.trading_holiday` — read-only. **Option-paper build:** + `algo.option_paper_position` and one Dhan quote while an option is open |
 | Writes | nothing. Kill-switch closes go through `order-manager` |
 | Invokes | `strategy-manager` (Event), `order-manager` (sync, kill-switch closes only) |
 | Secrets | `/algo/neon/connection` |
@@ -36,7 +36,8 @@ pattern-recorder --(Event: each alert once, then the tick)--> risk-manager --(Ev
   - **max trades per day** counts every non-REFUSED position of the session; a sweep re-entry reuses its row, so it is
     the same trade;
   - **daily loss** is in point-lots: realised + marked at the newest index close, each position divided by its own
-    `lot_size` (500 point-lots = 32,500 point-units at the lot of 65).
+    `lot_size` (500 point-lots = 32,500 point-units at the lot of 65). **Replaced by the option-rupee limit in the
+    option-paper build (below; built 2026-11-28, not deployed).**
   - **A limit that binds** puts every playbook in `exit_only` (`why: max open positions 4/4` / `max trades per day
     8/8`): a would-be entry is still sent, headed REJECTED, and stored REFUSED; a sweep re-entry ends the watch.
   - **A loss breach** = `force_exit("DAILY LOSS EXIT")`, and the day stays off (while realised <= -limit, or once any
@@ -59,23 +60,28 @@ collide on the primary key and fail.
 
 ```sql
 -- the row in force (read it first)
-SELECT set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, set_by, reason
+SELECT set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, set_by, reason
 FROM algo.risk_control WHERE set_at <= extract(epoch FROM now())::bigint ORDER BY set_at DESC LIMIT 1;
 
 -- kill switch ON (this session; the next one if set outside session hours) - keeps the limits in force
-INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, set_by, reason)
-SELECT extract(epoch FROM now())::bigint, true, max_open, max_trades_per_day, daily_loss_limit, 'amar', 'kill switch'
+INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, set_by, reason)
+SELECT extract(epoch FROM now())::bigint, true, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, 'amar', 'kill switch'
 FROM algo.risk_control WHERE set_at <= extract(epoch FROM now())::bigint ORDER BY set_at DESC LIMIT 1;
 
 -- kill switch OFF again the same day - keeps the limits in force
-INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, set_by, reason)
-SELECT extract(epoch FROM now())::bigint, false, max_open, max_trades_per_day, daily_loss_limit, 'amar', 'kill switch off'
+INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, set_by, reason)
+SELECT extract(epoch FROM now())::bigint, false, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, 'amar', 'kill switch off'
 FROM algo.risk_control WHERE set_at <= extract(epoch FROM now())::bigint ORDER BY set_at DESC LIMIT 1;
 
--- change the limits: write all three (NULL = that limit off). Kill switch false - true instead if it is on this session
-INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, set_by, reason)
-VALUES (extract(epoch FROM now())::bigint, false, 4, 8, 500, 'amar', '<why>');
+-- change the limits: write them all (NULL = that limit off). Kill switch false - true instead if it is on this session.
+-- daily_loss_limit (point-lots) stays NULL from the option-paper build on: the rupee column is the one read.
+INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, set_by, reason)
+VALUES (extract(epoch FROM now())::bigint, false, 4, 8, NULL, 20000, 'amar', '<why>');
 ```
+
+**Since the option-paper build (2026-11-28, NOT deployed), the copies must carry `daily_loss_limit_rupees` too** — a
+kill row that left it out would write NULL there and switch the ₹20,000 limit off without a sound, exactly the trap
+above. The statements here copy it.
 
 - **The kill switch needs no "off" row the next day:** it resets each morning by itself.
 - **Rolling back P3 (limits off):** the last statement with `NULL, NULL, NULL`, `set_by` 'P3 rollback'. It applies
@@ -105,6 +111,48 @@ tests + 29/29 mutations caught (`prelim/p0/p2b_*.py` in the notes).
 **Smoke (15:39, today's final tick, the 15:25 candle, built from the stored rows; the sweep's `TELEGRAM_ENABLED=off` for the smoke, restored 15:39:55):** risk-manager 2.46 s -> `force_exit (TIME EXIT)` for the sweep only, no positions; strategy-manager v4 routed it (0.90 s); the sweep re-derived the day: 0 entered trades, 0 stored, **0 signals sent**, the same 3 register rows (only `updated_at` moved); trend not invoked; no error. Between 15:36 and 17:22 nothing but the smoke invoked the chain.
 
 **Rollback:** pattern-recorder back to `STRATEGY_MANAGER_FUNCTION_NAME=strategy-manager` with `invoke-strategy-manager` restored (document in `pattern-recorder/iam/`), and the published versions above for strategy-manager, the sweep and trend. risk-manager and `risk_control` can stay (nothing calls them then).
+
+## The daily-loss limit in option rupees — DEPLOYED 2026-11-28 18:08 IST (Amar: "deploy now"), first live tick Mon 2026-11-30
+
+**The deploy:**
+- the migration first (18:07:18 IST);
+- `algo-ssm-read` updated (+ `/algo/dhan/token`, read back);
+- **version 1 = `KsSFZbsj…` (P2b) published as the rollback**;
+- code **`hcXjKr4uoQ+eKDPHKLkqT3CWMdIJga77dyr6b/vT0DM=`** == the tested zip (7 modules), at 18:08:17.
+
+**Then the `risk_control` row in force**, `set_at` **1795869514** (18:08:34): kill switch off, max open 4, max 8 a
+day, `daily_loss_limit` NULL, **`daily_loss_limit_rupees` 20000**, `set_by` 'option paper deploy'.
+
+- **No smoke of this function.** A direct invoke would run strategy-manager and the playbooks. Its SQL was tested on
+  Neon temp tables; its first run is Monday's first tick.
+- **Rollback:**
+  - `aws lambda update-function-code` back to version 1's code (or repoint);
+  - plus a `risk_control` row with `daily_loss_limit` 500 and the rupee column NULL;
+  - the column can stay.
+
+## The daily-loss limit in option rupees — what was built (2026-11-28)
+
+Amar 2026-11-28: "Paper on the option", then "Option rupees" and "₹20,000". Build plan approved ("Approve as
+recommended"): `pattern-recorder/replay/out/p5-dhan-orders-2026-11-28/paper-options-build-plan.md` (git-ignored).
+
+- **What changes:** the daily-loss check reads the session's paper option rows (`algo.option_paper_position`,
+  written by [order-manager](../order-manager/README.md) when its `OPTION_PAPER` is on). The day's result is cash so
+  far (received − paid − estimated charges) plus every open option marked at its **live** price, from **one batched
+  Dhan quote** (`/v2/marketfeed/ohlc`, a data read: no order, no static IP). There is no Dhan call while no option is
+  open. The check compares this with `risk_control.daily_loss_limit_rupees` (₹20,000). **The point-lot check is
+  removed from the code.** Max open and trades per day are unchanged.
+- **A quote failure raises:** that tick invokes no playbook, and the next tick catches up. While an option is open,
+  every tick depends on that quote.
+- **NULL in `daily_loss_limit_rupees` = no daily-loss limit.** Between this deploy and the new `risk_control` row,
+  the limit is therefore off. The row is written straight after (deploy step 4 in the plan).
+- **New modules:** `dhan.py` (the quote only, a copy of order-manager's) and `params.py` (the token from
+  `/algo/dhan/token`, the client id from its JWT claim). The role's `algo-ssm-read` adds `/algo/dhan/token`
+  ([iam/](iam/)).
+- **Verified offline 2026-11-28** (in the plan's folder):
+  - `test_option_paper.py`: the rupee sum, a breach at −₹20,000, NULL = off, a missing mark raises, no quote with
+    nothing open, one batched quote; mutations caught.
+  - `check_l1_rm.py`: L1's replay with **this** `rules.assess` taking every loss decision gives **identical tables**.
+    ₹20,000 stops only 2026-10-28 at 14:40.
 
 ## Deploy order (as planned) — own role pair, never borrowed
 

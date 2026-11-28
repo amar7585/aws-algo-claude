@@ -93,4 +93,35 @@ CREATE INDEX IF NOT EXISTS position_master_live
 CREATE INDEX IF NOT EXISTS position_master_session
     ON algo.position_master (session_start, playbook);
 
+-- PAPER TRADING ON THE OPTION (Amar 2026-11-28; migrations/2026-11-28-option-paper.sql).
+-- One row per index position above that bought its option: the 1 ITM option bought
+-- (CE for a long, PE for a short) at Dhan's live price when each step was applied.
+-- Written ONLY by order-manager, in the same transaction as the index step; read by
+-- risk-manager for the daily-loss limit in option rupees. No foreign key to
+-- instrument_master: it cannot name a weekly contract. Quantities are units; values
+-- are rupees (premium x units).
+CREATE TABLE IF NOT EXISTS algo.option_paper_position (
+    position_id             bigint   PRIMARY KEY REFERENCES algo.position_master (position_id),
+    underlying_security_id  text     NOT NULL,
+    option_type             text     NOT NULL CHECK (option_type IN ('CE', 'PE')),
+    depth_itm               integer  NOT NULL CHECK (depth_itm >= 0),
+    option_security_id      text     NOT NULL,
+    exchange_segment        text     NOT NULL,
+    trading_symbol          text     NOT NULL,
+    strike                  numeric  NOT NULL,
+    expiry_ts               bigint   NOT NULL,
+    lot_size                integer  NOT NULL CHECK (lot_size > 0),
+    buy_qty                 integer  NOT NULL DEFAULT 0 CHECK (buy_qty >= 0),
+    buy_value               numeric  NOT NULL DEFAULT 0,
+    sell_qty                integer  NOT NULL DEFAULT 0 CHECK (sell_qty >= 0),
+    sell_value              numeric  NOT NULL DEFAULT 0,
+    open_units              integer  NOT NULL DEFAULT 0 CHECK (open_units >= 0),
+    charges_est             numeric  NOT NULL DEFAULT 0,
+    realized_rupees         numeric  NOT NULL DEFAULT 0,
+    fills                   jsonb    NOT NULL,
+    created_at              bigint   NOT NULL,
+    updated_at              bigint   NOT NULL,
+    CONSTRAINT option_paper_position_units CHECK (open_units = buy_qty - sell_qty)
+);
+
 COMMIT;

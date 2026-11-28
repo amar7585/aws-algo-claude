@@ -21,7 +21,7 @@ Amar, 2026-11-22: "common order manager like what we have in algo_trading app ju
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules |
+| Runtime | Python 3.14, zip package, 5 modules. **Option-paper build (not deployed): 8, + `option`, `dhan`, `params`** |
 | Layers | `neon-db-driver` + `neon-access` |
 | Trigger | **synchronous invoke** by a playbook or the risk manager. **P1: called by nothing.** The sweep calls it since P2a (2026-11-22 22:16 IST); the trend playbook and `risk-manager` from P2b (built, not deployed) |
 | Reads | `algo.position_master` (its own row, locked), `algo.instrument_master` (the lot size) |
@@ -233,6 +233,102 @@ the risk manager's kill-switch closes, so the ~1.5 s it took per call reached th
 replaced; a failed call raises and drops it; warm handler calls share one. Mutations removing the check or the
 drop are caught. `p2b_unit.py` in the notes.
 
+## Paper trading on the option — DEPLOYED 2026-11-28 18:08 IST (Amar: "deploy now"), first live session Mon 2026-11-30
+
+**The deploy**, Saturday, no session running; local `aws` CLI, ap-south-1, as in plan §7:
+1. **Migration** `2026-11-28-option-paper.sql` applied 18:07:18 IST: `algo.option_paper_position` (20 columns, owner
+   `neondb_owner`, empty) and `risk_control.daily_loss_limit_rupees`.
+2. **This function:**
+   - `algo-ssm-read` updated (+ `/algo/dhan/token`, read back);
+   - **version 2 = `EUUQoC7Y…` (P2b) published as the rollback**;
+   - code **`0b6JDpBsT7Til0wT7cSN6xlh0EWkabmL7ijAWPmxNq4=`** == the tested zip (8 modules).
+   - Dry-run smoke with the switch off at 18:08:02: a synthetic 11-13 ENTRY answered `applied`, `dry_run`, no option
+     key (the old answer), 2.62 s, nothing kept.
+3. `risk-manager` deployed, then the `risk_control` row (see its README).
+4. **`OPTION_PAPER=on`, `OPTION_PAPER_FROM=1795977000`** (Mon 2026-11-30 00:00 IST) at 18:08:47. Dry-run smoke at
+   18:08:57: a REJECTED answered `rejected_stored` with `option: null` (the switch is read), nothing kept.
+   - Afterwards: `position_master` 11 rows (none from the smokes, none open), `option_paper_position` 0 rows,
+     error-notifier not invoked.
+
+**NOT yet exercised: a real Dhan read.** The stored token expired at 08:30 today (no weekend mint), so an option
+buy cannot be smoked until Monday's 07:30 mint. The first real option-chain read is Monday's first entry, unless a
+dry-run ENTRY is run before 09:15 on Monday.
+
+**Rollback:** `aws lambda update-function-configuration --function-name order-manager --environment
+"Variables={}"` (switch off = the old behaviour). The old code is version 2 (`EUUQoC7Y…`). The option table can stay.
+
+## Paper trading on the option — what was built (2026-11-28)
+
+Amar 2026-11-28: "no we are doing paper trading why do you want to place live order", then "Paper on the option".
+The build plan was approved ("Approve as recommended"):
+`pattern-recorder/replay/out/p5-dhan-orders-2026-11-28/paper-options-build-plan.md` (git-ignored, with the
+measurements R1, exits on options, L1).
+
+**What it does, with `OPTION_PAPER=on`.** Every index step that changes quantity, and only when it is *applied*,
+also buys or sells the paper option **1 strike in the money** ([option.py](option.py)):
+- **The contract:** a CE one strike below ATM for a long, a PE one strike above for a short. ATM = the nearest 50 to
+  the step's index price. Expiry = the nearest expiry; on its own expiry day, the next one.
+- **ENTRY / RE-ENTRY:** buy lots × lot size. One option-chain read gives the security id and the live price. A
+  re-entry buys a new contract.
+- **T1:** sell lots × lot size. **Any close:** sell everything still open. Each sale takes one quote read.
+- **REJECTED, STOP MOVE, WATCH ENDED, a duplicate, a step for REFUSED:** no Dhan read, no option change.
+- **Exits are still decided on the index by the playbooks.** The contract with the callers is unchanged (v1).
+
+**Where it goes.** One row per index position in **`algo.option_paper_position`**
+([schema](schema.sql), [migration](../migrations/2026-11-28-option-paper.sql)):
+- the contract;
+- buy / sell quantity and value, open units, realised rupees (gross) and estimated charges (rates unverified);
+- every fill in `fills`.
+
+It is written in the **same transaction** as the index step, after the Dhan reads and before the message. It has no
+foreign key to `instrument_master`, which cannot name a weekly contract.
+
+**The message.** The playbook's text is unchanged, plus one line, for example
+`option: BUY NIFTY 01DEC 25750 CE x195 @ 142.50` or
+`option: SELL NIFTY 01DEC 25750 CE x130 @ 168.10 | this sale +₹3,328`.
+
+**Failure.** Any Dhan failure (HTTP error, missing strike or price, expired token, an unexpected shape) **raises**:
+- the whole step rolls back, index step included;
+- the caller's synchronous call raises, error-notifier pages, and the async retry runs it again (O4).
+
+A DH-904 / 429 is paced and retried first ([dhan.py](dhan.py)): the option-chain family 1 call per 3 s, quotes 1 per
+second.
+
+**The switch and the cut-over.**
+- `OPTION_PAPER` off (the default) = **exactly today's behaviour**. `compare_off.py` checked 14 steps against git
+  HEAD: answers, messages and stored rows identical, no option row.
+- `OPTION_PAPER_FROM` (epoch): a position entered before it has no option row and is left alone. From it on, a
+  missing option row raises.
+
+**Dhan access.** Data reads only: no order API, so no static IP. The token is auth-dhan-broker's
+`/algo/dhan/token`; the client id comes from the token's JWT claim ([params.py](params.py)). `algo-ssm-read` adds
+`/algo/dhan/token` ([iam/](iam/)).
+
+**Verified offline 2026-11-28** (scripts in the plan's folder):
+- `test_option_paper.py`:
+  - a trend long through ENTRY / T1 / TRAIL, the strike, the expiry and expiry day, the line, realised rupees;
+  - a short; REJECTED; the sweep's exit-and-watch, re-entry on a new contract, a close while out;
+  - a Dhan failure on a buy and on a sale (everything rolled back);
+  - a missing strike, the cut-over, a kill-switch close, a dry run, an option row out of step;
+  - the Dhan client (429 retried, 500 raises, missing price raises) and the token reader.
+  - Plus the risk manager's side. **ALL PASS; 10 / 10 mutations caught.**
+- `check_real.py`: the 11 live positions of 2026-11-25 → 11-27 through this handler, priced from the pulled Dhan
+  1-min data. **11 / 11 equal** to the measured 1 ITM contract, prices and units. Option net over those positions
+  +₹36,888.
+- **Neon temp-table test, 2026-11-28** (Amar "Run it"; project `nameless-mountain-15353651` / `Algo`, one
+  transaction, `ON COMMIT DROP` tables only; `render_neon_sql.py` in the plan's folder). It ran the migration's own
+  DDL and this code's own statements (`insert_option`, `lock_option`, `update_option`, and the risk manager's
+  `read_control` / `read_options`):
+  - the insert, the locked read (fills come back as JSON) and the T1 update are exact: open 65, realised ₹3,328.00,
+    charges ₹90.46, 2 fills;
+  - six refusals, each by its own constraint: units ≠ buy − sell, option type XX, lot size 0, no such position
+    (foreign key), a second row for a position, a rupee limit of 0;
+  - the README's kill-switch statement on a temp copy of `risk_control` with the new column carries ₹20,000 into
+    the kill row.
+  - **Afterwards:** no option table, no new column on the real `risk_control` (still 2 rows), no temp table left.
+- **Not yet done:** a dry-run smoke after deploy, the deploy itself (plan §7), and the latency added per step (to
+  measure at the deploy).
+
 ## Deployment shape
 
 - Zip the five modules (`handler.py`, `positions.py`, `db.py`, `notify.py`, `config.py`) at the **zip root**, with LF endings.
@@ -254,7 +350,8 @@ Other rules:
 
 ## What it does not do
 
-- No Dhan call and no order: paper mode only until P5.
+- No order, ever, in paper mode. Its only Dhan calls are the option-paper **data** reads above (with
+  `OPTION_PAPER` on); P5 / P6 orders are parked (Amar 2026-11-28: "we are doing paper trading").
 - No limits and no kill switch. The risk manager's decision is the only limit check (Amar 2026-11-22); `algo.risk_control` is read by [`risk-manager`](../risk-manager/README.md) (P2b), never here.
 - It never formats a message: the text is the playbook's.
 - It never decides a trade: it records and announces what a playbook decided.

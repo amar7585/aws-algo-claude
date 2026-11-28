@@ -8,7 +8,7 @@ string comes only from /algo/neon/connection. pg8000 `format` paramstyle (%s).
 
 import decimal
 
-from config import CONTROL_TABLE, HOLIDAY_TABLE, POSITION_TABLE
+from config import CONTROL_TABLE, HOLIDAY_TABLE, OPTION_TABLE, POSITION_TABLE
 
 POSITION_COLUMNS = (
     "position_id", "playbook", "signal_key", "session_start", "security_id", "instrument_type", "exchange_segment",
@@ -23,15 +23,32 @@ def _plain(v):
 
 
 def read_control(conn, now):
-    """The risk_control row in force (the newest with set_at <= now). None in the table RAISES - nothing may run."""
+    """The risk_control row in force (the newest with set_at <= now). None in the table RAISES - nothing may run.
+    `daily_loss_limit` (index point-lots) is read for the log only; the check uses `daily_loss_limit_rupees`."""
     cur = conn.cursor()
-    cur.execute(f"SELECT set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, set_by, reason "
-                f"FROM {CONTROL_TABLE} WHERE set_at <= %s ORDER BY set_at DESC LIMIT 1", [int(now)])
+    cur.execute(f"SELECT set_at, kill_switch, max_open, max_trades_per_day, daily_loss_limit, daily_loss_limit_rupees, "
+                f"set_by, reason FROM {CONTROL_TABLE} WHERE set_at <= %s ORDER BY set_at DESC LIMIT 1", [int(now)])
     rows = cur.fetchall()
     if not rows:
         raise RuntimeError(f"{CONTROL_TABLE} has no row in force - no kill-switch state, no limits; nothing may run")
-    cols = ("set_at", "kill_switch", "max_open", "max_trades_per_day", "daily_loss_limit", "set_by", "reason")
+    cols = ("set_at", "kill_switch", "max_open", "max_trades_per_day", "daily_loss_limit", "daily_loss_limit_rupees",
+            "set_by", "reason")
     return {c: _plain(v) for c, v in zip(cols, rows[0])}
+
+
+OPTION_COLUMNS = ("position_id", "option_security_id", "exchange_segment", "trading_symbol", "open_units", "buy_value",
+                  "sell_value", "charges_est")
+
+
+def read_options(conn, position_ids):
+    """The paper option rows of these positions (order-manager writes them; read-only here)."""
+    ids = sorted({int(i) for i in position_ids})
+    if not ids:
+        return []
+    cur = conn.cursor()
+    cur.execute(f"SELECT {', '.join(OPTION_COLUMNS)} FROM {OPTION_TABLE} WHERE position_id IN "
+                f"({', '.join(['%s'] * len(ids))}) ORDER BY position_id", ids)
+    return [{c: _plain(v) for c, v in zip(OPTION_COLUMNS, r)} for r in cur.fetchall()]
 
 
 def read_holidays(conn):

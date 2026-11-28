@@ -22,9 +22,16 @@ their own positions on its instruction (so a stop or target inside the 15:10 can
 FAIL LOUDLY: a failure here means strategy-manager is not invoked and no playbook runs that tick - the safe
 side for entries; the next tick's playbook run catches up the missed steps. error-notifier reports it.
 
+THE DAILY-LOSS LIMIT IN OPTION RUPEES (Amar 2026-11-28, build plan approved): it reads the session's paper
+option rows (algo.option_paper_position, written by order-manager) and, while any option is open, makes ONE
+batched Dhan quote (a data read - no order, no static IP) to mark them live; a quote failure raises, so that
+tick invokes no playbook (the next tick catches up).
+
 Modules:
     rules.py     the decision (pure)
-    db.py        the reads (control, positions, holidays)
+    db.py        the reads (control, positions, holidays, the paper options)
+    dhan.py      the one batched quote of the open paper options
+    params.py    the Dhan token and client id (auth-dhan-broker's /algo/dhan/token)
     ordermgr.py  the synchronous call to order-manager (kill-switch closes only)
     config.py    the run version, the playbook lists, the hard-rule times
 """
@@ -74,7 +81,30 @@ def invoke_manager(payload, client=None):
         raise RuntimeError(f"invoking {STRATEGY_MANAGER_FUNCTION} returned {resp.get('StatusCode')} {resp.get('FunctionError')}")
 
 
-def decide(event, now, conn, send=None):
+def make_dhan():
+    """A Dhan data client on auth-dhan-broker's token (read from SSM only when an open option needs a mark)."""
+    from dhan import DhanClient
+    from params import read_client_id, read_token_record
+    record = read_token_record()
+    return DhanClient(record["access_token"], read_client_id(record))
+
+
+def option_marks(options, dhan_factory=make_dhan):
+    """ONE batched live quote of every open paper option (2026-11-28) - none when no option is open. Raises on failure."""
+    open_ = [o for o in options if int(o["open_units"]) > 0]
+    if not open_:
+        return {}
+    by_seg = {}
+    for o in open_:
+        by_seg.setdefault(o["exchange_segment"], []).append(o["option_security_id"])
+    client = dhan_factory()
+    marks = {}
+    for seg, ids in by_seg.items():
+        marks.update(client.last_prices(seg, ids))
+    return marks
+
+
+def decide(event, now, conn, send=None, dhan_factory=make_dhan):
     """The whole decision on an open connection (closed by the caller). Returns (summary, payload_or_None, closes)."""
     source, inst, bars = read_event(event)
     session_start = ist_midnight_epoch(ist_datetime(bars[-1]["ts"]).date())
@@ -86,7 +116,10 @@ def decide(event, now, conn, send=None):
         closes = rules.kill_switch_closes(positions, bars)
         return {"kill_switch": True, "control_set_at": control["set_at"], "positions": len(positions),
                 "closing": len(closes)}, None, closes
-    a = rules.assess(positions, bars, control)
+    # The daily-loss limit in option rupees: the session's paper option rows + live marks of the open ones.
+    options = db.read_options(conn, [p["position_id"] for p in positions if p["status"] != rules.REFUSED])
+    marks = option_marks(options, dhan_factory)
+    a = rules.assess(positions, bars, control, options, marks)
     run = rules.build_run(source, a, positions, TICK_PLAYBOOKS, ALERT_PLAYBOOKS)
     payload = dict(event, run=run)
     summary = {"kill_switch": False, "control_set_at": control["set_at"], "assessment": a,
@@ -114,8 +147,8 @@ def lambda_handler(event, context):  # noqa: ARG001 - Lambda signature
     else:
         invoke_manager(payload)
         a = summary["assessment"]
-        logger.info("%s %s: %s | open %d, trades %d, pnl %+.1f point-lots%s%s -> %s", stamp, event.get("source"),
-                    summary["modes"], a["open"], a["trades"], a["pnl_point_lots"],
+        logger.info("%s %s: %s | open %d, trades %d, pnl %+.1f point-lots, option %+.0f rupees%s%s -> %s", stamp,
+                    event.get("source"), summary["modes"], a["open"], a["trades"], a["pnl_point_lots"], a["option_rupees"],
                     f", force {a['force']}" if a["force"] else "", f", why: {'; '.join(a['why'])}" if a["why"] else "",
                     STRATEGY_MANAGER_FUNCTION)
     summary["elapsed_seconds"] = round(time.monotonic() - started, 2)
