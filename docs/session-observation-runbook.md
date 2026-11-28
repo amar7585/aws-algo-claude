@@ -214,13 +214,13 @@ Response arrays: `open/high/low/close/volume/timestamp/open_interest`; timestamp
 
 ## State so far
 
-`session_observations` has **21 rows**, all NIFTY INDEX, counted 2026-11-26:
+`session_observations` has **22 rows**, all NIFTY INDEX, counted 2026-11-28:
 - 4× 2026-09-17, 2× 2026-09-18, 1× 2026-09-21, 1× 2026-10-30, 1× 2026-11-04, 2× 2026-11-13,
   2× 2026-11-16, 1× 2026-11-17, 1× 2026-11-18, 1× 2026-11-19, 1× 2026-11-20, 1× 2026-11-23,
-  1× 2026-11-25, 2× 2026-11-26;
+  1× 2026-11-25, 2× 2026-11-26, 1× 2026-11-27;
 - verified against Dhan REST where noted;
 - the first 11 carry no `alert_ts` / `entry_ts` / `entry_price` (the columns were added
-  2026-11-14; nothing was backfilled); rows 12–16 carry Amar's own marks; rows 17–21 carry the
+  2026-11-14; nothing was backfilled); rows 12–16 carry Amar's own marks; rows 17–22 carry the
   machine's values (rows 18 and 21 have a NULL entry: the machine missed them).
 
 Standing plan: keep hand-logging each session until the rules are clear enough to automate.
