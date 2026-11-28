@@ -4,7 +4,7 @@
 
 This file records work Amar has agreed to but that is not built yet. For each piece it gives the decision (in Amar's words where they matter), what exists today, and what is still open. Discussed 2026-11-20. Numbers are measured and dated, and must be re-measured, not edited, when behaviour changes.
 
-Section 1 is built for every playbook: since P2b (2026-11-23) the risk manager owns both rules. Sections 2 and 3 were planned in detail on 2026-11-22; P1, P2a, P2b and P3 (the O1 limits) of that plan are live (2026-11-23), while the Dhan phases are not built. See section 5.
+Section 1 is built for every playbook: since P2b (2026-11-23) the risk manager owns both rules. Sections 2 and 3 were planned in detail on 2026-11-22; P1, P2a, P2b and P3 (the O1 limits) of that plan are live (2026-11-23), and paper trading on the 1 ITM option is deployed (2026-11-28, first live Mon 2026-11-30). The Dhan order phases are parked (2026-11-28). See section 5.
 
 ---
 
@@ -160,7 +160,7 @@ This section records the order only. The plan was written the same day, and sect
 
 ---
 
-## 5. Paper positions + the risk manager: decided 2026-11-22, P1 + P2a + P2b + P3 live (2026-11-23)
+## 5. Paper positions + the risk manager: decided 2026-11-22, P1 + P2a + P2b + P3 live (2026-11-23), paper on the option deployed (2026-11-28)
 
 **Amar's decisions, 2026-11-22.** The full plan with the options and their trade-offs is outside the repo, in the side-session notes: `paper-positions-risk-manager-plan-2026-11-22.md`, `p0-limits-findings-2026-11-22.md` and `p1-build-plan-2026-11-22.md`.
 
@@ -197,7 +197,7 @@ This section records the order only. The plan was written the same day, and sect
   - trend: T1 = entry + 2R; the last lot takes stop-to-entry at 1R, the previous-candle trail and the time exit.
 - **Quantities in units:** lots × the near-month NIFTY future's lot size, 65 at 2026-11-22, stored per position.
 - **Paper fill at the signal:** the sweep's confirming-candle close; trend's trigger close.
-- **Loss unit:** index points × lots.
+- **Loss unit:** index points × lots — until 2026-11-28; since then option rupees (see "Paper on the option" below).
 
 ### Messages and the kill switch
 
@@ -219,6 +219,29 @@ This section records the order only. The plan was written the same day, and sect
     - the daily loss is realised + marked at the newest index close.
   - **A binding limit means exit-only for every playbook.** A refused entry is still sent, headed REJECTED, and stored as REFUSED. A sweep re-entry ends the watch, even at 8/8, as P0 measured it.
   - **The newest row is the whole state.** A kill-switch row must carry the limits in force; the statements that do it are in the [risk-manager README](../risk-manager/README.md).
+- **Since 2026-11-28 18:08 IST the daily loss is ₹20,000 on the paper option record**, replacing the 500 point-lots (row `set_at` 1795869514: 4 / 8 / NULL / 20000). Max open and max trades are unchanged.
+
+### Paper on the option (decided + deployed 2026-11-28)
+
+The P5 plan (Dhan orders) started on 2026-11-28 and stopped at the static-IP question: Amar, "no we are doing paper trading why do you want to place live order", then "Paper on the option". **Live orders are parked**; the earlier decisions below are kept.
+
+**Decided, Amar 2026-11-28:**
+- **The instrument:** "we need to take position in option not in future". **Buy only for now** ("selling we will do later"): a long buys the CE, a short buys the PE. Option selling is deferred, not dropped; it gets its own test.
+- **The strike: "1 ITM"** — the CE one strike below ATM for a long, the PE one strike above for a short. Expiry: the nearest weekly; on its own expiry day, the next one.
+- **The exits stay as they are, decided on the index.** Trend: 3 lots, 2 booked at T1, the last lot trails (Amar 2026-11-28: "2 lots on t1 and one trail"); the "1 lot at T1" variant measured below is not taken. The sweep keeps its own exits (it was not in the exits test: 6 trades).
+- **The record:** a new table `algo.option_paper_position`, keyed to `position_id`, no foreign key to `instrument_master` (it cannot name a weekly contract).
+- **The fill:** "live from dhan option price at that time" — the live price when order-manager applies the step.
+- **The message:** one extra option line on each trade message that buys or sells the option.
+- **A Dhan failure:** raises and retries the whole step.
+- **The daily-loss limit: "Option rupees", "₹20,000"** — realised + open options at live prices, replacing the index 500 point-lots.
+
+**Measured 2026-11-28, read-only, before deciding** (194 trades over 91 sessions 07-01..11-27 with O1, 188 trend + 6 sweep; the exits test varied the trend exits only; reports git-ignored in `pattern-recorder/replay/out/p5-dhan-orders-2026-11-28/`; charges at unverified rates):
+- Futures instead of the index: −₹124k [95% −206k..−46k] — the basis swings ~36 points a day. Dropped.
+- The bought ATM option, net of estimated charges (rates unverified): +₹170k, PF 1.65, max drawdown −₹31k (the index at the close +₹564k on the same trades). Options priced from Dhan's 1-minute rolling-option data; the stored option prices fall inside Dhan's 1-minute bar on 95.8% of 3,034 snapshots.
+- Trend exits re-run on option prices: strike depth was the only robust gain: 1 ITM +₹36k over ATM [+14k..+62k], 2 ITM +₹67k [+21k..+120k], about the same drawdown. Exit variants on option prices: the live exits are near the best; stop to entry at 0.5R / 0.75R clearly worse; all 3 lots at T1 worse; 1 lot at T1 +₹21k [−0.5k..+51k], not taken.
+- The rupee limit (1 ITM, net +₹206,497 with no limit): every limit under ₹20,000 costs money (₹5k −138k, ₹10k −86k, ₹15k −19k); ₹20,000 stops only 2026-10-28, at its own final result; the worst day with no limit −₹20,607.
+
+**Built and deployed 2026-11-28 18:07–18:09 IST** (a Saturday; Amar "deploy now"): the migration, [order-manager](../order-manager/README.md) `0b6JDpBs…` with `OPTION_PAPER=on` from Mon 2026-11-30 00:00 IST, [risk-manager](../risk-manager/README.md) `hcXjKr4u…`, the new `risk_control` row. Both roles read `/algo/dhan/token`. Data reads only: no order API, so no static IP. **Not yet exercised:** a real Dhan read (the stored token expired Sat 08:30; the first is Monday's), the risk manager's live path, the time added per step.
 
 ### Build order
 
@@ -229,7 +252,8 @@ This section records the order only. The plan was written the same day, and sect
 | P2a | the sweep records every entered trade through `order-manager` (trend moved into P2b), its own messages unchanged | **deployed 2026-11-22 22:16 IST** (sweep `6+z2tBAr…`). Its two-session live check was skipped: no sweep trade ran through it before P2b, on Amar's call |
 | P2b | `risk-manager` (with `risk_control`), the context v4 `run` decision, trend exit mode with the decided rule, time / forced exits, REJECTED signals, every trade message through `order-manager` (the sweep's own 15:00 / 15:15 kept as the register's record) | **live 2026-11-23 17:22 IST**, deployed after the close; first session Wed 2026-11-25. Offline: whole-chain replay on 87 sessions = P0 (161 positions, 5,248.11 point-lots; O1 4,901.89), 29/29 mutations caught; the smoke on 11-23's final tick sent nothing. Deploy log + rollbacks in the [risk-manager README](../risk-manager/README.md) |
 | P3 | the O1 limits into `risk_control` | **in force 2026-11-23 18:42 IST** (Amar: "Approve P3, insert O1 now"): one row, no code change, no deploy; first session Wed 2026-11-25. Before it: the O1 chain re-run on the deployed code = 4,901.89 point-lots, 4 REFUSED (all trend: 10-27 max trades, 11-02 max open). After it: the live row through risk-manager's own rules offline, 14/14 |
-| P5 / P6 | Dhan order placement / Dhan's kill switch | each its own plan + approval; **they act on the live account** |
+| Option paper | the paper 1 ITM option in `option_paper_position` (order-manager), the ₹20,000 option-rupee daily loss (risk-manager) | **deployed 2026-11-28 18:08 IST**, first live Mon 2026-11-30. Offline tests ALL PASS (10/10 mutations); the 11 live positions of 11-25..11-27 = the measured 1 ITM, 11/11; the Neon temp-table test passed; switch-off == the previous code on 14 steps |
+| P5 / P6 | Dhan order placement / Dhan's kill switch | **parked 2026-11-28** (paper trading). Dhan's order APIs need a whitelisted static IP (SEBI rule), i.e. a VPC + NAT + Elastic IP for a Lambda — an architecture call, not pursued. Each its own plan + approval; **they act on the live account** |
 
 ### Measured at the P1 deploy, open to decide
 

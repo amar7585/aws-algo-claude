@@ -25,11 +25,11 @@ deterministic to read.
 | [market-classifier](market-classifier/README.md) | **deployed** — **judges**: runs the shared layer over the measurement → regime/structure/buildup/day_trend on `intraday_sentiments`, invokes the detector |
 | [pattern-detector](pattern-detector/README.md) | **deployed, log-only since 2026-11-09 16:04** — the two-clock turn rule (abnormal-volume reversal + buildup/OI confirm). It still decides and logs its alerts, but sends no Telegram and invokes no manager; its Telegram code was removed on 2026-11-23 |
 | [pattern-recorder](pattern-recorder/README.md) | **v2.1 live since 2026-11-09 16:04, rules v2.2 since 2026-11-19 18:07, no Telegram since 2026-11-23 23:33** (v2.0 recorded from 2026-11-06) — pattern-detector v2: candle patterns at levels (index PDH/PDL and opening range, 15-min swings, option walls) on the future → `pattern_events`. On each 5-min poller tick; key-level alerts filtered by the classifier's `day_trend` go on to the strategy plane, once each. They also went to Telegram from 2026-11-09 to 2026-11-23; that send, and its `telegram_sent_at` column, are removed — the phone gets the briefs and the trade messages, not the raw alerts. Since 2026-11-14 it also hands **every** tick on (`TICK_HANDOFF_ENABLED=on`). Both went to strategy-manager until 2026-11-23 17:22; since then they go to **risk-manager** |
-| [risk-manager](risk-manager/README.md) | **live since 2026-11-23 17:22 IST** (P2b; first session Wed 2026-11-25) — **the one risk manager**, in front of strategy-manager on every alert and tick. It reads `risk_control` (the kill switch, which resets each morning; the O1 limits since P3, 2026-11-23 18:42 IST: max open 4, 8 trades a day, daily loss 500 point-lots) and today's `position_master`. Kill switch on: it closes every open position through order-manager and no playbook runs. Otherwise it sets each playbook's mode — `entry_exit`, `exit_only` (after 15:00, or a limit), `force_exit` (the 15:15 time exit at the 15:10 close, or the daily-loss exit) — and hands the payload on with it as `run`. Writes no table |
+| [risk-manager](risk-manager/README.md) | **live since 2026-11-23 17:22 IST** (P2b; first session Wed 2026-11-25) — **the one risk manager**, in front of strategy-manager on every alert and tick. It reads `risk_control` (the kill switch, which resets each morning; the limits: max open 4, 8 trades a day since P3, 2026-11-23 18:42 IST, and **since 2026-11-28 18:08 IST a daily loss of ₹20,000 on the paper option record**, which replaced the 500 point-lot index limit; first live Mon 2026-11-30) and today's `position_master` + `option_paper_position`, with one batched Dhan quote while an option is open (a data read). Kill switch on: it closes every open position through order-manager and no playbook runs. Otherwise it sets each playbook's mode — `entry_exit`, `exit_only` (after 15:00, or a limit), `force_exit` (the 15:15 time exit at the 15:10 close, or the daily-loss exit) — and hands the payload on with it as `run`. Writes no table |
 | [strategy-manager](strategy-manager/README.md) | **built** — a **pure router**, behind risk-manager since 2026-11-23 (context v4: it refuses a payload without `run`, and each playbook gets its own mode), on each v2.1 alert: `day_trend` up/down → `TREND_PLAYBOOKS` (`strategy-trend-pullback`); `none` → nothing (the regime\|bias registry went with bias, 2026-11-19); on **every 5-min tick** (since 2026-11-14) → `TICK_PLAYBOOKS` (`strategy-range-liquidity-sweep`) whatever the regime |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | **sending since 2026-11-14 18:25** (first live session 2026-11-16) — the 15-min opening-range sweep playbook, run on **every 5-min tick**: re-derives the session (one rule set since 2026-11-19 — the old `current` set was removed), follows each trade after entry (exit, watch, re-entry; out at 15:15 before the closing auction since 2026-11-20 22:48; since 2026-11-22 15:44, 3 lots with 2 booked at T1, the 15-min range midpoint, and the last lot to T2 on an unmoved stop), takes entries only when price is **within the levels** (PDH/PDL, 15-min high/low) and volatility is not high (regime not `volatile-expansion`) — no bias, no trend test (since 2026-11-15 09:33) — and records its **alert register** to `playbook_alerts` (since 2026-11-14 22:01). Since P2a (2026-11-22 22:16) every entered trade is recorded in `position_master` through order-manager; since P2b (2026-11-23) its messages go through order-manager too, and after 15:00 / at 15:15 it acts on the risk manager's mode |
 | [strategy-trend-pullback](strategy-trend-pullback/README.md) | **sending since 2026-11-11 16:56** (shadow from 2026-11-09 22:33) — the trend-day hold playbook: a v2 hold (C2/R1) at PDH/PDL/ORH/ORL — or, since C1 (2026-11-23), at the call / put wall — with the day trend → entry, stop on the trend-off line, to Telegram and its log. **Since P2b (2026-11-23) it follows its trades:** the entry goes through order-manager (3 lots, T1 = entry + 2R with 2 sold there), and on every tick while it holds a position it applies the decided "Previous-candle trail" (stop to entry at +1R, then the previous 5-min candle). Reads and writes no table itself |
-| [order-manager](order-manager/README.md) | **running** — deployed 2026-11-22 21:16 IST (P1); called by the sweep since P2a (2026-11-22 22:16), by trend and risk-manager since P2b (2026-11-23) — the one common order manager. One signal per synchronous call → `position_master` (paper mode: no order is saved, the step updates the position) + the caller's own message, sent once in the same transaction. The only writer of `position_master` and, since P2b, the only sender of trade messages |
+| [order-manager](order-manager/README.md) | **running** — deployed 2026-11-22 21:16 IST (P1); called by the sweep since P2a (2026-11-22 22:16), by trend and risk-manager since P2b (2026-11-23) — the one common order manager. One signal per synchronous call → `position_master` (paper mode: no order is saved, the step updates the position) + the caller's own message, sent once in the same transaction. The only writer of `position_master` and, since P2b, the only sender of trade messages. **Since 2026-11-28 18:08 IST (`OPTION_PAPER=on`, from Mon 2026-11-30) it also paper-trades the 1 ITM option** on every applied step that changes quantity: CE one strike below ATM for a long, PE one strike above for a short, nearest weekly expiry (the next on its expiry day), priced live from Dhan (data reads only, no order, no static IP) → `option_paper_position`, with one option line added to the playbook's message |
 
 ## Documentation
 
@@ -38,7 +38,7 @@ deterministic to read.
 | [**Architecture**](docs/architecture.md) | System context, the two planes, data store, invariants, why it is Lambda and not containers |
 | [**Flow charts**](docs/flow.md) | A trading day end to end, each plane in detail, how a failure reaches you |
 | [**Components**](docs/components.md) | Component register, what is built vs planned, shared conventions, source lineage |
-| [**Future implementation**](docs/future-implementation.md) | Agreed 2026-11-20: the closing-auction rule for every playbook, the risk manager (open trades, new-trade limits, kill switch), trade management. Since 2026-11-22: the paper-position plan decided. P1 (`order-manager` + `position_master`), P2a (the sweep records its trades) and P2b (`risk-manager` in front, trend follows its trades, messages through `order-manager`) are live by 2026-11-23 |
+| [**Future implementation**](docs/future-implementation.md) | Agreed 2026-11-20: the closing-auction rule for every playbook, the risk manager (open trades, new-trade limits, kill switch), trade management. Since 2026-11-22: the paper-position plan decided. P1 (`order-manager` + `position_master`), P2a (the sweep records its trades) and P2b (`risk-manager` in front, trend follows its trades, messages through `order-manager`) are live by 2026-11-23. Since 2026-11-28: paper trading on the 1 ITM option with a ₹20,000 daily-loss limit (deployed, first live Mon 2026-11-30); live Dhan orders parked |
 
 ### Component docs
 
@@ -54,8 +54,8 @@ deterministic to read.
 | [strategy-manager](strategy-manager/README.md) | Why it is invoked and not scheduled, why it reads nothing at all, the payload contract (v4 since P2b, 2026-11-23: the risk manager's `run`; v3 since bias was removed, 2026-11-19) |
 | [strategy-range-liquidity-sweep](strategy-range-liquidity-sweep/README.md) | The gate and why 0.9 became 0.78, three disagreements inside the playbook, why it needs no memory, every-tick runs with the trade after entry (one rule set since 2026-11-19; 2 of 3 lots booked at the range midpoint since 2026-11-22, with the split replay behind it), and the alert register (`playbook_alerts`) |
 | [strategy-trend-pullback](strategy-trend-pullback/README.md) | The 2026-11-06 reference session, the rules (setup, window, S3 stop, T1/T2, no RR gate), the replay behind them, the shadow switch, and since P2b the trade after entry (the decided trail, reproduced on all 166 replayed trades) |
-| [order-manager](order-manager/README.md) | The contract (one signal per synchronous call), the state machine (a step applies only if it moves the position forward), units = lots × the near-month NIFTY future's lot size, the offline and Neon verification, the measured time per call (~1.5 s at P1; 1.33 s warm with the connection kept, P2b) |
-| [risk-manager](risk-manager/README.md) | The hard rules and limits it owns, the kill switch that resets each morning, the `run` block, the INSERTs that set them, the deploy and its rollbacks |
+| [order-manager](order-manager/README.md) | The contract (one signal per synchronous call), the state machine (a step applies only if it moves the position forward), units = lots × the near-month NIFTY future's lot size, the offline and Neon verification, the measured time per call (~1.5 s at P1; 1.33 s warm with the connection kept, P2b), the option paper (the contract rule, the `OPTION_PAPER` switch and its cut-over, a Dhan failure raises, the offline / real-position / Neon checks) |
+| [risk-manager](risk-manager/README.md) | The hard rules and limits it owns, the kill switch that resets each morning, the `run` block, the INSERTs that set them, the daily-loss limit in option rupees (2026-11-28), the deploys and their rollbacks |
 | [layers/neon-db-driver](layers/neon-db-driver/README.md) | Why pg8000 over psycopg2, build and publish steps, connecting to Neon |
 | [layers/neon-access](layers/neon-access/README.md) | What is shared and why, and the cost of layer version pinning |
 | [layers/market-classifier](layers/market-classifier/README.md) | The taxonomy, the swing read, the volatility tests, the score terms removed with bias (2026-11-19, kept as the record), and the decisions deferred until sessions accumulate |
@@ -109,15 +109,18 @@ aws-algo-claude/
 ├── risk-manager/            Lambda: the one risk manager, in front of strategy-manager (P2b)
 │   ├── handler.py                entry point: kill switch -> close all; else hand on with `run`
 │   ├── rules.py                  the decision (pure): kill reset, 15:00, the time exit, limits
-│   ├── db.py ordermgr.py         the reads (risk_control, positions, holidays); the sync call
+│   ├── db.py ordermgr.py         the reads (risk_control, positions, option rows, holidays); the sync call
+│   ├── dhan.py params.py         the batched option quote; the Dhan token + client id (2026-11-28)
 │   ├── config.py schema.sql      the run version, the hard-rule times; algo.risk_control
 │   ├── iam/                      its own role's policies
 │   └── README.md
 ├── order-manager/           Lambda: the one common order manager - the only writer of position_master
 │   ├── handler.py                one signal per call, one transaction, the kept connection
 │   ├── positions.py              the state machine (pure)
+│   ├── option.py                 the paper option: 1 ITM contract, buys / sells, the message line (2026-11-28)
+│   ├── dhan.py params.py         option-chain + quote reads, paced; the Dhan token + client id
 │   ├── db.py notify.py           the row lock + insert / update; the Telegram send
-│   ├── config.py schema.sql      the contract version; algo.position_master
+│   ├── config.py schema.sql      the contract version; algo.position_master, algo.option_paper_position
 │   ├── iam/                      its own role's policies
 │   └── README.md
 ├── strategy-manager/        Lambda: a pure router - reads, computes and writes nothing
@@ -229,9 +232,13 @@ Two planes on different clocks, deliberately uncoupled:
   `risk-manager` sits in front of all of it:** it reads the kill switch and the
   limits (`risk_control`) and today's positions, and gives each playbook its
   mode — no new trade after 15:00, every trade out at the 15:10 close. Trend
-  follows its own trades on the ticks while it holds one. `pattern_events`, that
-  register and `position_master` (written only by `order-manager`) are the
-  tables the strategy plane writes.
+  follows its own trades on the ticks while it holds one. **Since 2026-11-28
+  (first live Mon 2026-11-30) each index step that changes quantity also buys or
+  sells the paper 1 ITM option** at Dhan's live price, recorded in
+  `option_paper_position`; the daily-loss limit (₹20,000) watches that record.
+  Exits are still decided on the index. `pattern_events`, that register,
+  `position_master` and `option_paper_position` (both written only by
+  `order-manager`) are the tables the strategy plane writes.
 - **On failure, and only on failure** — `error-notifier` picks errors out of
   every function's CloudWatch log group and pushes them to Telegram. It catches
   timeouts and import errors too, which no `try/except` inside a function can

@@ -21,13 +21,13 @@ Amar, 2026-11-22: "common order manager like what we have in algo_trading app ju
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip package, 5 modules. **Option-paper build (not deployed): 8, + `option`, `dhan`, `params`** |
+| Runtime | Python 3.14, zip package, 8 modules since 2026-11-28 (+ `option`, `dhan`, `params` for the option paper; 5 before) |
 | Layers | `neon-db-driver` + `neon-access` |
-| Trigger | **synchronous invoke** by a playbook or the risk manager. **P1: called by nothing.** The sweep calls it since P2a (2026-11-22 22:16 IST); the trend playbook and `risk-manager` from P2b (built, not deployed) |
-| Reads | `algo.position_master` (its own row, locked), `algo.instrument_master` (the lot size) |
-| Writes | `algo.position_master`, **its only writer** ([schema](schema.sql), [migration](../migrations/2026-11-22-position-master.sql)) |
-| Secrets | `/algo/neon/connection`, `/algo/telegram/brief` (SSM) |
-| Status | **P1 DEPLOYED 2026-11-22 21:16:44 IST**, CodeSha256 `TdBvzcXF77AaWfGg5+UdJXVmnpApqDkYQ5xgKAke/w0=`. **Called by nothing.** The table is applied and empty. Not yet committed |
+| Trigger | **synchronous invoke** by a playbook or the risk manager. P1 (2026-11-22 21:16 IST): called by nothing. The sweep calls it since P2a (2026-11-22 22:16 IST); the trend playbook and `risk-manager` since P2b (2026-11-23) |
+| Reads | `algo.position_master` (its own row, locked), `algo.instrument_master` (the lot size), `algo.option_paper_position` (its own row, locked); with `OPTION_PAPER` on, Dhan's option chain at an entry and a quote at each sale (data reads only) |
+| Writes | `algo.position_master` and, since 2026-11-28, `algo.option_paper_position` — **its only writer** ([schema](schema.sql), migrations [2026-11-22](../migrations/2026-11-22-position-master.sql), [2026-11-28](../migrations/2026-11-28-option-paper.sql)) |
+| Secrets | `/algo/neon/connection`, `/algo/telegram/brief`, `/algo/dhan/token` (since 2026-11-28) (SSM) |
+| Status | **running.** P1 deployed 2026-11-22 21:16:44 IST; P2b `EUUQoC7Y…` 2026-11-23 15:32; **option paper `0b6JDpBs…` since 2026-11-28 18:08 IST** (`OPTION_PAPER=on` from Mon 2026-11-30 00:00 IST; rollback version 2 = `EUUQoC7Y…`). Committed + pushed (eb8827b) |
 
 ## The contract — `contract_version` 1
 
@@ -326,27 +326,27 @@ second.
   - the README's kill-switch statement on a temp copy of `risk_control` with the new column carries ₹20,000 into
     the kill row.
   - **Afterwards:** no option table, no new column on the real `risk_control` (still 2 rows), no temp table left.
-- **Not yet done:** a dry-run smoke after deploy, the deploy itself (plan §7), and the latency added per step (to
-  measure at the deploy).
+- The deploy and its dry-run smokes are done (section above). **Still not measured:** the latency added per step
+  (the first real Dhan read is Monday 2026-11-30's).
 
 ## Deployment shape
 
-- Zip the five modules (`handler.py`, `positions.py`, `db.py`, `notify.py`, `config.py`) at the **zip root**, with LF endings.
+- Zip the eight modules (`handler.py`, `positions.py`, `db.py`, `notify.py`, `config.py`, `option.py`, `dhan.py`, `params.py`; five before 2026-11-28) at the **zip root**, with LF endings.
 - Handler `handler.lambda_handler`, set under Code → Runtime settings → Edit.
 - Layers: `neon-db-driver` + `neon-access` (the same ARNs as the other database functions).
 - Timeout 30 s and memory 128 MB, to be re-measured on the smoke: Neon wakes inside `connect()`. **From P2b: 256 MB.**
-- **No environment variables.**
+- **Environment:** none until 2026-11-28; since then `OPTION_PAPER=on` and `OPTION_PAPER_FROM=1795977000` (unset = off = the old behaviour).
 
 **Its own role, `order-manager-role`** ([iam/](iam/)), with the trust policy and two inline policies:
 - `lambda-logs`: its own log group `/aws/lambda/order-manager` only;
-- `algo-ssm-read`: `ssm:GetParameter` on `/algo/neon/connection` and `/algo/telegram/brief`, plus `kms:Decrypt` conditioned on `kms:ViaService = ssm.ap-south-1.amazonaws.com`.
+- `algo-ssm-read`: `ssm:GetParameter` on `/algo/neon/connection`, `/algo/telegram/brief` and (since 2026-11-28) `/algo/dhan/token`, plus `kms:Decrypt` conditioned on `kms:ViaService = ssm.ap-south-1.amazonaws.com`.
 
 Other rules:
 - **Never borrow another function's role.** CLAUDE.md: a borrowed role writes no logs at all and nothing alarms. Check the policy documents after creating them, not the role names.
 - **No invoke grant to anyone in P1.** Each caller gets `lambda:InvokeFunction` on this ARN, in its own role, in P2a / P2b.
 - **Subscribe its log group to `error-notifier`** (`add-permission` + `put-subscription-filter`, as in the [error-notifier README](../error-notifier/README.md)).
 
-**Redeploy:** rebuild the zip (the five modules at the zip root, LF endings), then `aws lambda update-function-code --function-name order-manager --zip-file fileb://order-manager.zip --region ap-south-1`. Check that the CodeSha256 equals the local zip's, and record it here.
+**Redeploy:** rebuild the zip (the eight modules at the zip root, LF endings), then `aws lambda update-function-code --function-name order-manager --zip-file fileb://order-manager.zip --region ap-south-1`. Check that the CodeSha256 equals the local zip's, and record it here.
 
 ## What it does not do
 

@@ -43,7 +43,11 @@ flowchart TD
         SWEEP -->|"sync: entries + trade steps"| OM
         TREND -->|"sync: the entry, then its steps"| OM
         OM --> POS[("position_master<br/><i>the paper position record</i>")]
+        OM --> OPT[("option_paper_position<br/><i>the paper 1 ITM option, since 2026-11-28</i>")]
+        DHANR{{"Dhan data reads<br/><i>option chain, quotes - no order</i>"}} -.-> OM
+        DHANR -.->|"one batched quote<br/>while an option is open"| RM
         POS -.today's positions.-> RM
+        OPT -.today's option rows.-> RM
         OM -->|"the playbook's message, once"| TG5{{"Telegram"}}
         SWEEP --> LOG{{"CloudWatch log"}}
         TREND --> LOG
@@ -106,11 +110,11 @@ Read in clock order, a weekday looks like this:
 | immediately after | `pattern-detector` | **invoke** | no table (log only since 2026-11-09 16:04) |
 | 09:36–15:31 every 5 min (71 runs) | `intraday-fno-poller` | **cron** (its own trio) | `fno_5m_snapshot`, `fno_5m_leg` |
 | as the poller's last step, every tick (v2.1, live since 2026-11-09 16:04) | `pattern-recorder` | **invoke** | `pattern_events`; then hands each alert and (since 2026-11-14) the tick on — to `risk-manager` since 2026-11-23. Its alerts went to Telegram too until 2026-11-23 23:33 |
-| on each v2.1 alert and every tick (since 2026-11-23 17:22) | `risk-manager` | **invoke** | nothing (reads `risk_control`, today's `position_master`; kill-switch closes through `order-manager`) |
+| on each v2.1 alert and every tick (since 2026-11-23 17:22) | `risk-manager` | **invoke** | nothing (reads `risk_control`, today's `position_master` and, since 2026-11-28, `option_paper_position` + one batched Dhan quote while an option is open; kill-switch closes through `order-manager`) |
 | on each v2.1 alert, once — and on every tick (since 2026-11-14); from `risk-manager` since 2026-11-23 | `strategy-manager` | **invoke** | nothing |
 | then, on a `day_trend` up/down alert — and on every tick while it holds a position (since 2026-11-23) | `strategy-trend-pullback` | **invoke** | nothing itself: its entry and steps go to `order-manager` |
 | on every tick, via `TICK_PLAYBOOKS` (since 2026-11-14) | `strategy-range-liquidity-sweep` | **invoke** | `playbook_alerts` (the alert register, since 22:01); its entries + trade steps go to `order-manager` (recorded since 2026-11-22, messaged since 2026-11-23) |
-| on each playbook step, and each kill-switch close | `order-manager` | **synchronous invoke** | `position_master`, Telegram (the playbook's message, once) |
+| on each playbook step, and each kill-switch close | `order-manager` | **synchronous invoke** | `position_master`, `option_paper_position` (since 2026-11-28, from Mon 11-30: on each applied step that changes quantity, priced by a Dhan option-chain / quote read), Telegram (the playbook's message + one option line, once) |
 | 15:45 (since 2026-11-23) | `daily-market-sentiment` — the evening brief | cron (its second schedule, input `{"brief": "evening"}`) | Telegram only — it reads, writes nothing |
 | on failure only | `error-notifier` | log subscription | Telegram |
 
@@ -538,11 +542,17 @@ and tick goes first to `risk-manager`. It reads the `risk_control` row in force 
 `position_master`. With the kill switch on for this session it closes every open position through
 `order-manager` and invokes nothing. Otherwise it gives each playbook its mode as `run` — no new
 trade on a candle closing at or after 15:00, `force_exit` from the 15:10 candle so every trade is
-out at that close, and the limits (O1 since P3, 2026-11-23: max open 4, 8 trades a day, daily loss
-500 point-lots; a binding limit means exit-only, and a refused entry is still sent, headed REJECTED). The playbooks keep their own stops and targets
+out at that close, and the limits (O1 since P3, 2026-11-23: max open 4, 8 trades a day; a binding
+limit means exit-only, and a refused entry is still sent, headed REJECTED). The daily loss was 500
+point-lots on the index until 2026-11-28; since then it is **₹20,000 on the paper option record**
+(cash so far + every open option at its live price, one batched Dhan quote; a quote failure raises,
+so that tick runs no playbook). The playbooks keep their own stops and targets
 and apply them first. Every entry and step then goes to `order-manager`, which records it and
 sends the playbook's own text once: a retried or late tick catches up what the record lacks and
-never sends a message twice.
+never sends a message twice. Since 2026-11-28 (first live Mon 2026-11-30) an applied step that
+changes quantity also buys or sells the paper 1 ITM option in the same transaction (CE one strike
+below ATM for a long, PE one strike above for a short; nearest weekly, the next on its expiry day)
+and adds one option line to the message. Exits are still decided on the index.
 
 **The manager runs only on a v2.1 alert** (since 2026-11-09 16:04). On each
 5-minute poller tick, `pattern-recorder` re-derives the session's pattern events.
@@ -630,7 +640,9 @@ two new functions', are subscribed. `strategy-trend-pullback`'s has been since i
 was created, 2026-11-09 22:33; `order-manager`'s since 2026-11-22 and `risk-manager`'s
 since 2026-11-23, each from its creation.) A failed `order-manager` call raises in
 its caller too: the calls are synchronous, so the playbook's run fails, Lambda
-retries it, and the retry catches up the record without a second message.
+retries it, and the retry catches up the record without a second message. Since 2026-11-28 a
+Dhan failure in the option paper (an HTTP error, a missing strike or price, an expired token) raises
+the same way: the whole step rolls back, index step included, and the retry runs it again.
 
 This compounds with the execution-role trap. A borrowed role allows
 `logs:PutLogEvents` on one log group ARN only, so a function using it produces

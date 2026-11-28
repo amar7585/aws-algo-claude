@@ -10,6 +10,9 @@ First live session: **Wed 2026-11-25** (11-24 is a holiday). Plan: `p2b-build-pl
 row, `set_at` 1795439523: kill switch off, max open 4, max 8 trades per day, daily loss 500 point-lots. No code change,
 no deploy. First read live: Wed 2026-11-25. Plan: `p3-limits-plan-2026-11-23.md` in the notes.
 
+**Since 2026-11-28 18:08 IST the daily loss is ₹20,000 on the paper option record** (row `set_at` 1795869514:
+4 / 8 / NULL / 20000, 'option paper deploy'; first live tick Mon 2026-11-30). See the option-rupee sections below.
+
 ```
 pattern-recorder --(Event: each alert once, then the tick)--> risk-manager --(Event, + run)--> strategy-manager --> playbooks
 ```
@@ -17,11 +20,11 @@ pattern-recorder --(Event: each alert once, then the tick)--> risk-manager --(Ev
 | | |
 |---|---|
 | Entry point | `handler.lambda_handler` |
-| Runtime | Python 3.14, zip, 5 modules (`handler`, `rules`, `db`, `ordermgr`, `config`); layers `neon-db-driver` + `neon-access`. **Option-paper build (not deployed): 7 modules, + `dhan`, `params`** |
-| Reads | `algo.risk_control` (row in force), `algo.position_master` (today, all playbooks), `algo.trading_holiday` — read-only. **Option-paper build:** + `algo.option_paper_position` and one Dhan quote while an option is open |
+| Runtime | Python 3.14, zip, 7 modules since 2026-11-28 (`handler`, `rules`, `db`, `ordermgr`, `config`, + `dhan`, `params`; 5 before); layers `neon-db-driver` + `neon-access`. Code `hcXjKr4u…` since 2026-11-28 18:08 IST (rollback version 1 = `KsSFZbsj…`) |
+| Reads | `algo.risk_control` (row in force), `algo.position_master` (today, all playbooks), `algo.trading_holiday`, and since 2026-11-28 `algo.option_paper_position` (today) — read-only; one batched Dhan quote while an option is open (a data read) |
 | Writes | nothing. Kill-switch closes go through `order-manager` |
 | Invokes | `strategy-manager` (Event), `order-manager` (sync, kill-switch closes only) |
-| Secrets | `/algo/neon/connection` |
+| Secrets | `/algo/neon/connection`, `/algo/dhan/token` (since 2026-11-28) |
 
 ## The rules ([rules.py](rules.py), pure)
 
@@ -36,8 +39,8 @@ pattern-recorder --(Event: each alert once, then the tick)--> risk-manager --(Ev
   - **max trades per day** counts every non-REFUSED position of the session; a sweep re-entry reuses its row, so it is
     the same trade;
   - **daily loss** is in point-lots: realised + marked at the newest index close, each position divided by its own
-    `lot_size` (500 point-lots = 32,500 point-units at the lot of 65). **Replaced by the option-rupee limit in the
-    option-paper build (below; built 2026-11-28, not deployed).**
+    `lot_size` (500 point-lots = 32,500 point-units at the lot of 65). **Replaced by the option-rupee limit (₹20,000) on
+    2026-11-28 18:08 IST (below); the point-lot check is removed from the code.**
   - **A limit that binds** puts every playbook in `exit_only` (`why: max open positions 4/4` / `max trades per day
     8/8`): a would-be entry is still sent, headed REJECTED, and stored REFUSED; a sweep re-entry ends the watch.
   - **A loss breach** = `force_exit("DAILY LOSS EXIT")`, and the day stays off (while realised <= -limit, or once any
@@ -79,7 +82,7 @@ INSERT INTO algo.risk_control (set_at, kill_switch, max_open, max_trades_per_day
 VALUES (extract(epoch FROM now())::bigint, false, 4, 8, NULL, 20000, 'amar', '<why>');
 ```
 
-**Since the option-paper build (2026-11-28, NOT deployed), the copies must carry `daily_loss_limit_rupees` too** — a
+**Since the option-paper deploy (2026-11-28 18:08 IST), the copies must carry `daily_loss_limit_rupees` too** — a
 kill row that left it out would write NULL there and switch the ₹20,000 limit off without a sound, exactly the trap
 above. The statements here copy it.
 
